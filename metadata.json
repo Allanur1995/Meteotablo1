@@ -1,0 +1,6 @@
+{
+  "name": "Meteotablo",
+  "description": "Aviation AWOS & METAR/TAF weather display with dual runway wind roses, crosswind/headwind components, QNH/QFE conversions, and day/night cockpit modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
