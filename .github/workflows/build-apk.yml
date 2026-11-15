@@ -23,61 +23,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          if [ ! -d "$SDK_ROOT" ]; then
-            SDK_ROOT="$HOME/android-sdk"
-            mkdir -p "$SDK_ROOT"
-          elif [ ! -w "$SDK_ROOT" ]; then
-            sudo chown -R "$(id -u):$(id -g)" "$SDK_ROOT" 2>/dev/null || {
-              SDK_ROOT="$HOME/android-sdk"
-              mkdir -p "$SDK_ROOT"
-            }
+          SYS_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
+          if [ -d "$SYS_SDK/platforms/android-36.1" ] && [ -d "$SYS_SDK/build-tools/36.0.0" ] && [ -d "$SYS_SDK/licenses" ]; then
+            echo "Using pre-installed Android SDK at $SYS_SDK"
+            echo "ANDROID_HOME=$SYS_SDK" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=$SYS_SDK" >> "$GITHUB_ENV"
+            exit 0
           fi
+
+          USER_SDK="$HOME/android-sdk"
+          mkdir -p "$USER_SDK"
 
           SDKMANAGER=""
           if command -v sdkmanager >/dev/null 2>&1; then
             SDKMANAGER="$(command -v sdkmanager)"
+          elif [ -x "$SYS_SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SYS_SDK/cmdline-tools/latest/bin/sdkmanager"
           else
-            SDKMANAGER="$(find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+            SDKMANAGER="$(find "$SYS_SDK" -maxdepth 4 -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
           fi
 
-          if [ -z "$SDKMANAGER" ]; then
-            echo "Installing Android command-line tools into $SDK_ROOT..."
-            mkdir -p "$SDK_ROOT/cmdline-tools"
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "Downloading Android command-line tools into $USER_SDK..."
+            mkdir -p "$USER_SDK/cmdline-tools"
             rm -rf /tmp/cmdline-extract /tmp/cmdline-tools.zip
-            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip" -o /tmp/cmdline-tools.zip
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
             unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-extract
-            rm -rf "$SDK_ROOT/cmdline-tools/latest"
+            rm -rf "$USER_SDK/cmdline-tools/latest"
             if [ -d /tmp/cmdline-extract/cmdline-tools ]; then
-              mv /tmp/cmdline-extract/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+              mv /tmp/cmdline-extract/cmdline-tools "$USER_SDK/cmdline-tools/latest"
             elif [ -d /tmp/cmdline-extract/tools ]; then
-              mv /tmp/cmdline-extract/tools "$SDK_ROOT/cmdline-tools/latest"
+              mv /tmp/cmdline-extract/tools "$USER_SDK/cmdline-tools/latest"
             else
               echo "Unexpected cmdline-tools archive layout:"
               ls -la /tmp/cmdline-extract
               exit 1
             fi
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+            SDKMANAGER="$USER_SDK/cmdline-tools/latest/bin/sdkmanager"
+            chmod +x "$SDKMANAGER"
           fi
 
-          chmod +x "$SDKMANAGER"
+          echo "Using sdkmanager: $SDKMANAGER (installing into $USER_SDK)"
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          yes | "$SDKMANAGER" --sdk_root="$USER_SDK" --licenses >/dev/null || true
           set -o pipefail
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "cmdline-tools;latest" >/dev/null 2>&1 || true
-          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-            set +o pipefail
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
-            set -o pipefail
-          fi
 
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-36.1" "build-tools;36.0.0"
+          "$SDKMANAGER" --sdk_root="$USER_SDK" --install "platform-tools" "platforms;android-36.1" "build-tools;36.0.0"
 
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "ANDROID_HOME=$USER_SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$USER_SDK" >> "$GITHUB_ENV"
+          echo "$USER_SDK/platform-tools" >> "$GITHUB_PATH"
 
       - name: Prepare debug keystore and env file
         shell: bash
