@@ -1,6 +1,6 @@
 # Meteotablo Windows (Windows 7 32-bit & 64-bit)
 
-Desktop version of **Meteotablo** targeting **JVM 1.8 (Java 8)** and **32-bit Windows PE (`.exe`)**, compatible with both **Windows 7 SP1 32-bit (x86)** and **64-bit (x64)** as well as Windows 10/11.
+Desktop version of **Meteotablo** targeting **JVM 1.8 (Java 8)** and **32-bit Windows PE (`.exe`)**, compatible with both **Windows 7 32-bit (x86)** and **64-bit (x64)** as well as Windows 10/11.
 
 ## Included Features
 - Selectable live METAR/TAF sources from both the toolbar and Server settings:
@@ -14,8 +14,8 @@ Desktop version of **Meteotablo** targeting **JVM 1.8 (Java 8)** and **32-bit Wi
 
 ## Building the `.exe` via GitHub Actions
 Push this repository to GitHub (`main` or `master`, or run **Actions -> Build Windows 7 EXE (32-bit & 64-bit)** manually) to download:
-1. **`Meteotablo-Win7-Portable-x86-x64.zip`** — contains `Meteotablo.exe` + bundled **32-bit JRE 8**. Extract anywhere on Windows 7 (32-bit or 64-bit) and double-click `Meteotablo.exe` (no Java installation required).
-2. **`Meteotablo-Win7-Setup-EXE`** (`Meteotablo-Setup-Win7-x86-x64.exe`) — single-file installer for Windows 7 SP1 (32-bit and 64-bit).
+1. **`Meteotablo-Win7-Portable-x86-x64.zip`** — contains `Meteotablo.exe`, `app/Meteotablo-desktop.jar`, and bundled **32-bit JRE 8**. Extract anywhere on Windows 7 (32-bit or 64-bit) and double-click `Meteotablo.exe` (no Java installation required).
+2. **`Meteotablo-Win7-Setup-EXE`** (`Meteotablo-Setup-Win7-x86-x64.exe`) — single-file installer for Windows 7 (32-bit and 64-bit).
 
 ## Building Locally
 ```bash

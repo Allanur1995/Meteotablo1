@@ -15,9 +15,8 @@
   <manifest></manifest>
   <icon>assets/meteotablo.ico</icon>
   <jre>
-    <path>jre;C:\Program Files (x86)\Java;C:\Program Files\Java</path>
+    <path>jre</path>
     <requiresJdk>false</requiresJdk>
-    <requires64Bit>false</requires64Bit>
     <minVersion>1.8.0</minVersion>
     <maxVersion></maxVersion>
     <opt>-Dfile.encoding=UTF-8</opt>

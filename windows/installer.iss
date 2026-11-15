@@ -8,7 +8,7 @@ OutputDir=build\installer
 OutputBaseFilename=Meteotablo-Setup-Win7-x86-x64
 Compression=lzma2
 SolidCompression=yes
-MinVersion=6.1sp1
+MinVersion=6.1
 ArchitecturesAllowed=x86 x64compatible
 SetupIconFile=assets\meteotablo.ico
 UninstallDisplayIcon={app}\Meteotablo.exe
@@ -23,6 +23,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "build\package\Meteotablo.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\package\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "build\package\jre\*"; DestDir: "{app}\jre"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
