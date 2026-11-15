@@ -5,12 +5,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AirportCatalog
 import com.example.data.AviationWeatherRepository
+import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
 import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
-import com.example.data.SharedPreferencesServerConfigStorage
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
@@ -213,16 +213,30 @@ class MeteoViewModel(
     }
   }
 
+  fun setDataSourceMode(mode: DataSourceMode, fetchNow: Boolean = true) {
+    val updated = _uiState.value.serverConfig.withMode(mode)
+    serverConfigStorage.saveConfig(updated)
+    _uiState.update { state ->
+      state.copy(
+        serverConfig = updated,
+        logs = appendLog(state.logs, "NET", "Источник данных: ${mode.displayName}"),
+      )
+    }
+    if (fetchNow) {
+      fetchLiveForStation(_uiState.value.station)
+    }
+  }
+
   fun updateServerConfig(config: ServerConfig, fetchNow: Boolean = true) {
     val normalized = config.copy(
-      url = SharedPreferencesServerConfigStorage.normalizeServerUrl(config.url),
+      url = ServerConfig.normalizeServerUrl(config.url),
       username = config.username.trim(),
     )
     serverConfigStorage.saveConfig(normalized)
     _uiState.update { state ->
       state.copy(
         serverConfig = normalized,
-        logs = appendLog(state.logs, "NET", "Сохранены настройки сервера: ${normalized.url}"),
+        logs = appendLog(state.logs, "NET", "Сохранены настройки сервера (${normalized.resolvedMode().displayName}): ${normalized.url}"),
       )
     }
     if (fetchNow) {

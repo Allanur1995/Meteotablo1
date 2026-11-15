@@ -1,0 +1,132 @@
+name: Build Windows 7 EXE (32-bit & 64-bit)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 for Gradle compilation (targets JVM 1.8)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Test and Build Windows Fat JAR (JVM 1.8)
+        run: gradle -p windows test fatJar --no-daemon
+
+      - name: Generate Windows .ico from app launcher icon
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path windows/assets | Out-Null
+          $pngPath = Get-ChildItem -Path app/src/main/res -Recurse -Include "*ic_launcher*.png","*launcher*.png" | Select-Object -First 1
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap(64, 64)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          if ($pngPath) {
+            $src = [System.Drawing.Image]::FromFile($pngPath.FullName)
+            $g.DrawImage($src, 0, 0, 64, 64)
+            $src.Dispose()
+          } else {
+            $g.Clear([System.Drawing.Color]::FromArgb(17, 26, 39))
+            $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 152, 26), 4)
+            $g.DrawEllipse($pen, 6, 6, 52, 52)
+            $pen.Dispose()
+          }
+          $g.Dispose()
+          $msPng = New-Object System.IO.MemoryStream
+          $bmp.Save($msPng, [System.Drawing.Imaging.ImageFormat]::Png)
+          $pngBytes = $msPng.ToArray()
+          $bmp.Dispose()
+          $msPng.Dispose()
+
+          $icoFs = [System.IO.File]::Create("windows/assets/meteotablo.ico")
+          $bw = New-Object System.IO.BinaryWriter($icoFs)
+          # ICONDIR: reserved=0, type=1 (ICO), count=1
+          $bw.Write([uint16]0)
+          $bw.Write([uint16]1)
+          $bw.Write([uint16]1)
+          # ICONDIRENTRY: 64x64 PNG inside ICO
+          $bw.Write([byte]64)
+          $bw.Write([byte]64)
+          $bw.Write([byte]0)
+          $bw.Write([byte]0)
+          $bw.Write([uint16]1)
+          $bw.Write([uint16]32)
+          $bw.Write([uint32]$pngBytes.Length)
+          $bw.Write([uint32]22)
+          $bw.Write($pngBytes)
+          $bw.Close()
+          $icoFs.Close()
+
+      - name: Download 32-bit JRE 8 (Windows 7 32-bit & 64-bit compatible) and install Launch4j
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path windows/build/package | Out-Null
+          New-Item -ItemType Directory -Force -Path windows/build/tools | Out-Null
+
+          # 32-bit OpenJDK 8 JRE from Adoptium (runs on both x86 and x64 Windows 7)
+          $jreUrl = "https://api.adoptium.net/v3/binary/latest/8/ga/windows/x86/jre/hotspot/normal/eclipse?project=jdk"
+          Invoke-WebRequest -Uri $jreUrl -OutFile "windows/build/tools/jre8-x86.zip"
+          Expand-Archive -Path "windows/build/tools/jre8-x86.zip" -DestinationPath "windows/build/tools/jre-extract" -Force
+          $jreDir = Get-ChildItem -Path "windows/build/tools/jre-extract" -Directory | Select-Object -First 1
+          Move-Item -Path $jreDir.FullName -Destination "windows/build/package/jre" -Force
+
+          choco install launch4j -y
+
+      - name: Build Meteotablo.exe (32-bit Windows PE)
+        shell: pwsh
+        run: |
+          $l4jc = (Get-Command launch4jc.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $l4jc) {
+            $l4jc = Get-ChildItem -Path "C:\Program Files (x86)","C:\Program Files","C:\ProgramData\chocolatey" -Recurse -Filter "launch4jc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $l4jc) { throw "launch4jc.exe not found" }
+          & $l4jc "windows/launch4j-config.xml"
+          if (-not (Test-Path "windows/build/package/Meteotablo.exe")) {
+            throw "Meteotablo.exe was not generated"
+          }
+
+      - name: Create Portable ZIP (Meteotablo.exe + 32-bit JRE 8)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "windows/build/package/*" -DestinationPath "windows/build/Meteotablo-Win7-Portable-x86-x64.zip" -Force
+
+      - name: Build Single-File Installer EXE with Inno Setup
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path windows/build/installer | Out-Null
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) {
+            & $iscc "windows/installer.iss"
+          } else {
+            choco install innosetup -y
+            & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "windows/installer.iss"
+          }
+
+      - name: Upload Windows Portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Meteotablo-Win7-Portable-x86-x64
+          path: windows/build/Meteotablo-Win7-Portable-x86-x64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows Setup Installer EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Meteotablo-Win7-Setup-EXE
+          path: windows/build/installer/Meteotablo-Setup-Win7-x86-x64.exe
+          if-no-files-found: error

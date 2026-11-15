@@ -82,107 +82,230 @@ class AviationWeatherRepository {
   ): Result<FetchResult> = withContext(Dispatchers.IO) {
     val logs = mutableListOf<String>()
     val icao = station.icao.trim().uppercase()
-    var resolvedStation = station
+    val mode = serverConfig.resolvedMode()
+    logs.add("Режим источника: ${mode.displayName}")
 
-    var customError: String? = null
-    if (serverConfig.useCustomServer && serverConfig.url.isNotBlank()) {
-      val outcome = customServerClient.fetchMetarAndTaf(icao, serverConfig)
-      logs.addAll(outcome.logs)
-      val customMetar = outcome.rawMetar
-      if (!customMetar.isNullOrBlank()) {
-        val finalTaf = outcome.rawTaf ?: "TAF $icao — нет данных"
-        val decoded = AviationWeatherParser.parse(
-          rawMetarInput = customMetar,
-          rawTafInput = finalTaf,
-          station = resolvedStation,
-          sourceLabel = "сервер ${outcome.sourceHost}",
-        )
-        logs.add("Успешно декодирован $icao с ${outcome.sourceHost} (${decoded.observationTimeUtc})")
-        return@withContext Result.success(FetchResult(decoded, resolvedStation, logs))
-      } else {
-        customError = outcome.errorMessage
-        if (!serverConfig.fallbackToNoaa) {
-          return@withContext Result.failure(
-            IllegalStateException(customError ?: "Нет данных для $icao на сервере ${outcome.sourceHost}"),
-          )
+    when (mode) {
+      DataSourceMode.IP_ONLY -> {
+        val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
+        if (ipRes != null) {
+          Result.success(ipRes)
+        } else {
+          Result.failure(IllegalStateException(ipErr ?: "Нет данных для $icao на IP-сервере"))
         }
-        logs.add("Переход к резервному источнику aviationweather.gov…")
+      }
+
+      DataSourceMode.INTERNET_ONLY -> {
+        val (netRes, netErr) = fetchFromInternetSites(icao, serverConfig, station, logs)
+        if (netRes != null) {
+          Result.success(netRes)
+        } else {
+          Result.failure(IllegalStateException(netErr ?: "Нет данных для $icao на интернет-сайтах"))
+        }
+      }
+
+      DataSourceMode.AUTO_IP_FIRST -> {
+        val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
+        if (ipRes != null) return@withContext Result.success(ipRes)
+
+        logs.add("IP-сервер недоступен/пуст -> переход на интернет-сайты…")
+        val (netRes, netErr) = fetchFromInternetSites(icao, serverConfig, station, logs)
+        if (netRes != null) return@withContext Result.success(netRes)
+
+        val msg = listOfNotNull(ipErr, netErr).joinToString(" | ").ifBlank {
+          "Нет актуального METAR для $icao"
+        }
+        Result.failure(IllegalStateException(msg))
+      }
+
+      DataSourceMode.AUTO_INTERNET_FIRST -> {
+        val (netRes, netErr) = fetchFromInternetSites(icao, serverConfig, station, logs)
+        if (netRes != null) return@withContext Result.success(netRes)
+
+        logs.add("Интернет-сайты недоступны/пусты -> переход на IP-сервер…")
+        val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
+        if (ipRes != null) return@withContext Result.success(ipRes)
+
+        val msg = listOfNotNull(netErr, ipErr).joinToString(" | ").ifBlank {
+          "Нет актуального METAR для $icao"
+        }
+        Result.failure(IllegalStateException(msg))
       }
     }
+  }
+
+  private suspend fun fetchFromCustomIpServer(
+    icao: String,
+    serverConfig: ServerConfig,
+    station: AirportStation,
+    logs: MutableList<String>,
+  ): Pair<FetchResult?, String?> {
+    if (serverConfig.url.isBlank()) {
+      return null to "URL IP-сервера не задан"
+    }
+    val outcome = customServerClient.fetchMetarAndTaf(icao, serverConfig)
+    logs.addAll(outcome.logs)
+    val customMetar = outcome.rawMetar
+    if (!customMetar.isNullOrBlank()) {
+      val finalTaf = outcome.rawTaf ?: "TAF $icao — нет данных"
+      val decoded = AviationWeatherParser.parse(
+        rawMetarInput = customMetar,
+        rawTafInput = finalTaf,
+        station = station,
+        sourceLabel = "сервер ${outcome.sourceHost}",
+      )
+      logs.add("Успешно декодирован $icao с ${outcome.sourceHost} (${decoded.observationTimeUtc})")
+      return FetchResult(decoded, station, logs) to null
+    }
+    return null to (outcome.errorMessage ?: "Нет данных для $icao на сервере ${outcome.sourceHost}")
+  }
+
+  private fun fetchFromInternetSites(
+    icao: String,
+    serverConfig: ServerConfig,
+    station: AirportStation,
+    logs: MutableList<String>,
+  ): Pair<FetchResult?, String?> {
+    var resolvedStation = station
+    var rawMetar: String? = null
+    var rawTaf: String? = null
+    var metarSourceSite = "интернет"
 
     try {
-      val metarUrl = "https://aviationweather.gov/api/data/metar?ids=$icao&format=json"
-      val tafUrl = "https://aviationweather.gov/api/data/taf?ids=$icao&format=json"
-      logs.add("GET $metarUrl")
+      // 1. aviationweather.gov JSON API
+      if (serverConfig.useAviationWeatherGov) {
+        val metarUrl = "https://aviationweather.gov/api/data/metar?ids=$icao&format=json"
+        logs.add("GET $metarUrl")
+        runCatching {
+          val metarReq = Request.Builder()
+            .url(metarUrl)
+            .header("User-Agent", "Meteotablo/1.0")
+            .build()
+          client.newCall(metarReq).execute().use { resp ->
+            logs.add("aviationweather.gov METAR HTTP ${resp.code}")
+            if (resp.isSuccessful) {
+              val body = resp.body?.string().orEmpty().trim()
+              if (body.startsWith("[")) {
+                val arr = JSONArray(body)
+                if (arr.length() > 0) {
+                  val obj = arr.getJSONObject(0)
+                  rawMetar = obj.optString("rawOb").takeIf { it.isNotBlank() }
+                  if (!rawMetar.isNullOrBlank()) {
+                    metarSourceSite = "интернет (aviationweather.gov)"
+                  }
+                  val lat = obj.optDouble("lat", Double.NaN)
+                  val lon = obj.optDouble("lon", Double.NaN)
+                  val elev = obj.optInt("elev", Int.MIN_VALUE)
+                  val apiName = obj.optString("name")
+                  if (!lat.isNaN() && !lon.isNaN() && AirportCatalog.presets.none { it.icao == icao }) {
+                    resolvedStation = resolvedStation.copy(
+                      latitude = lat,
+                      longitude = lon,
+                      elevationMeters = if (elev != Int.MIN_VALUE) elev else resolvedStation.elevationMeters,
+                      name = apiName.ifBlank { resolvedStation.name },
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }.onFailure { err ->
+          logs.add("aviationweather.gov ошибка: ${err.message ?: err::class.simpleName}")
+        }
+      }
 
-      val metarReq = Request.Builder()
-        .url(metarUrl)
-        .header("User-Agent", "MeteotabloAndroid/1.0")
-        .build()
+      // 2. NOAA TGFTP raw station text file
+      if (rawMetar.isNullOrBlank() && serverConfig.useNoaaTgftp) {
+        val noaaUrl = "https://tgftp.nws.noaa.gov/data/observations/metar/stations/$icao.TXT"
+        logs.add("GET $noaaUrl")
+        runCatching {
+          val noaaReq = Request.Builder()
+            .url(noaaUrl)
+            .header("User-Agent", "Meteotablo/1.0")
+            .build()
+          client.newCall(noaaReq).execute().use { resp ->
+            logs.add("tgftp.nws.noaa.gov METAR HTTP ${resp.code}")
+            if (resp.isSuccessful) {
+              val lines = resp.body?.string().orEmpty()
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+              val found = lines.lastOrNull { it.contains(icao) } ?: lines.lastOrNull()
+              if (!found.isNullOrBlank()) {
+                rawMetar = found
+                metarSourceSite = "интернет (noaa.gov)"
+              }
+            }
+          }
+        }.onFailure { err ->
+          logs.add("tgftp.nws.noaa.gov ошибка: ${err.message ?: err::class.simpleName}")
+        }
+      }
 
-      var rawMetar: String? = null
-      var rawTaf: String? = null
+      // 3. VATSIM global METAR mirror
+      if (rawMetar.isNullOrBlank() && serverConfig.useVatsimMetar) {
+        val vatsimUrl = "https://metar.vatsim.net/metar.php?id=$icao"
+        logs.add("GET $vatsimUrl")
+        runCatching {
+          val vatsimReq = Request.Builder()
+            .url(vatsimUrl)
+            .header("User-Agent", "Meteotablo/1.0")
+            .build()
+          client.newCall(vatsimReq).execute().use { resp ->
+            logs.add("metar.vatsim.net HTTP ${resp.code}")
+            if (resp.isSuccessful) {
+              val text = resp.body?.string().orEmpty()
+                .lines()
+                .map { it.trim() }
+                .firstOrNull { it.contains(icao, ignoreCase = true) }
+              if (!text.isNullOrBlank()) {
+                rawMetar = text
+                metarSourceSite = "интернет (vatsim.net)"
+              }
+            }
+          }
+        }.onFailure { err ->
+          logs.add("metar.vatsim.net ошибка: ${err.message ?: err::class.simpleName}")
+        }
+      }
 
-      client.newCall(metarReq).execute().use { resp ->
-        logs.add("METAR HTTP ${resp.code}")
-        if (resp.isSuccessful) {
-          val body = resp.body?.string().orEmpty().trim()
-          if (body.startsWith("[")) {
-            val arr = JSONArray(body)
-            if (arr.length() > 0) {
-              val obj = arr.getJSONObject(0)
-              rawMetar = obj.optString("rawOb").takeIf { it.isNotBlank() }
-              val lat = obj.optDouble("lat", Double.NaN)
-              val lon = obj.optDouble("lon", Double.NaN)
-              val elev = obj.optInt("elev", Int.MIN_VALUE)
-              val apiName = obj.optString("name")
-              if (!lat.isNaN() && !lon.isNaN() && AirportCatalog.presets.none { it.icao == icao }) {
-                resolvedStation = resolvedStation.copy(
-                  latitude = lat,
-                  longitude = lon,
-                  elevationMeters = if (elev != Int.MIN_VALUE) elev else resolvedStation.elevationMeters,
-                  name = apiName.ifBlank { resolvedStation.name },
-                )
+      // TAF lookup from internet sites
+      if (serverConfig.useAviationWeatherGov) {
+        val tafUrl = "https://aviationweather.gov/api/data/taf?ids=$icao&format=json"
+        runCatching {
+          val tafReq = Request.Builder()
+            .url(tafUrl)
+            .header("User-Agent", "Meteotablo/1.0")
+            .build()
+          client.newCall(tafReq).execute().use { resp ->
+            logs.add("aviationweather.gov TAF HTTP ${resp.code}")
+            if (resp.isSuccessful) {
+              val body = resp.body?.string().orEmpty().trim()
+              if (body.startsWith("[")) {
+                val arr = JSONArray(body)
+                if (arr.length() > 0) {
+                  rawTaf = arr.getJSONObject(0).optString("rawTAF").takeIf { it.isNotBlank() }
+                }
               }
             }
           }
         }
       }
-
-      // Fallback to NOAA TGFTP raw station file if JSON returned empty
-      if (rawMetar.isNullOrBlank()) {
-        val noaaUrl = "https://tgftp.nws.noaa.gov/data/observations/metar/stations/$icao.TXT"
-        logs.add("Fallback GET $noaaUrl")
-        val noaaReq = Request.Builder()
-          .url(noaaUrl)
-          .header("User-Agent", "MeteotabloAndroid/1.0")
-          .build()
-        client.newCall(noaaReq).execute().use { resp ->
-          logs.add("TGFTP HTTP ${resp.code}")
-          if (resp.isSuccessful) {
-            val lines = resp.body?.string().orEmpty()
-              .lines()
-              .map { it.trim() }
-              .filter { it.isNotBlank() }
-            rawMetar = lines.lastOrNull { it.contains(icao) } ?: lines.lastOrNull()
-          }
-        }
-      }
-
-      // Fetch TAF
-      val tafReq = Request.Builder()
-        .url(tafUrl)
-        .header("User-Agent", "MeteotabloAndroid/1.0")
-        .build()
-      runCatching {
-        client.newCall(tafReq).execute().use { resp ->
-          logs.add("TAF HTTP ${resp.code}")
-          if (resp.isSuccessful) {
-            val body = resp.body?.string().orEmpty().trim()
-            if (body.startsWith("[")) {
-              val arr = JSONArray(body)
-              if (arr.length() > 0) {
-                rawTaf = arr.getJSONObject(0).optString("rawTAF").takeIf { it.isNotBlank() }
+      if (rawTaf.isNullOrBlank() && serverConfig.useNoaaTgftp) {
+        val noaaTafUrl = "https://tgftp.nws.noaa.gov/data/forecasts/taf/stations/$icao.TXT"
+        runCatching {
+          val tafReq = Request.Builder()
+            .url(noaaTafUrl)
+            .header("User-Agent", "Meteotablo/1.0")
+            .build()
+          client.newCall(tafReq).execute().use { resp ->
+            if (resp.isSuccessful) {
+              val lines = resp.body?.string().orEmpty()
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.matches(Regex("\\d{4}/\\d{2}/\\d{2}.*")) }
+              if (lines.isNotEmpty()) {
+                rawTaf = lines.joinToString(" ")
               }
             }
           }
@@ -191,8 +314,7 @@ class AviationWeatherRepository {
 
       val finalMetar = rawMetar
       if (finalMetar.isNullOrBlank()) {
-        val msg = customError ?: "Нет актуального METAR для $icao на сервере aviationweather.gov"
-        return@withContext Result.failure(IllegalStateException(msg))
+        return null to "Нет актуального METAR для $icao на интернет-сайтах"
       }
 
       val finalTaf = rawTaf ?: "TAF $icao — нет данных"
@@ -200,14 +322,14 @@ class AviationWeatherRepository {
         rawMetarInput = finalMetar,
         rawTafInput = finalTaf,
         station = resolvedStation,
-        sourceLabel = "интернет (aviationweather.gov)",
+        sourceLabel = metarSourceSite,
       )
-      logs.add("Успешно декодирован $icao (${decoded.observationTimeUtc})")
-      Result.success(FetchResult(decoded, resolvedStation, logs))
+      logs.add("Успешно декодирован $icao с $metarSourceSite (${decoded.observationTimeUtc})")
+      return FetchResult(decoded, resolvedStation, logs) to null
     } catch (e: Exception) {
-      val msg = customError ?: (e.message ?: e::class.simpleName ?: "Ошибка сети")
-      logs.add("Ошибка сети: $msg")
-      Result.failure(IllegalStateException(msg, e))
+      val msg = e.message ?: e::class.simpleName ?: "Ошибка интернет-источников"
+      logs.add("Ошибка интернет-источников: $msg")
+      return null to msg
     }
   }
 }

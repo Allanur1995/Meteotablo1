@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
@@ -55,6 +56,10 @@ class ExampleRobolectricTest {
         password = "secret",
         useCustomServer = true,
         fallbackToNoaa = false,
+        sourceMode = DataSourceMode.IP_ONLY,
+        useAviationWeatherGov = true,
+        useNoaaTgftp = false,
+        useVatsimMetar = true,
       ),
     )
 
@@ -63,6 +68,9 @@ class ExampleRobolectricTest {
     assertEquals("http://217.174.229.206:8181/", reloaded.url)
     assertEquals("secret", reloaded.password)
     assertFalse(reloaded.fallbackToNoaa)
+    assertEquals(DataSourceMode.IP_ONLY, reloaded.resolvedMode())
+    assertFalse(reloaded.useNoaaTgftp)
+    assertTrue(reloaded.useVatsimMetar)
   }
 
   @Test
@@ -179,16 +187,22 @@ class ExampleRobolectricTest {
 
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("demo_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("toolbar_source_selector").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_source_selector").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("source_mode_item_INTERNET_ONLY").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(DataSourceMode.INTERNET_ONLY, vm.uiState.value.serverConfig.resolvedMode())
     composeTestRule.onNodeWithTag("wind_center_box_35L").assertExists()
     composeTestRule.onNodeWithTag("taf_footer_row").assertExists()
     composeTestRule.onNodeWithTag("metar_footer_row").assertExists()
 
-    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").assertTextContains("kt")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("дм")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа")
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt")
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("гПа")
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("дм")
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("гПа")
 
     composeTestRule.onNodeWithTag("metar_table_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()

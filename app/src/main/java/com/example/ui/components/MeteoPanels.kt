@@ -35,6 +35,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import com.example.data.AirportCatalog
+import com.example.data.DataSourceMode
+import com.example.data.ServerConfig
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +71,7 @@ fun MeteoTopToolbar(
   windUnit: WindSpeedUnit,
   pressureUnit: PressureUnit,
   isFavorite: Boolean,
+  serverConfig: ServerConfig,
   onRefresh: () -> Unit,
   onToggleNight: () -> Unit,
   onOpenLog: () -> Unit,
@@ -78,12 +81,15 @@ fun MeteoTopToolbar(
   onTogglePressureUnit: () -> Unit,
   onToggleFavorite: () -> Unit,
   onSelectStation: (String) -> Unit,
+  onSelectSourceMode: (DataSourceMode) -> Unit,
   onOpenStationDialog: () -> Unit,
+  onOpenServerDialog: () -> Unit,
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   var stationMenuExpanded by remember { mutableStateOf(false) }
+  var sourceMenuExpanded by remember { mutableStateOf(false) }
 
   Row(
     verticalAlignment = Alignment.CenterVertically,
@@ -197,6 +203,63 @@ fun MeteoTopToolbar(
           .clickable(onClick = onOpenStationDialog)
           .padding(horizontal = 4.dp, vertical = 6.dp),
       )
+
+      val activeMode = serverConfig.resolvedMode()
+      Box {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier
+            .testTag("toolbar_source_selector")
+            .heightIn(min = 36.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(palette.buttonActiveBackground)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(3.dp))
+            .clickable { sourceMenuExpanded = true }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+          Text(
+            text = activeMode.shortLabel,
+            color = palette.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          Icon(
+            imageVector = Icons.Filled.ArrowDropDown,
+            contentDescription = "Выбрать источник данных",
+            tint = palette.textSecondary,
+            modifier = Modifier.size(16.dp),
+          )
+        }
+        DropdownMenu(
+          expanded = sourceMenuExpanded,
+          onDismissRequest = { sourceMenuExpanded = false },
+        ) {
+          DataSourceMode.entries.forEach { mode ->
+            DropdownMenuItem(
+              text = {
+                Text(
+                  text = mode.displayName,
+                  fontWeight = if (mode == activeMode) FontWeight.Bold else FontWeight.Normal,
+                )
+              },
+              onClick = {
+                sourceMenuExpanded = false
+                onSelectSourceMode(mode)
+              },
+              modifier = Modifier.testTag("source_mode_item_${mode.name}"),
+            )
+          }
+          HorizontalDivider()
+          DropdownMenuItem(
+            text = { Text("Настройки IP и сайтов…") },
+            onClick = {
+              sourceMenuExpanded = false
+              onOpenServerDialog()
+            },
+            modifier = Modifier.testTag("source_mode_open_settings"),
+          )
+        }
+      }
 
       ToolbarButton(
         label = "Обновить",

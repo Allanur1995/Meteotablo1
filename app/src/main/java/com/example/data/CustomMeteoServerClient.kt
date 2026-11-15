@@ -34,7 +34,7 @@ class CustomMeteoServerClient {
   suspend fun fetchMetarAndTaf(icao: String, config: ServerConfig): CustomFetchOutcome {
     val logs = mutableListOf<String>()
     val cleanIcao = icao.trim().uppercase()
-    val baseUrlStr = SharedPreferencesServerConfigStorage.normalizeServerUrl(config.url)
+    val baseUrlStr = ServerConfig.normalizeServerUrl(config.url)
     val baseHttpUrl = baseUrlStr.toHttpUrlOrNull()
       ?: return CustomFetchOutcome(
         rawMetar = null,

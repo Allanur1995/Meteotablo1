@@ -1,7 +1,6 @@
 package com.example.network
 
 import com.example.data.ServerConfig
-import com.example.data.SharedPreferencesServerConfigStorage
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import java.util.concurrent.ConcurrentHashMap
@@ -129,7 +128,7 @@ object MeteoServerRetrofitFactory {
     cookieJar: CookieJar = SessionCookieJar(),
     moshi: Moshi = createMoshi(),
   ): MeteoServerApi {
-    val baseUrl = SharedPreferencesServerConfigStorage.normalizeServerUrl(config.url)
+    val baseUrl = ServerConfig.normalizeServerUrl(config.url)
     val client = createOkHttpClient(config, cookieJar)
     return Retrofit.Builder()
       .baseUrl(baseUrl)

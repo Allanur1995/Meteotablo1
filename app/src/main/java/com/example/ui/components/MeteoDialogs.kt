@@ -51,6 +51,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AirportCatalog
+import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.model.AirportStation
 import com.example.model.LogEntry
@@ -75,17 +76,20 @@ fun StationAndMetarDialog(
   onToggleFavorite: (String) -> Unit,
   onSaveServerConfig: (ServerConfig) -> Unit,
   onDismiss: () -> Unit,
+  initialTab: Int = 0,
 ) {
   val palette = LocalMeteoPalette.current
-  var selectedTab by remember { mutableIntStateOf(0) }
+  var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
   var customIcao by remember { mutableStateOf(currentStation.icao) }
   var metarInput by remember { mutableStateOf(currentMetar) }
   var tafInput by remember { mutableStateOf(currentTaf) }
   var serverUrlInput by remember(serverConfig) { mutableStateOf(serverConfig.url) }
   var serverUserInput by remember(serverConfig) { mutableStateOf(serverConfig.username) }
   var serverPassInput by remember(serverConfig) { mutableStateOf(serverConfig.password) }
-  var useCustomServer by remember(serverConfig) { mutableStateOf(serverConfig.useCustomServer) }
-  var fallbackToNoaa by remember(serverConfig) { mutableStateOf(serverConfig.fallbackToNoaa) }
+  var sourceMode by remember(serverConfig) { mutableStateOf(serverConfig.resolvedMode()) }
+  var useAwc by remember(serverConfig) { mutableStateOf(serverConfig.useAviationWeatherGov) }
+  var useTgftp by remember(serverConfig) { mutableStateOf(serverConfig.useNoaaTgftp) }
+  var useVatsim by remember(serverConfig) { mutableStateOf(serverConfig.useVatsimMetar) }
   var showPassword by remember { mutableStateOf(false) }
 
   AlertDialog(
@@ -339,6 +343,36 @@ fun StationAndMetarDialog(
             modifier = Modifier.fillMaxWidth(),
           )
         } else {
+          Text(
+            text = "Режим источника данных:",
+            color = palette.textSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          Spacer(modifier = Modifier.height(6.dp))
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            DataSourceMode.entries.forEach { mode ->
+              val selected = mode == sourceMode
+              Text(
+                text = mode.displayName,
+                color = palette.textPrimary,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                modifier = Modifier
+                  .testTag("dialog_source_mode_${mode.name}")
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (selected) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+                  .border(1.dp, if (selected) palette.borderStrong else palette.border, RoundedCornerShape(4.dp))
+                  .clickable { sourceMode = mode }
+                  .padding(vertical = 6.dp, horizontal = 8.dp),
+              )
+            }
+          }
+          Spacer(modifier = Modifier.height(10.dp))
           OutlinedTextField(
             value = serverUrlInput,
             onValueChange = { serverUrlInput = it },
@@ -382,35 +416,35 @@ fun StationAndMetarDialog(
             )
           }
           Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = "Интернет-сайты METAR / TAF:",
+            color = palette.textSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+          )
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth(),
           ) {
-            Text(
-              text = "Использовать этот сервер",
-              color = palette.textPrimary,
-              fontSize = 13.sp,
-            )
-            Switch(
-              checked = useCustomServer,
-              onCheckedChange = { useCustomServer = it },
-            )
+            Text(text = "aviationweather.gov", color = palette.textPrimary, fontSize = 12.sp)
+            Switch(checked = useAwc, onCheckedChange = { useAwc = it })
           }
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth(),
           ) {
-            Text(
-              text = "Резерв: aviationweather.gov",
-              color = palette.textSecondary,
-              fontSize = 12.sp,
-            )
-            Switch(
-              checked = fallbackToNoaa,
-              onCheckedChange = { fallbackToNoaa = it },
-            )
+            Text(text = "NOAA (tgftp.nws.noaa.gov)", color = palette.textPrimary, fontSize = 12.sp)
+            Switch(checked = useTgftp, onCheckedChange = { useTgftp = it })
+          }
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(text = "VATSIM (metar.vatsim.net)", color = palette.textPrimary, fontSize = 12.sp)
+            Switch(checked = useVatsim, onCheckedChange = { useVatsim = it })
           }
         }
       }
@@ -430,8 +464,12 @@ fun StationAndMetarDialog(
                 url = serverUrlInput,
                 username = serverUserInput,
                 password = serverPassInput,
-                useCustomServer = useCustomServer,
-                fallbackToNoaa = fallbackToNoaa,
+                useCustomServer = sourceMode != DataSourceMode.INTERNET_ONLY,
+                fallbackToNoaa = sourceMode != DataSourceMode.IP_ONLY,
+                sourceMode = sourceMode,
+                useAviationWeatherGov = useAwc,
+                useNoaaTgftp = useTgftp,
+                useVatsimMetar = useVatsim,
               ),
             )
           }

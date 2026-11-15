@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.model.PressureUnit
 import com.example.model.WindSpeedUnit
@@ -73,6 +75,7 @@ fun MeteoTabloScreen(
     onToggleFavorite = viewModel::toggleFavorite,
     onAddFavorite = { icao -> viewModel.addFavorite(icao, selectAfterAdd = true) },
     onRemoveFavorite = viewModel::removeFavorite,
+    onSelectSourceMode = { mode -> viewModel.setDataSourceMode(mode, fetchNow = true) },
     onSaveServerConfig = { cfg -> viewModel.updateServerConfig(cfg, fetchNow = true) },
     onDismissBanner = viewModel::dismissBanner,
     modifier = modifier,
@@ -95,12 +98,14 @@ fun MeteoTabloContent(
   onToggleFavorite: (String) -> Unit,
   onAddFavorite: (String) -> Unit,
   onRemoveFavorite: (String) -> Unit,
+  onSelectSourceMode: (DataSourceMode) -> Unit,
   onSaveServerConfig: (ServerConfig) -> Unit,
   onDismissBanner: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   var showStationDialog by remember { mutableStateOf(false) }
+  var stationDialogInitialTab by remember { mutableIntStateOf(0) }
   var showLogDialog by remember { mutableStateOf(false) }
   var showMetarTable by remember { mutableStateOf(false) }
 
@@ -182,6 +187,7 @@ fun MeteoTabloContent(
           windUnit = uiState.windUnit,
           pressureUnit = uiState.pressureUnit,
           isFavorite = uiState.isCurrentStationFavorite,
+          serverConfig = uiState.serverConfig,
           onRefresh = onRefresh,
           onToggleNight = onToggleNight,
           onOpenLog = { showLogDialog = true },
@@ -191,7 +197,15 @@ fun MeteoTabloContent(
           onTogglePressureUnit = onTogglePressureUnit,
           onToggleFavorite = { onToggleFavorite(uiState.station.icao) },
           onSelectStation = onSelectStation,
-          onOpenStationDialog = { showStationDialog = true },
+          onSelectSourceMode = onSelectSourceMode,
+          onOpenStationDialog = {
+            stationDialogInitialTab = 0
+            showStationDialog = true
+          },
+          onOpenServerDialog = {
+            stationDialogInitialTab = 2
+            showStationDialog = true
+          },
           compactMode = isCompactHeight,
         )
 
@@ -356,6 +370,7 @@ fun MeteoTabloContent(
       onToggleFavorite = onToggleFavorite,
       onSaveServerConfig = onSaveServerConfig,
       onDismiss = { showStationDialog = false },
+      initialTab = stationDialogInitialTab,
     )
   }
 
