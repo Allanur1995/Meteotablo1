@@ -19,18 +19,79 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
-            platforms;android-36.1
-            build-tools;36.0.0
+      - name: Set up Android SDK (API 36.1 & Build Tools 36.0.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/android-sdk"
+            mkdir -p "$SDK_ROOT"
+          elif [ ! -w "$SDK_ROOT" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$SDK_ROOT" 2>/dev/null || {
+              SDK_ROOT="$HOME/android-sdk"
+              mkdir -p "$SDK_ROOT"
+            }
+          fi
+
+          SDKMANAGER=""
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          else
+            SDKMANAGER="$(find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Installing Android command-line tools into $SDK_ROOT..."
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            rm -rf /tmp/cmdline-extract /tmp/cmdline-tools.zip
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip" -o /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-extract
+            rm -rf "$SDK_ROOT/cmdline-tools/latest"
+            if [ -d /tmp/cmdline-extract/cmdline-tools ]; then
+              mv /tmp/cmdline-extract/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+            elif [ -d /tmp/cmdline-extract/tools ]; then
+              mv /tmp/cmdline-extract/tools "$SDK_ROOT/cmdline-tools/latest"
+            else
+              echo "Unexpected cmdline-tools archive layout:"
+              ls -la /tmp/cmdline-extract
+              exit 1
+            fi
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          chmod +x "$SDKMANAGER"
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "cmdline-tools;latest" >/dev/null 2>&1 || true
+          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+            set +o pipefail
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+            set -o pipefail
+          fi
+
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-36.1" "build-tools;36.0.0"
+
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
       - name: Prepare debug keystore and env file
+        shell: bash
         run: |
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+          set -euo pipefail
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v -keystore debug.keystore \
+                -storepass android -alias androiddebugkey -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
@@ -42,15 +103,17 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Build Debug APK
+        shell: bash
         run: |
-          gradle :app:assembleDebug --no-daemon
-          mkdir -p build/apk-out
-          cp app/build/outputs/apk/debug/app-debug.apk build/apk-out/Meteotablo.apk
-          ls -lh build/apk-out/Meteotablo.apk
+          set -euo pipefail
+          gradle :app:assembleDebug --no-daemon --stacktrace
+          mkdir -p "$RUNNER_TEMP/apk-out"
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/apk-out/Meteotablo.apk"
+          ls -lh "$RUNNER_TEMP/apk-out/Meteotablo.apk"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Meteotablo-Android-APK
-          path: build/apk-out/Meteotablo.apk
+          path: ${{ runner.temp }}/apk-out/Meteotablo.apk
           if-no-files-found: error
