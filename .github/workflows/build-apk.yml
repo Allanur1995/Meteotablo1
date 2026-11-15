@@ -13,14 +13,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-36.1
+            build-tools;36.0.0
 
       - name: Prepare debug keystore and env file
         run: |
@@ -37,11 +42,15 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: |
+          gradle :app:assembleDebug --no-daemon
+          mkdir -p build/apk-out
+          cp app/build/outputs/apk/debug/app-debug.apk build/apk-out/Meteotablo.apk
+          ls -lh build/apk-out/Meteotablo.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Meteotablo-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Meteotablo-Android-APK
+          path: build/apk-out/Meteotablo.apk
           if-no-files-found: error
