@@ -194,4 +194,50 @@ class DesktopSmokeTest {
       controller.shutdown()
     }
   }
+
+  @Test
+  fun `desktop wind history caches per airport computes trend and paints sparkline`() {
+    val tmpFile = File.createTempFile("meteotablo_win_wind_hist", ".properties")
+    tmpFile.deleteOnExit()
+    tmpFile.delete()
+
+    val historyStorage = DesktopWindHistoryStorage(tmpFile)
+    val controller = DesktopController(windHistoryStorage = historyStorage, autoFetch = false)
+    try {
+      controller.selectStation("UTAA")
+      controller.applyCustomMetar("METAR UTAA 150900Z 09005KT CAVOK 22/08 Q1016 NOSIG", "TAF UTAA")
+      assertEquals(com.example.model.WindTrendDirection.INSUFFICIENT, controller.state.windTrend.direction)
+
+      controller.applyCustomMetar("METAR UTAA 150930Z 09015KT CAVOK 23/08 Q1015 NOSIG", "TAF UTAA")
+      assertEquals(com.example.model.WindTrendDirection.INCREASING, controller.state.windTrend.direction)
+      assertEquals(10, controller.state.windTrend.deltaKt)
+
+      controller.applyCustomMetar("METAR UTAA 151000Z 09006KT CAVOK 24/08 Q1015 NOSIG", "TAF UTAA")
+      assertEquals(com.example.model.WindTrendDirection.DECREASING, controller.state.windTrend.direction)
+      assertEquals(-9, controller.state.windTrend.deltaKt)
+
+      // Paint sparkline onto Graphics2D
+      val panel = WindTrendSparklinePanel()
+      panel.updateData(controller.state.windTrend, WindSpeedUnit.KT, DayDesktopPalette)
+      panel.setSize(280, 74)
+      val image = java.awt.image.BufferedImage(280, 74, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+      val g2 = image.createGraphics()
+      try {
+        panel.paint(g2)
+      } finally {
+        g2.dispose()
+      }
+    } finally {
+      controller.shutdown()
+    }
+
+    val reloaded = DesktopController(windHistoryStorage = DesktopWindHistoryStorage(tmpFile), autoFetch = false)
+    try {
+      reloaded.selectStation("UTAA")
+      assertEquals(3, reloaded.state.windTrend.entries.size)
+      assertEquals(com.example.model.WindTrendDirection.DECREASING, reloaded.state.windTrend.direction)
+    } finally {
+      reloaded.shutdown()
+    }
+  }
 }

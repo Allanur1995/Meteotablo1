@@ -202,3 +202,23 @@ class DesktopWeatherAlertStorage(
   }
 }
 
+class DesktopWindHistoryStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.WindHistoryStorage {
+
+  override fun loadAll(): Map<String, List<com.example.model.WindHistoryEntry>> {
+    val props = loadProps(configFile)
+    return com.example.data.WindHistorySerializer.fromJson(props.getProperty(KEY_WIND_HISTORY, null))
+  }
+
+  override fun saveAll(historyByIcao: Map<String, List<com.example.model.WindHistoryEntry>>) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_WIND_HISTORY, com.example.data.WindHistorySerializer.toJson(historyByIcao))
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_WIND_HISTORY = "wind_history_by_icao_json"
+  }
+}
+

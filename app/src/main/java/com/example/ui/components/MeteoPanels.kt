@@ -25,9 +25,11 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.outlined.StarBorder
@@ -62,6 +64,7 @@ import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
 import com.example.model.SavedWeatherPreset
 import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendSummary
 import com.example.ui.theme.LocalMeteoPalette
 import java.util.Locale
 
@@ -96,6 +99,8 @@ fun MeteoTopToolbar(
   onOpenStationDialog: () -> Unit,
   onOpenServerDialog: () -> Unit,
   onOpenAboutDialog: () -> Unit = {},
+  onOpenSettings: () -> Unit = {},
+  onOpenMap: () -> Unit = {},
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
@@ -303,6 +308,14 @@ fun MeteoTopToolbar(
             modifier = Modifier.testTag("source_mode_open_settings"),
           )
           DropdownMenuItem(
+            text = { Text("Настройки единиц (Metric / Imperial)…") },
+            onClick = {
+              sourceMenuExpanded = false
+              onOpenSettings()
+            },
+            modifier = Modifier.testTag("source_mode_open_unit_settings"),
+          )
+          DropdownMenuItem(
             text = { Text("О программе / Автор…") },
             onClick = {
               sourceMenuExpanded = false
@@ -420,6 +433,20 @@ fun MeteoTopToolbar(
       )
 
       ToolbarButton(
+        label = "Карта",
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.Map,
+            contentDescription = "Карта аэропортов",
+            tint = palette.textPrimary,
+            modifier = Modifier.size(14.dp),
+          )
+        },
+        testTag = "toolbar_map_button",
+        onClick = onOpenMap,
+      )
+
+      ToolbarButton(
         label = if (unreadAlertCount > 0) "Тревога ($unreadAlertCount)" else "Оповещ.",
         isActive = unreadAlertCount > 0,
         icon = {
@@ -442,6 +469,20 @@ fun MeteoTopToolbar(
         label = "Лог",
         testTag = "log_button",
         onClick = onOpenLog,
+      )
+
+      ToolbarButton(
+        label = "Настройки",
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.Settings,
+            contentDescription = "Настройки единиц и экрана",
+            tint = palette.textPrimary,
+            modifier = Modifier.size(14.dp),
+          )
+        },
+        testTag = "toolbar_settings_button",
+        onClick = onOpenSettings,
       )
 
       ToolbarButton(
@@ -719,6 +760,8 @@ fun CenterWeatherPanel(
   localClock: String,
   pressureUnit: PressureUnit,
   onTogglePressureUnit: () -> Unit,
+  windTrend: WindTrendSummary? = null,
+  windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
@@ -871,6 +914,14 @@ fun CenterWeatherPanel(
           fontWeight = FontWeight.Medium,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
+        )
+      }
+
+      if (windTrend != null) {
+        WindTrendIndicator(
+          trend = windTrend,
+          windUnit = windUnit,
+          compactMode = true,
         )
       }
     }
@@ -1075,6 +1126,14 @@ fun CenterWeatherPanel(
         fontWeight = FontWeight.Medium,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
+      )
+    }
+
+    if (windTrend != null) {
+      WindTrendIndicator(
+        trend = windTrend,
+        windUnit = windUnit,
+        compactMode = false,
       )
     }
   }

@@ -166,3 +166,53 @@ class SharedPreferencesWeatherAlertStorage(
   }
 }
 
+class SharedPreferencesWindHistoryStorage(
+  context: Context,
+) : WindHistoryStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadAll(): Map<String, List<com.example.model.WindHistoryEntry>> {
+    return WindHistorySerializer.fromJson(prefs.getString(KEY_WIND_HISTORY, null))
+  }
+
+  override fun saveAll(historyByIcao: Map<String, List<com.example.model.WindHistoryEntry>>) {
+    prefs.edit().putString(KEY_WIND_HISTORY, WindHistorySerializer.toJson(historyByIcao)).apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_WIND_HISTORY = "wind_history_by_icao_json"
+  }
+}
+
+class SharedPreferencesUnitPreferencesStorage(
+  context: Context,
+) : UnitPreferencesStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadPreferences(): UnitPreferences {
+    val rawWind = prefs.getString(KEY_WIND_UNIT, null)
+    val rawPressure = prefs.getString(KEY_PRESSURE_UNIT, null)
+    val wind = com.example.model.WindSpeedUnit.entries.firstOrNull { it.name == rawWind }
+      ?: com.example.model.WindSpeedUnit.KT
+    val pressure = com.example.model.PressureUnit.entries.firstOrNull { it.name == rawPressure }
+      ?: com.example.model.PressureUnit.HPA
+    return UnitPreferences(windUnit = wind, pressureUnit = pressure)
+  }
+
+  override fun savePreferences(preferences: UnitPreferences) {
+    prefs.edit()
+      .putString(KEY_WIND_UNIT, preferences.windUnit.name)
+      .putString(KEY_PRESSURE_UNIT, preferences.pressureUnit.name)
+      .apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_WIND_UNIT = "preferred_wind_unit"
+    const val KEY_PRESSURE_UNIT = "preferred_pressure_unit"
+  }
+}
+

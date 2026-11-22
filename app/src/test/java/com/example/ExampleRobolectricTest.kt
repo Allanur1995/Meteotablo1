@@ -4,22 +4,49 @@ import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
 import android.content.Context
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
+import com.example.data.SharedPreferencesUnitPreferencesStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
+import com.example.data.SharedPreferencesWindHistoryStorage
+import com.example.diagnostics.CrashReporter
+import com.example.domain.AirportMapProjection
+import com.example.domain.AviationWeatherParser
+import com.example.domain.FlightCategory
+import com.example.domain.MapRegionPreset
+import com.example.domain.WindTrendAnalyzer
+import com.example.model.PressureUnit
+import com.example.model.RunwayCalculation
+import com.example.model.UnitSystem
+import com.example.model.WindData
+import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendDirection
 import com.example.notifications.AndroidWeatherNotifier
+import com.example.ui.AirportMapScreen
 import com.example.ui.MeteoTabloScreen
+import com.example.ui.MeteotabloSplashScreen
+import com.example.ui.components.RunwayWindRose
+import com.example.ui.components.WindRoseCanvas
+import com.example.ui.components.WindTrendIndicator
 import com.example.ui.theme.MeteoTabloTheme
 import com.example.viewmodel.MeteoViewModel
 import org.junit.Assert.assertEquals
@@ -199,6 +226,11 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("source_mode_item_INTERNET_ONLY").performClick()
     composeTestRule.waitForIdle()
     assertEquals(DataSourceMode.INTERNET_ONLY, vm.uiState.value.serverConfig.resolvedMode())
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAM 141700Z 08004KT 6000 BKN230 11/07 Q1023 R88/CLRD70 NOSIG",
+      rawTaf = "TAF UTAM 141630Z 1418/1518 07006MPS 6000 SCT030",
+    )
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("wind_center_box_35L").assertExists()
     composeTestRule.onNodeWithTag("taf_footer_row").assertExists()
     composeTestRule.onNodeWithTag("metar_footer_row").assertExists()
@@ -227,7 +259,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("metar_row_wind").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("metar_row_visibility").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("metar_row_qnh").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithText("30,21 дм", substring = true).assertIsDisplayed()
+    composeTestRule.onNodeWithText("30,21 дм", substring = true).performScrollTo().assertIsDisplayed()
   }
 
   @Test
@@ -407,5 +439,412 @@ class ExampleRobolectricTest {
     assertEquals(0, vm.uiState.value.unreadAlertCount)
     assertEquals(1, alertStorage.loadAlerts().size)
     assertTrue(alertStorage.loadAlerts().first().isRead)
+  }
+
+  @Test
+  fun `main activity launches cleanly reaches resumed state and transitions from splash`() {
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertEquals(Lifecycle.State.RESUMED, scenario.state)
+      composeTestRule.waitForIdle()
+      val hasSplash = composeTestRule.onAllNodesWithTag("splash_screen").fetchSemanticsNodes().isNotEmpty()
+      if (hasSplash) {
+        composeTestRule.onNodeWithTag("splash_continue_button").performClick()
+        composeTestRule.waitForIdle()
+      }
+      composeTestRule.onNodeWithTag("toolbar_brand_title").assertExists()
+      composeTestRule.onNodeWithTag("wind_trend_indicator").assertExists()
+    }
+  }
+
+  @Test
+  fun `zero size canvas components render safely without IllegalArgumentException`() {
+    val zeroWind = WindData(
+      directionDeg = 90,
+      isVariable = false,
+      isCalm = false,
+      speedKt = 12,
+      gustKt = 20,
+      speedMps = 6.2,
+    )
+    val zeroCalc = RunwayCalculation(
+      designator = "35L",
+      headingDeg = 350,
+      crosswindMps = 5.0,
+      headwindMps = 2.0,
+      crosswindKt = 10.0,
+      headwindKt = 4.0,
+      frictionCoeff = 0.65,
+      rvrMeters = 1500,
+    )
+    val sampleTrend = WindTrendAnalyzer.analyze("UTAM", emptyList())
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        Box(modifier = Modifier.size(0.dp)) {
+          MeteotabloSplashScreen(onFinished = {}, durationMillis = 5000L)
+          WindTrendIndicator(trend = sampleTrend, windUnit = WindSpeedUnit.KT)
+          WindRoseCanvas(wind = zeroWind, windUnit = WindSpeedUnit.KT, onToggleUnit = {})
+          RunwayWindRose(
+            calculation = zeroCalc,
+            wind = zeroWind,
+            windUnit = WindSpeedUnit.KT,
+            onToggleUnit = {},
+          )
+          AirportMapScreen(
+            stations = AirportCatalog.presets,
+            weatherByIcao = emptyMap(),
+            activeStationIcao = "UTAM",
+            favoriteIcaos = emptyList(),
+            windUnit = WindSpeedUnit.KT,
+            pressureUnit = PressureUnit.HPA,
+            isFullscreen = false,
+            isRefreshingMap = false,
+            loadingMapIcao = null,
+            isNightMode = false,
+            onBack = {},
+            onSelectStationOnBoard = {},
+            onRefreshAll = {},
+            onRefreshStation = {},
+            onToggleFavorite = {},
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+  }
+
+  @Test
+  fun `wind speed trend indicator caches historical METARs per airport and shows direction`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val historyStorage = SharedPreferencesWindHistoryStorage(context)
+    historyStorage.saveAll(emptyMap())
+
+    val vm = MeteoViewModel(windHistoryStorage = historyStorage, autoFetch = false)
+    vm.selectStation("UTAA")
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    // 1st observation -> INSUFFICIENT
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 150900Z 09005KT CAVOK 22/08 Q1016 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    composeTestRule.waitForIdle()
+    assertEquals(WindTrendDirection.INSUFFICIENT, vm.uiState.value.windTrend.direction)
+
+    // 2nd observation: wind jumps 5 -> 14 kt (+9 kt) -> INCREASING
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 150930Z 09014G22KT CAVOK 23/08 Q1015 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    composeTestRule.waitForIdle()
+    assertEquals(WindTrendDirection.INCREASING, vm.uiState.value.windTrend.direction)
+    assertEquals(9, vm.uiState.value.windTrend.deltaKt)
+    composeTestRule.onNodeWithTag("wind_trend_indicator").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("wind_trend_badge").assertTextContains("Усиление", substring = true)
+    composeTestRule.onNodeWithTag("wind_trend_sparkline").assertExists()
+
+    // 3rd observation: wind drops 14 -> 7 kt (-7 kt) -> DECREASING
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151000Z 09007KT CAVOK 24/08 Q1015 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    composeTestRule.waitForIdle()
+    assertEquals(WindTrendDirection.DECREASING, vm.uiState.value.windTrend.direction)
+    assertEquals(-7, vm.uiState.value.windTrend.deltaKt)
+    composeTestRule.onNodeWithTag("wind_trend_badge").assertTextContains("Ослабление", substring = true)
+
+    // 4th & 5th observations steady (~7 kt -> 7 kt) -> STEADY
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151030Z 09007KT CAVOK 24/08 Q1015 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151100Z 09008KT CAVOK 24/08 Q1015 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    composeTestRule.waitForIdle()
+    assertEquals(WindTrendDirection.STEADY, vm.uiState.value.windTrend.direction)
+    composeTestRule.onNodeWithTag("wind_trend_badge").assertTextContains("Стабильно", substring = true)
+
+    // Per-airport isolation: switching to UTAM has empty history until UTAM is recorded
+    vm.selectStation("UTAM")
+    composeTestRule.waitForIdle()
+    assertEquals("UTAM", vm.uiState.value.windTrend.icao)
+    assertTrue(vm.uiState.value.windTrend.entries.isEmpty())
+
+    // Persisted reload for UTAA restores cached entries and STEADY trend
+    val vmReloaded = MeteoViewModel(
+      windHistoryStorage = SharedPreferencesWindHistoryStorage(context),
+      autoFetch = false,
+    )
+    vmReloaded.selectStation("UTAA")
+    assertEquals(5, vmReloaded.uiState.value.windTrend.entries.size)
+    assertEquals(WindTrendDirection.STEADY, vmReloaded.uiState.value.windTrend.direction)
+  }
+
+  @Test
+  fun `crashlytics reporter initializes in application tracks launch stages and filters cancellation`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    assertTrue(app is MeteotabloApplication)
+
+    CrashReporter.initialize(app)
+    CrashReporter.setLaunchStage("test_startup_stage")
+    CrashReporter.setStationContext(
+      icao = "UTAA",
+      runwayLabel = "12L/30R",
+      sourceMode = "HYBRID",
+      favoriteCount = 3,
+    )
+    val beforeCount = CrashReporter.getDiagnosticsSnapshot(app).breadcrumbCount
+
+    CrashReporter.recordNonFatal(
+      tag = "test_cancelled",
+      throwable = kotlinx.coroutines.CancellationException("station switched"),
+    )
+    assertEquals(beforeCount, CrashReporter.getDiagnosticsSnapshot(app).breadcrumbCount)
+
+    CrashReporter.recordNonFatal(
+      tag = "test_parse_issue",
+      throwable = IllegalStateException("Malformed METAR wind token"),
+      extras = mapOf("icao" to "UTAA"),
+    )
+    val snapshot = CrashReporter.getDiagnosticsSnapshot(app)
+    assertEquals("test_startup_stage", snapshot.currentLaunchStage)
+    assertTrue(snapshot.breadcrumbCount > beforeCount)
+    assertTrue(snapshot.isCrashlyticsActive)
+  }
+
+  @Test
+  fun `settings screen toggles metric and imperial units updates weather display and persists preferences`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val unitStorage = SharedPreferencesUnitPreferencesStorage(context)
+    unitStorage.savePreferences(com.example.data.UnitPreferences(WindSpeedUnit.KT, PressureUnit.HPA))
+
+    val vm = MeteoViewModel(unitPreferencesStorage = unitStorage, autoFetch = false)
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151200Z 09016KT CAVOK 25/09 Q1023 NOSIG",
+      rawTaf = "TAF UTAA 151100Z 1512/1612 09008MPS 9999 FEW040",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    // Select Metric (hPa, m/s)
+    composeTestRule.onNodeWithTag("settings_unit_system_METRIC").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(WindSpeedUnit.MPS, vm.uiState.value.windUnit)
+    assertEquals(PressureUnit.HPA, vm.uiState.value.pressureUnit)
+    composeTestRule.onNodeWithTag("settings_active_system_badge").assertTextContains("METRIC", substring = true)
+    composeTestRule.onNodeWithTag("settings_preview_wind").performScrollTo().assertTextContains("8 м/с", substring = true)
+    composeTestRule.onNodeWithTag("settings_preview_pressure").performScrollTo().assertTextContains("1023 гПа", substring = true)
+
+    // Switch to Imperial (inHg, knots) via switch
+    composeTestRule.onNodeWithTag("settings_metric_imperial_switch").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(WindSpeedUnit.KT, vm.uiState.value.windUnit)
+    assertEquals(PressureUnit.INHG, vm.uiState.value.pressureUnit)
+    composeTestRule.onNodeWithTag("settings_active_system_badge").assertTextContains("IMPERIAL", substring = true)
+    composeTestRule.onNodeWithTag("settings_preview_wind").performScrollTo().assertTextContains("16 kt", substring = true)
+    composeTestRule.onNodeWithTag("settings_preview_pressure").performScrollTo().assertTextContains("30,21 дм", substring = true)
+
+    // Return to main weather display and confirm toolbar reflects Imperial units
+    composeTestRule.onNodeWithTag("settings_back_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt")
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("дм")
+
+    // Verify persistence across ViewModel recreation
+    val vmReloaded = MeteoViewModel(unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(context), autoFetch = false)
+    assertEquals(WindSpeedUnit.KT, vmReloaded.uiState.value.windUnit)
+    assertEquals(PressureUnit.INHG, vmReloaded.uiState.value.pressureUnit)
+  }
+
+  @Test
+  fun `airport catalog search matches ICAO prefixes city names and favorite ICAOs`() {
+    val utPrefix = AirportCatalog.search("ut")
+    assertTrue(utPrefix.isNotEmpty())
+    assertTrue(utPrefix.all { it.icao.startsWith("UT") })
+
+    val byCity = AirportCatalog.search("Дубай")
+    assertEquals(1, byCity.size)
+    assertEquals("OMDB", byCity.first().icao)
+
+    val withFavorite = AirportCatalog.search("KJ", extraIcaos = listOf("KJFK"))
+    assertTrue(withFavorite.any { it.icao == "KJFK" })
+  }
+
+  @Test
+  fun `top airport search bar looks up catalog and custom ICAO codes and triggers fetch`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    assertEquals("UTAM", vm.uiState.value.station.icao)
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("airport_icao_search_bar").assertIsDisplayed()
+
+    // Type known preset ICAO in lowercase -> suggestion appears, click suggestion to switch
+    composeTestRule.onNodeWithTag("airport_icao_search_input").performTextInput("utaa")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("airport_icao_suggestions_row").assertExists()
+    composeTestRule.onNodeWithTag("airport_search_suggestion_UTAA").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("UTAA", vm.uiState.value.station.icao)
+    assertTrue(vm.uiState.value.weather.rawMetar.contains("UTAA"))
+    composeTestRule.onNodeWithTag("toolbar_station_selector").assertTextContains("UTAA", substring = true)
+
+    // Type arbitrary global 4-letter ICAO, verify clear button resets query, then re-enter & submit
+    composeTestRule.onNodeWithTag("airport_icao_search_input").performTextInput("egll")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("airport_icao_search_clear").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("UTAA", vm.uiState.value.station.icao)
+
+    composeTestRule.onNodeWithTag("airport_icao_search_input").performTextInput("kjfk")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("airport_search_suggestion_KJFK").assertExists()
+    composeTestRule.onNodeWithTag("airport_icao_search_submit").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("KJFK", vm.uiState.value.station.icao)
+    assertTrue(vm.uiState.value.weather.rawMetar.contains("KJFK"))
+    composeTestRule.onNodeWithTag("toolbar_station_selector").assertTextContains("KJFK", substring = true)
+  }
+
+  @Test
+  fun `airport map projection evaluates coordinates and flight categories accurately`() {
+    val utaa = AirportCatalog.findOrDefault("UTAA")
+    val uudd = AirportCatalog.findOrDefault("UUDD")
+    val utak = AirportCatalog.findOrDefault("UTAK")
+    val utam = AirportCatalog.findOrDefault("UTAM")
+
+    val bounds = AirportMapProjection.computeBounds(MapRegionPreset.REGIONAL, AirportCatalog.presets)
+    val pUtaa = AirportMapProjection.project(utaa.latitude, utaa.longitude, bounds, 800f, 600f)
+    val pUudd = AirportMapProjection.project(uudd.latitude, uudd.longitude, bounds, 800f, 600f)
+    val pUtak = AirportMapProjection.project(utak.latitude, utak.longitude, bounds, 800f, 600f)
+    val pUtam = AirportMapProjection.project(utam.latitude, utam.longitude, bounds, 800f, 600f)
+
+    // Moscow (UUDD) is north of Ashgabat (UTAA) -> smaller y coordinate
+    assertTrue(pUudd.y < pUtaa.y)
+    // Turkmenbashi (UTAK) is west of Mary (UTAM) -> smaller x coordinate
+    assertTrue(pUtak.x < pUtam.x)
+
+    val zeroPt = AirportMapProjection.project(utaa.latitude, utaa.longitude, bounds, 0f, 0f)
+    assertEquals(0f, zeroPt.x, 0.001f)
+    assertEquals(0f, zeroPt.y, 0.001f)
+
+    val cavokWx = AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAA 151200Z 09010KT CAVOK 24/08 Q1018 NOSIG",
+      rawTafInput = "TAF UTAA",
+      station = utaa,
+      sourceLabel = "test",
+    )
+    assertEquals(FlightCategory.VFR, AirportMapProjection.evaluateFlightCategory(cavokWx))
+
+    val mvfrWx = AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAA 151200Z 12018G26KT 3500 BR SCT012 18/14 Q1012",
+      rawTafInput = "TAF UTAA",
+      station = utaa,
+      sourceLabel = "test",
+    )
+    assertEquals(FlightCategory.MVFR, AirportMapProjection.evaluateFlightCategory(mvfrWx))
+
+    val ifrWx = AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAA 151200Z 31024G35KT 0800 +TSRA BKN004CB 19/17 Q1007",
+      rawTafInput = "TAF UTAA",
+      station = utaa,
+      sourceLabel = "test",
+    )
+    assertEquals(FlightCategory.IFR, AirportMapProjection.evaluateFlightCategory(ifrWx))
+    assertEquals(FlightCategory.UNKNOWN, AirportMapProjection.evaluateFlightCategory(null))
+  }
+
+  @Test
+  fun `map view pins airports displays brief weather summary on pin tap and opens selected airport`() {
+    val vm = MeteoViewModel(autoFetch = false)
+
+    // Seed weather for UTAA and UTAM into mapWeatherByIcao via applyCustomMetar
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151200Z 09014KT CAVOK 26/07 Q1019 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+    vm.selectStation("UTAM")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAM 151200Z 31022G34KT 0900 +TSRA BKN004CB 17/15 Q1006",
+      rawTaf = "TAF UTAM",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_map_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("airport_map_screen").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("map_canvas_container").assertIsDisplayed()
+
+    // Initially active station UTAM is selected -> shows IFR & wind summary
+    composeTestRule.onNodeWithTag("map_summary_icao").assertTextContains("UTAM")
+    composeTestRule.onNodeWithTag("map_summary_flight_category").assertTextContains("IFR")
+    composeTestRule.onNodeWithTag("map_summary_pressure").assertTextContains("1006 гПа")
+
+    // Tap UTAA pin -> summary updates to UTAA weather brief
+    composeTestRule.onNodeWithTag("map_pin_UTAA").performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("map_summary_icao").assertTextContains("UTAA")
+    composeTestRule.onNodeWithTag("map_summary_flight_category").assertTextContains("VFR")
+    composeTestRule.onNodeWithTag("map_summary_wind").assertTextContains("090° 14 kt")
+    composeTestRule.onNodeWithTag("map_summary_visibility").assertTextContains("CAVOK", substring = true)
+    composeTestRule.onNodeWithTag("map_summary_temperature").assertTextContains("26°C / 7°C")
+    composeTestRule.onNodeWithTag("map_summary_pressure").assertTextContains("1019 гПа")
+
+    // Toggle favorite directly from map summary card
+    assertFalse("UTAA" in vm.uiState.value.favoriteIcaos)
+    composeTestRule.onNodeWithTag("map_summary_favorite_toggle").performClick()
+    composeTestRule.waitForIdle()
+    assertTrue("UTAA" in vm.uiState.value.favoriteIcaos)
+
+    // Switch region to Regional and verify regional hubs (OMDB, LTFM) are pinned
+    composeTestRule.onNodeWithTag("map_region_REGIONAL").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("map_pin_OMDB").assertExists()
+    composeTestRule.onNodeWithTag("map_pin_LTFM").assertExists()
+
+    // Zoom controls respond cleanly
+    composeTestRule.onNodeWithTag("map_zoom_in_button").performClick()
+    composeTestRule.onNodeWithTag("map_reset_view_button").performClick()
+    composeTestRule.waitForIdle()
+
+    // Select UTAA again and tap Open on Board -> navigates back with UTAA active
+    composeTestRule.onNodeWithTag("map_station_chip_UTAA").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("map_open_on_board_button").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("UTAA", vm.uiState.value.station.icao)
+    composeTestRule.onNodeWithTag("toolbar_station_selector").assertTextContains("UTAA", substring = true)
   }
 }

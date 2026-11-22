@@ -18,6 +18,7 @@ fun main() {
       serverConfigStorage = DesktopServerConfigStorage(),
       presetStorage = DesktopWeatherPresetStorage(),
       alertStorage = DesktopWeatherAlertStorage(),
+      windHistoryStorage = DesktopWindHistoryStorage(),
       weatherNotifier = SystemTrayWeatherNotifier { icao ->
         controllerRef?.openAlertStation(icao)
       },

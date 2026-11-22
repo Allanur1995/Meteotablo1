@@ -142,8 +142,9 @@ fun MeteotabloSplashScreen(
   ) {
     // Subtle aviation radar range rings and crosshairs in background
     Canvas(modifier = Modifier.fillMaxSize()) {
+      if (size.width <= 1f || size.height <= 1f) return@Canvas
       val center = Offset(size.width * 0.5f, size.height * 0.45f)
-      val maxRadius = min(size.width, size.height) * 0.62f
+      val maxRadius = (min(size.width, size.height) * 0.62f).coerceAtLeast(1f)
 
       drawCircle(
         brush = Brush.radialGradient(
@@ -368,10 +369,12 @@ fun MeteotabloBrandLogo(
       contentDescription = logoDesc
     },
   ) {
+    if (size.width <= 1f || size.height <= 1f) return@Canvas
     val diameter = min(size.width, size.height)
+    if (diameter <= 1f) return@Canvas
     val center = Offset(size.width / 2f, size.height / 2f)
-    val outerRadius = diameter * 0.48f
-    val dialRadius = diameter * 0.415f
+    val outerRadius = (diameter * 0.48f).coerceAtLeast(1f)
+    val dialRadius = (diameter * 0.415f).coerceAtLeast(1f)
 
     // Outer ambient glow
     drawCircle(
@@ -456,7 +459,7 @@ fun MeteotabloBrandLogo(
     // Cardinal labels N, E, S, W
     val labelStyle = TextStyle(
       color = SplashColors.compassTickMajor,
-      fontSize = (diameter * 0.072f).toSp(),
+      fontSize = (diameter * 0.072f).coerceAtLeast(8f).toSp(),
       fontWeight = FontWeight.Bold,
       fontFamily = FontFamily.SansSerif,
     )

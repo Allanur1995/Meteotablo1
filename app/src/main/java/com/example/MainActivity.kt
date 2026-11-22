@@ -31,8 +31,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
+import com.example.data.SharedPreferencesUnitPreferencesStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
 import com.example.data.SharedPreferencesWeatherPresetStorage
+import com.example.data.SharedPreferencesWindHistoryStorage
+import com.example.diagnostics.CrashReporter
 import com.example.notifications.AndroidWeatherNotifier
 import com.example.ui.MeteoTabloScreen
 import com.example.ui.MeteotabloSplashScreen
@@ -44,10 +47,14 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    enableEdgeToEdge()
+    CrashReporter.initialize(applicationContext)
+    CrashReporter.setLaunchStage("main_activity_on_create")
+    runCatching { enableEdgeToEdge() }
+      .onFailure { CrashReporter.recordNonFatal("edge_to_edge", it) }
     pendingAlertIcao.value = intent?.getStringExtra(AndroidWeatherNotifier.EXTRA_ALERT_ICAO)
 
     setContent {
+      CrashReporter.setLaunchStage("compose_set_content")
       val meteotabloViewModel: MeteoViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
           @Suppress("UNCHECKED_CAST")
@@ -57,6 +64,8 @@ class MainActivity : ComponentActivity() {
               serverConfigStorage = SharedPreferencesServerConfigStorage(applicationContext),
               presetStorage = SharedPreferencesWeatherPresetStorage(applicationContext),
               alertStorage = SharedPreferencesWeatherAlertStorage(applicationContext),
+              windHistoryStorage = SharedPreferencesWindHistoryStorage(applicationContext),
+              unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(applicationContext),
               weatherNotifier = AndroidWeatherNotifier(applicationContext),
             ) as T
           }
@@ -64,18 +73,26 @@ class MainActivity : ComponentActivity() {
       )
       val uiState by meteotabloViewModel.uiState.collectAsStateWithLifecycle()
       var showSplash by rememberSaveable { mutableStateOf(true) }
+      var hasPromptedNotification by rememberSaveable { mutableStateOf(false) }
       val requestedIcao by pendingAlertIcao
 
       val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
       ) { _ -> }
 
-      LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+      LaunchedEffect(showSplash, uiState.alertConfig.enabled) {
+        if (!showSplash &&
+          !hasPromptedNotification &&
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
           uiState.alertConfig.enabled &&
           !AndroidWeatherNotifier.hasNotificationPermission(applicationContext)
         ) {
-          notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+          hasPromptedNotification = true
+          runCatching {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+          }.onFailure {
+            CrashReporter.recordNonFatal("notification_permission_prompt", it)
+          }
         }
       }
 
@@ -88,16 +105,20 @@ class MainActivity : ComponentActivity() {
       }
 
       LaunchedEffect(uiState.isNightMode, uiState.isFullscreen, showSplash) {
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        val useDarkBarContent = !uiState.isNightMode && !showSplash
-        controller.isAppearanceLightStatusBars = useDarkBarContent
-        controller.isAppearanceLightNavigationBars = useDarkBarContent
-        if (uiState.isFullscreen && !showSplash) {
-          controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-          controller.hide(WindowInsetsCompat.Type.systemBars())
-        } else {
-          controller.show(WindowInsetsCompat.Type.systemBars())
+        runCatching {
+          val controller = WindowCompat.getInsetsController(window, window.decorView)
+          val useDarkBarContent = !uiState.isNightMode && !showSplash
+          controller.isAppearanceLightStatusBars = useDarkBarContent
+          controller.isAppearanceLightNavigationBars = useDarkBarContent
+          if (uiState.isFullscreen && !showSplash) {
+            controller.systemBarsBehavior =
+              WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+          } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+          }
+        }.onFailure {
+          CrashReporter.recordNonFatal("window_insets_controller", it)
         }
       }
 
@@ -105,7 +126,10 @@ class MainActivity : ComponentActivity() {
         MeteotabloAppHost(
           viewModel = meteotabloViewModel,
           showSplash = showSplash,
-          onSplashFinished = { showSplash = false },
+          onSplashFinished = {
+            showSplash = false
+            CrashReporter.setLaunchStage("dashboard_active")
+          },
         )
       }
     }
@@ -115,6 +139,7 @@ class MainActivity : ComponentActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     intent.getStringExtra(AndroidWeatherNotifier.EXTRA_ALERT_ICAO)?.let { icao ->
+      CrashReporter.log("MainActivity.onNewIntent alertIcao=$icao")
       pendingAlertIcao.value = icao
     }
   }

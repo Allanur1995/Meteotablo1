@@ -70,6 +70,7 @@ import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendSummary
 import com.example.ui.components.WindRoseCard
 import com.example.ui.theme.LocalMeteoPalette
 import java.util.Locale
@@ -95,6 +96,7 @@ fun MetarTableScreen(
   favoriteIcaos: List<String>,
   isCurrentFavorite: Boolean,
   isFullscreen: Boolean,
+  windTrend: WindTrendSummary? = null,
   onBack: () -> Unit,
   onEditRawMetar: () -> Unit,
   onToggleWindUnit: () -> Unit,
@@ -488,6 +490,7 @@ fun MetarTableScreen(
         wind = weather.wind,
         windUnit = windUnit,
         onToggleUnit = onToggleWindUnit,
+        windTrend = windTrend,
       )
 
       // Structured Readable METAR Table

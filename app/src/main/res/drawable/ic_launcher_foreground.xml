@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/ic_meteotablo_fg_1794677306938"
+        android:drawable="@drawable/ic_meteotablo_fg"
         android:gravity="center" />
 </layer-list>

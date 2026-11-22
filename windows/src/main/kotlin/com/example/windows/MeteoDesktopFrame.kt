@@ -3,24 +3,35 @@ package com.example.windows
 import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.domain.UnitConverter
+import com.example.domain.WindTrendAnalyzer
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
+import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendDirection
+import com.example.model.WindTrendSummary
+import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.GradientPaint
+import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.GridLayout
 import java.awt.Insets
+import java.awt.RenderingHints
+import java.awt.geom.Path2D
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import kotlin.math.abs
 import java.util.Locale
 import javax.swing.BorderFactory
 import javax.swing.Box
@@ -102,6 +113,7 @@ class MeteoDesktopFrame(
   private val qfeField = createReadonlyField()
   private val sunField = createReadonlyField()
   private val sourceField = createReadonlyField()
+  private val windTrendPanel = WindTrendSparklinePanel()
 
   // Bottom METAR/TAF footer
   private val footerPanel = JPanel(GridLayout(2, 1, 4, 4))
@@ -248,6 +260,7 @@ class MeteoDesktopFrame(
     centerPanel.border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
     centerPanel.add(clockHeader, BorderLayout.NORTH)
     centerPanel.add(telemetryGrid, BorderLayout.CENTER)
+    centerPanel.add(windTrendPanel, BorderLayout.SOUTH)
 
     val gbc = GridBagConstraints().apply {
       fill = GridBagConstraints.BOTH
@@ -534,6 +547,7 @@ class MeteoDesktopFrame(
       qfeField.text = w.qfeMmHg?.let { "$it мм / ${w.qfeHpa ?: "--"} гПа" } ?: "--"
       sunField.text = "${w.sunriseLocal} / ${w.sunsetLocal}"
       sourceField.text = w.sourceLabel
+      windTrendPanel.updateData(state.windTrend, state.windUnit, pal)
 
       listOf(
         visField, cloudsField, ceilingField, weatherField,
@@ -633,5 +647,161 @@ class MeteoDesktopFrame(
       },
     )
     menu.show(presetsButton, 0, presetsButton.height)
+  }
+}
+
+class WindTrendSparklinePanel : JPanel() {
+  private var trend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList())
+  private var windUnit: WindSpeedUnit = WindSpeedUnit.KT
+  private var palette: DesktopPalette = DayDesktopPalette
+
+  init {
+    preferredSize = Dimension(240, 74)
+    minimumSize = Dimension(180, 68)
+    isOpaque = true
+  }
+
+  fun updateData(
+    newTrend: WindTrendSummary,
+    newUnit: WindSpeedUnit,
+    newPalette: DesktopPalette,
+  ) {
+    trend = newTrend
+    windUnit = newUnit
+    palette = newPalette
+    background = newPalette.fieldBackground
+    border = BorderFactory.createLineBorder(newPalette.border, 1)
+    repaint()
+  }
+
+  override fun paintComponent(g: Graphics) {
+    super.paintComponent(g)
+    val g2 = g.create() as Graphics2D
+    try {
+      g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+      g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+
+      val w = width
+      val h = height
+      if (w < 40 || h < 30) return
+
+      val accent = when (trend.direction) {
+        WindTrendDirection.INCREASING -> Color(0xE5, 0x39, 0x35)
+        WindTrendDirection.DECREASING -> Color(0x2E, 0x7D, 0x32)
+        WindTrendDirection.STEADY -> palette.metarAmber
+        WindTrendDirection.INSUFFICIENT -> palette.textMuted
+      }
+
+      val deltaPrefix = when {
+        trend.deltaKt > 0 -> "+"
+        trend.deltaKt < 0 -> "-"
+        else -> ""
+      }
+      val deltaStr = UnitConverter.formatWindSpeedValue(abs(trend.deltaKt), windUnit)
+      val badge = when (trend.direction) {
+        WindTrendDirection.INSUFFICIENT -> "${trend.direction.arrow} ${trend.direction.label}"
+        WindTrendDirection.STEADY -> "${trend.direction.arrow} ${trend.direction.label}"
+        else -> "${trend.direction.arrow} ${trend.direction.label} $deltaPrefix$deltaStr ${windUnit.label}"
+      }
+
+      g2.font = Font("Segoe UI", Font.BOLD, 11)
+      g2.color = palette.textSecondary
+      g2.drawString("Тренд ветра", 8, 15)
+
+      val badgeFm = g2.fontMetrics
+      val badgeW = badgeFm.stringWidth(badge)
+      g2.color = accent
+      g2.drawString(badge, (w - badgeW - 8).coerceAtLeast(90), 15)
+
+      val minValStr = UnitConverter.formatWindSpeedValue(trend.minSpeedKt, windUnit)
+      val maxValStr = UnitConverter.formatWindSpeedValue(trend.maxSpeedKt, windUnit)
+      val footer = when {
+        trend.entries.isEmpty() -> "Ожидание METAR"
+        trend.entries.size == 1 -> "1 замер (${trend.entries.first().observationTimeUtc})"
+        else -> "$minValStr–$maxValStr ${windUnit.label} · ${trend.entries.size} зам."
+      }
+      g2.font = Font("Segoe UI", Font.PLAIN, 10)
+      g2.color = palette.textMuted
+      g2.drawString(footer, 8, h - 5)
+
+      val plotLeft = 10f
+      val plotRight = (w - 10f).coerceAtLeast(plotLeft + 10f)
+      val plotTop = 22f
+      val plotBottom = (h - 18f).coerceAtLeast(plotTop + 10f)
+      val plotW = plotRight - plotLeft
+      val plotH = plotBottom - plotTop
+
+      g2.color = Color(palette.border.red, palette.border.green, palette.border.blue, 120)
+      g2.stroke = BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(4f, 4f), 0f)
+      val midY = (plotTop + plotBottom) / 2f
+      g2.drawLine(plotLeft.toInt(), midY.toInt(), plotRight.toInt(), midY.toInt())
+
+      val entries = trend.entries
+      if (entries.isEmpty()) return
+
+      val minSpeed = entries.minOf { it.speedKt }.toFloat()
+      val maxSpeed = entries.maxOf { maxOf(it.speedKt, it.gustKt ?: it.speedKt) }.toFloat()
+      val span = (maxSpeed - minSpeed).coerceAtLeast(2f)
+
+      val xs = mutableListOf<Float>()
+      val ys = mutableListOf<Float>()
+      if (entries.size == 1) {
+        xs.add(plotLeft)
+        ys.add(midY)
+        xs.add(plotRight)
+        ys.add(midY)
+      } else {
+        entries.forEachIndexed { idx, entry ->
+          val x = plotLeft + (idx.toFloat() / (entries.size - 1).toFloat()) * plotW
+          val norm = ((entry.speedKt - minSpeed) / span).coerceIn(0f, 1f)
+          val y = plotTop + plotH * (1f - norm)
+          xs.add(x)
+          ys.add(y)
+        }
+      }
+
+      val fillPath = Path2D.Float().apply {
+        moveTo(xs.first(), ys.first())
+        for (i in 1 until xs.size) lineTo(xs[i], ys[i])
+        lineTo(xs.last(), plotBottom)
+        lineTo(xs.first(), plotBottom)
+        closePath()
+      }
+      g2.paint = GradientPaint(
+        0f,
+        plotTop,
+        Color(accent.red, accent.green, accent.blue, 70),
+        0f,
+        plotBottom,
+        Color(accent.red, accent.green, accent.blue, 5),
+      )
+      g2.fill(fillPath)
+
+      val strokePath = Path2D.Float().apply {
+        moveTo(xs.first(), ys.first())
+        for (i in 1 until xs.size) lineTo(xs[i], ys[i])
+      }
+      g2.color = accent
+      g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+      g2.draw(strokePath)
+
+      if (entries.size >= 2) {
+        for (i in xs.indices) {
+          val r = if (i == xs.lastIndex) 4 else 2
+          g2.color = if (i == xs.lastIndex) accent else palette.panelSurface
+          g2.fillOval((xs[i] - r).toInt(), (ys[i] - r).toInt(), r * 2, r * 2)
+          if (i != xs.lastIndex) {
+            g2.color = accent
+            g2.stroke = BasicStroke(1.2f)
+            g2.drawOval((xs[i] - r).toInt(), (ys[i] - r).toInt(), r * 2, r * 2)
+          }
+        }
+      } else {
+        g2.color = accent
+        g2.fillOval((xs.last() - 3).toInt(), (ys.last() - 3).toInt(), 6, 6)
+      }
+    } finally {
+      g2.dispose()
+    }
   }
 }

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import com.example.domain.UnitConverter
 import com.example.model.WindData
 import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendSummary
 import com.example.ui.theme.LocalMeteoPalette
 import java.util.Locale
 import kotlin.math.PI
@@ -123,9 +124,10 @@ fun WindRoseCanvas(
         .fillMaxSize()
         .padding(14.dp),
     ) {
+      if (size.width <= 1f || size.height <= 1f) return@Canvas
       val cx = size.width / 2f
       val cy = size.height / 2f
-      val outerRadius = minOf(size.width, size.height) * 0.40f
+      val outerRadius = (minOf(size.width, size.height) * 0.40f).coerceAtLeast(1f)
       val hubRadius = outerRadius * 0.24f
       val usableSpan = outerRadius - hubRadius
 
@@ -404,6 +406,7 @@ fun WindRoseCard(
   wind: WindData,
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
+  windTrend: WindTrendSummary? = null,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -416,51 +419,63 @@ fun WindRoseCard(
     else -> "--"
   }
 
-  Row(
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  Column(
+    verticalArrangement = Arrangement.spacedBy(8.dp),
     modifier = modifier
       .fillMaxWidth()
       .background(palette.panelSurface)
       .border(1.dp, palette.border)
       .padding(10.dp),
   ) {
-    WindRoseCanvas(
-      wind = wind,
-      windUnit = windUnit,
-      onToggleUnit = onToggleUnit,
-      modifier = Modifier.weight(1f),
-    )
-
-    Column(
-      verticalArrangement = Arrangement.spacedBy(6.dp),
-      modifier = Modifier.weight(1f),
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier.fillMaxWidth(),
     ) {
-      Text(
-        text = "РОЗА ВЕТРОВ (ГРАФИК)",
-        color = palette.textSecondary,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 0.5.sp,
+      WindRoseCanvas(
+        wind = wind,
+        windUnit = windUnit,
+        onToggleUnit = onToggleUnit,
+        modifier = Modifier.weight(1f),
       )
-      WindStatBox(label = "Направление", value = dirText)
-      WindStatBox(label = "Скорость", value = "$speedMain ${windUnit.label}")
-      WindStatBox(
-        label = "Порывы",
-        value = gustMain?.let { "$it ${windUnit.label}" } ?: "Нет",
-      )
-      if (wind.variableFromDeg != null && wind.variableToDeg != null) {
+
+      Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.weight(1f),
+      ) {
+        Text(
+          text = "РОЗА ВЕТРОВ (ГРАФИК)",
+          color = palette.textSecondary,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 0.5.sp,
+        )
+        WindStatBox(label = "Направление", value = dirText)
+        WindStatBox(label = "Скорость", value = "$speedMain ${windUnit.label}")
         WindStatBox(
-          label = "Сектор",
-          value = "${wind.variableFromDeg}°–${wind.variableToDeg}°",
+          label = "Порывы",
+          value = gustMain?.let { "$it ${windUnit.label}" } ?: "Нет",
+        )
+        if (wind.variableFromDeg != null && wind.variableToDeg != null) {
+          WindStatBox(
+            label = "Сектор",
+            value = "${wind.variableFromDeg}°–${wind.variableToDeg}°",
+          )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+          text = "Нажмите на розу ветров для смены kt ↔ м/с ↔ км/ч",
+          color = palette.textMuted,
+          fontSize = 10.5.sp,
+          lineHeight = 13.sp,
         )
       }
-      Spacer(modifier = Modifier.height(2.dp))
-      Text(
-        text = "Нажмите на розу ветров для смены kt ↔ м/с ↔ км/ч",
-        color = palette.textMuted,
-        fontSize = 10.5.sp,
-        lineHeight = 13.sp,
+    }
+
+    if (windTrend != null) {
+      WindTrendIndicator(
+        trend = windTrend,
+        windUnit = windUnit,
       )
     }
   }

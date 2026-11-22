@@ -91,6 +91,26 @@ enum class PressureUnit(val label: String) {
   INHG("дм"),
 }
 
+enum class UnitSystem(
+  val displayName: String,
+  val shortTag: String,
+  val windUnit: WindSpeedUnit,
+  val pressureUnit: PressureUnit,
+) {
+  METRIC(
+    displayName = "Метрическая (hPa, м/с)",
+    shortTag = "METRIC · hPa / м/с",
+    windUnit = WindSpeedUnit.MPS,
+    pressureUnit = PressureUnit.HPA,
+  ),
+  IMPERIAL(
+    displayName = "Имперская (inHg, kt)",
+    shortTag = "IMPERIAL · inHg / kt",
+    windUnit = WindSpeedUnit.KT,
+    pressureUnit = PressureUnit.INHG,
+  ),
+}
+
 data class LogEntry(
   val timestamp: String,
   val level: String,

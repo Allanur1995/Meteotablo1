@@ -1,6 +1,7 @@
 package com.example.domain
 
 import com.example.model.PressureUnit
+import com.example.model.UnitSystem
 import com.example.model.WindSpeedUnit
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -11,6 +12,14 @@ object UnitConverter {
   private const val KT_TO_KPH = 1.852
   private const val HPA_TO_INHG = 0.029530
   private const val HPA_TO_MMHG = 0.750062
+
+  fun resolveUnitSystem(windUnit: WindSpeedUnit, pressureUnit: PressureUnit): UnitSystem? {
+    return when {
+      windUnit == WindSpeedUnit.MPS && pressureUnit == PressureUnit.HPA -> UnitSystem.METRIC
+      windUnit == WindSpeedUnit.KT && pressureUnit == PressureUnit.INHG -> UnitSystem.IMPERIAL
+      else -> null
+    }
+  }
 
   fun cycleWindUnit(current: WindSpeedUnit): WindSpeedUnit {
     return when (current) {

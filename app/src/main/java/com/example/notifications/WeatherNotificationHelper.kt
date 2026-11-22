@@ -22,9 +22,11 @@ import com.example.data.AviationWeatherRepository
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
+import com.example.diagnostics.CrashReporter
 import com.example.domain.WeatherChangeDetector
 import com.example.model.WeatherAlertSeverity
 import com.example.model.WeatherChangeAlert
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,43 +56,47 @@ class AndroidWeatherNotifier(
   }
 
   override fun notify(alert: WeatherChangeAlert) {
-    if (!hasNotificationPermission(appContext)) return
-    ensureNotificationChannel(appContext)
+    runCatching {
+      if (!hasNotificationPermission(appContext)) return
+      ensureNotificationChannel(appContext)
 
-    val launchIntent = Intent(appContext, MainActivity::class.java).apply {
-      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-      putExtra(EXTRA_ALERT_ICAO, alert.icao)
-    }
-    val pendingIntent = PendingIntent.getActivity(
-      appContext,
-      abs(alert.icao.hashCode()),
-      launchIntent,
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
-
-    val priority = when (alert.severity) {
-      WeatherAlertSeverity.CRITICAL -> NotificationCompat.PRIORITY_HIGH
-      WeatherAlertSeverity.WARNING -> NotificationCompat.PRIORITY_DEFAULT
-      WeatherAlertSeverity.INFO -> NotificationCompat.PRIORITY_LOW
-    }
-
-    val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
-      .setSmallIcon(R.drawable.ic_stat_weather_alert)
-      .setContentTitle("${alert.icao} · ${alert.observationTimeUtc} (${alert.severity.label})")
-      .setContentText(alert.summary)
-      .setStyle(
-        NotificationCompat.BigTextStyle()
-          .setBigContentTitle(alert.title)
-          .bigText("${alert.summary}\n${alert.rawMetar}"),
+      val launchIntent = Intent(appContext, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        putExtra(EXTRA_ALERT_ICAO, alert.icao)
+      }
+      val pendingIntent = PendingIntent.getActivity(
+        appContext,
+        abs(alert.icao.hashCode()),
+        launchIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
       )
-      .setCategory(NotificationCompat.CATEGORY_STATUS)
-      .setPriority(priority)
-      .setAutoCancel(true)
-      .setContentIntent(pendingIntent)
-      .build()
 
-    val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-    manager.notify(notificationIdForIcao(alert.icao), notification)
+      val priority = when (alert.severity) {
+        WeatherAlertSeverity.CRITICAL -> NotificationCompat.PRIORITY_HIGH
+        WeatherAlertSeverity.WARNING -> NotificationCompat.PRIORITY_DEFAULT
+        WeatherAlertSeverity.INFO -> NotificationCompat.PRIORITY_LOW
+      }
+
+      val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_stat_weather_alert)
+        .setContentTitle("${alert.icao} · ${alert.observationTimeUtc} (${alert.severity.label})")
+        .setContentText(alert.summary)
+        .setStyle(
+          NotificationCompat.BigTextStyle()
+            .setBigContentTitle(alert.title)
+            .bigText("${alert.summary}\n${alert.rawMetar}"),
+        )
+        .setCategory(NotificationCompat.CATEGORY_STATUS)
+        .setPriority(priority)
+        .setAutoCancel(true)
+        .setContentIntent(pendingIntent)
+        .build()
+
+      val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+      manager.notify(notificationIdForIcao(alert.icao), notification)
+    }.onFailure { err ->
+      CrashReporter.recordNonFatal("weather_notification_post", err, mapOf("icao" to alert.icao))
+    }
   }
 
   override fun syncBackgroundSchedule(
@@ -98,25 +104,29 @@ class AndroidWeatherNotifier(
     intervalMinutes: Int,
     hasFavorites: Boolean,
   ) {
-    val scheduler = appContext.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler ?: return
-    if (!enabled || !hasFavorites) {
-      scheduler.cancel(JOB_ID)
-      return
+    runCatching {
+      val scheduler = appContext.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler ?: return
+      if (!enabled || !hasFavorites) {
+        scheduler.cancel(JOB_ID)
+        return
+      }
+      val intervalMs = (intervalMinutes.coerceAtLeast(15)) * 60_000L
+      val existing = scheduler.allPendingJobs.firstOrNull { it.id == JOB_ID }
+      if (existing != null && existing.intervalMillis == intervalMs) {
+        return
+      }
+      val info = JobInfo.Builder(
+        JOB_ID,
+        ComponentName(appContext, FavoriteWeatherJobService::class.java),
+      )
+        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+        .setPeriodic(intervalMs)
+        .setPersisted(false)
+        .build()
+      scheduler.schedule(info)
+    }.onFailure { err ->
+      CrashReporter.recordNonFatal("weather_job_schedule", err)
     }
-    val intervalMs = (intervalMinutes.coerceAtLeast(15)) * 60_000L
-    val existing = scheduler.allPendingJobs.firstOrNull { it.id == JOB_ID }
-    if (existing != null && existing.intervalMillis == intervalMs) {
-      return
-    }
-    val info = JobInfo.Builder(
-      JOB_ID,
-      ComponentName(appContext, FavoriteWeatherJobService::class.java),
-    )
-      .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-      .setPeriodic(intervalMs)
-      .setPersisted(false)
-      .build()
-    scheduler.schedule(info)
   }
 
   companion object {
@@ -127,30 +137,34 @@ class AndroidWeatherNotifier(
     fun notificationIdForIcao(icao: String): Int = 5000 + abs(icao.uppercase().hashCode() % 10000)
 
     fun hasNotificationPermission(context: Context): Boolean {
-      return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(
-          context,
-          Manifest.permission.POST_NOTIFICATIONS,
-        ) == PackageManager.PERMISSION_GRANTED
-      } else {
-        true
-      }
+      return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+          ) == PackageManager.PERMISSION_GRANTED
+        } else {
+          true
+        }
+      }.getOrDefault(false)
     }
 
     fun ensureNotificationChannel(context: Context) {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        val existing = manager.getNotificationChannel(CHANNEL_ID)
-        if (existing == null) {
-          val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Метеооповещения избранных аэродромов",
-            NotificationManager.IMPORTANCE_HIGH,
-          ).apply {
-            description = "Локальные уведомления об опасных и значимых изменениях погоды на избранных аэродромах"
-            enableVibration(true)
+      runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+          val existing = manager.getNotificationChannel(CHANNEL_ID)
+          if (existing == null) {
+            val channel = NotificationChannel(
+              CHANNEL_ID,
+              "Метеооповещения избранных аэродромов",
+              NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+              description = "Локальные уведомления об опасных и значимых изменениях погоды на избранных аэродромах"
+              enableVibration(true)
+            }
+            manager.createNotificationChannel(channel)
           }
-          manager.createNotificationChannel(channel)
         }
       }
     }
@@ -173,7 +187,7 @@ class FavoriteWeatherJobService : JobService() {
         val favorites = favStorage.loadFavorites()
 
         if (!config.enabled || favorites.isEmpty()) {
-          jobFinished(params, false)
+          runCatching { jobFinished(params, false) }
           return@launch
         }
 
@@ -204,10 +218,14 @@ class FavoriteWeatherJobService : JobService() {
 
         alertStorage.saveSnapshots(snapshots)
         alertStorage.saveAlerts(alerts.take(40))
-      } catch (_: Exception) {
+      } catch (ce: CancellationException) {
+        throw ce
+      } catch (e: Exception) {
         shouldReschedule = true
+        CrashReporter.recordNonFatal("favorite_weather_job", e)
       } finally {
-        jobFinished(params, shouldReschedule)
+        runCatching { jobFinished(params, shouldReschedule) }
+          .onFailure { CrashReporter.recordNonFatal("favorite_weather_job_finish", it) }
       }
     }
     return true

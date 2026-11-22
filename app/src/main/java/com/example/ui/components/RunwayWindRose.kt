@@ -212,9 +212,10 @@ fun RunwayWindRose(
           vertical = if (compactMode) 8.dp else 14.dp,
         ),
     ) {
+      if (size.width <= 1f || size.height <= 1f) return@Canvas
       val cx = size.width / 2f
       val cy = size.height / 2f
-      val radius = minOf(size.width, size.height) * 0.41f
+      val radius = (minOf(size.width, size.height) * 0.41f).coerceAtLeast(1f)
 
       // Outer compass circle
       drawCircle(

@@ -8,13 +8,16 @@ import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryWeatherAlertStorage
 import com.example.data.InMemoryWeatherPresetStorage
+import com.example.data.InMemoryWindHistoryStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
 import com.example.data.WeatherAlertStorage
 import com.example.data.WeatherPresetStorage
+import com.example.data.WindHistoryStorage
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
 import com.example.domain.WeatherChangeDetector
+import com.example.domain.WindTrendAnalyzer
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.FavoriteWeatherSnapshot
@@ -25,7 +28,9 @@ import com.example.model.RunwayPair
 import com.example.model.SavedWeatherPreset
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherChangeAlert
+import com.example.model.WindHistoryEntry
 import com.example.model.WindSpeedUnit
+import com.example.model.WindTrendSummary
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -50,6 +55,7 @@ data class DesktopUiState(
   val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
   val latestWeatherAlert: WeatherChangeAlert? = null,
+  val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
   val statusBanner: String? = null,
@@ -80,6 +86,7 @@ class DesktopController(
   private val serverConfigStorage: ServerConfigStorage = InMemoryServerConfigStorage(),
   private val presetStorage: WeatherPresetStorage = InMemoryWeatherPresetStorage(),
   private val alertStorage: WeatherAlertStorage = InMemoryWeatherAlertStorage(),
+  private val windHistoryStorage: WindHistoryStorage = InMemoryWindHistoryStorage(),
   private val weatherNotifier: DesktopWeatherNotifier = NoOpDesktopWeatherNotifier,
   private val autoFetch: Boolean = true,
 ) {
@@ -91,6 +98,8 @@ class DesktopController(
   private val listeners = CopyOnWriteArrayList<(DesktopUiState) -> Unit>()
   private val weatherSnapshots: MutableMap<String, FavoriteWeatherSnapshot> =
     alertStorage.loadSnapshots().toMutableMap()
+  private val windHistoryByIcao: MutableMap<String, List<WindHistoryEntry>> =
+    windHistoryStorage.loadAll().toMutableMap()
 
   @Volatile
   var state: DesktopUiState
@@ -115,6 +124,7 @@ class DesktopController(
       serverConfig = serverConfigStorage.loadConfig(),
       alertConfig = alertStorage.loadConfig(),
       weatherAlerts = alertStorage.loadAlerts(),
+      windTrend = currentTrendFor(defaultStation.icao),
       liveLocalClock = initialWeather.receivedTimeLocal,
       logs = listOf(
         LogEntry(
@@ -247,6 +257,7 @@ class DesktopController(
         weather = emptyWeather,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
+        windTrend = currentTrendFor(station.icao),
         liveLocalClock = emptyWeather.receivedTimeLocal,
         statusBanner = null,
         logs = appendLog(cur.logs, "INFO", "Выбран аэропорт ${station.icao} (${station.name})", station),
@@ -369,6 +380,7 @@ class DesktopController(
         weather = baseWeather,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
+        windTrend = currentTrendFor(station.icao),
         liveLocalClock = if (sameStation) cur.liveLocalClock else baseWeather.receivedTimeLocal,
         statusBanner = null,
         logs = appendLog(cur.logs, "INFO", "Загружен профиль: ${target.name}", station),
@@ -402,11 +414,13 @@ class DesktopController(
     )
     val (pCalc, rCalc) = computeRunwayCalcs(cur.activeRunwayPair, parsed)
     val nowLocal = AviationWeatherParser.currentLocalTimeString(cur.station.utcOffsetHours)
+    val nextTrend = recordWindObservation(cur.station.icao, parsed)
     updateState { s ->
       s.copy(
         weather = parsed,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
+        windTrend = nextTrend,
         liveLocalClock = nowLocal,
         statusBanner = null,
         logs = appendLog(s.logs, "INFO", "Применён ручной METAR для ${cur.station.icao}", cur.station),
@@ -440,6 +454,14 @@ class DesktopController(
       favorites.forEach { icao ->
         val station = AirportCatalog.findOrDefault(icao)
         repository.fetchLiveWeather(station, state.serverConfig).onSuccess { fetched ->
+          val favTrend = recordWindObservation(fetched.resolvedStation.icao, fetched.weather)
+          updateState { cur ->
+            if (cur.station.icao.equals(fetched.resolvedStation.icao, ignoreCase = true)) {
+              cur.copy(windTrend = favTrend)
+            } else {
+              cur
+            }
+          }
           if (evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)) {
             alertsTriggered++
           }
@@ -578,6 +600,7 @@ class DesktopController(
       val result = repository.fetchLiveWeather(station, state.serverConfig)
       result.onSuccess { fetched ->
         val resolved = fetched.resolvedStation
+        val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         updateState { cur ->
           val pair = resolved.runways.getOrElse(cur.selectedRunwayPairIndex) { resolved.runways.first() }
           val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
@@ -591,6 +614,7 @@ class DesktopController(
             weather = fetched.weather,
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
+            windTrend = nextTrend,
             isLoading = false,
             statusBanner = null,
             liveLocalClock = nowLocal,
@@ -644,6 +668,30 @@ class DesktopController(
       rvrMeters = weather.rvrReciprocalMeters,
     )
     return pCalc to rCalc
+  }
+
+  private fun currentTrendFor(icao: String): WindTrendSummary {
+    val entries = synchronized(windHistoryByIcao) {
+      windHistoryByIcao[icao.trim().uppercase()].orEmpty()
+    }
+    return WindTrendAnalyzer.analyze(icao, entries)
+  }
+
+  private fun recordWindObservation(
+    icao: String,
+    weather: DecodedWeather,
+  ): WindTrendSummary {
+    val clean = icao.trim().uppercase()
+    val updatedEntries = synchronized(windHistoryByIcao) {
+      val currentEntries = windHistoryByIcao[clean].orEmpty()
+      val nextEntries = WindTrendAnalyzer.appendObservation(currentEntries, weather)
+      if (nextEntries != currentEntries) {
+        windHistoryByIcao[clean] = nextEntries
+        windHistoryStorage.saveAll(windHistoryByIcao.toMap())
+      }
+      nextEntries
+    }
+    return WindTrendAnalyzer.analyze(clean, updatedEntries)
   }
 
   private fun appendLog(

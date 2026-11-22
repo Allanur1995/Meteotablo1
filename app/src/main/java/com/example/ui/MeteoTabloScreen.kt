@@ -38,9 +38,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.model.PressureUnit
+import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherAlertSeverity
 import com.example.model.WindSpeedUnit
+import com.example.ui.components.AirportSearchBar
 import com.example.ui.components.CenterWeatherPanel
 import com.example.ui.components.LogViewerDialog
 import com.example.ui.components.MetarTafFooter
@@ -76,6 +78,7 @@ fun MeteoTabloScreen(
     onSelectWindUnit = viewModel::setWindUnit,
     onTogglePressureUnit = viewModel::togglePressureUnit,
     onSelectPressureUnit = viewModel::setPressureUnit,
+    onSelectUnitSystem = viewModel::applyUnitSystem,
     onToggleFavorite = viewModel::toggleFavorite,
     onAddFavorite = { icao -> viewModel.addFavorite(icao, selectAfterAdd = true) },
     onRemoveFavorite = viewModel::removeFavorite,
@@ -91,6 +94,8 @@ fun MeteoTabloScreen(
     onClearAlerts = viewModel::clearWeatherAlerts,
     onDismissWeatherAlertBanner = viewModel::dismissLatestWeatherAlert,
     onDismissBanner = viewModel::dismissBanner,
+    onRefreshMapWeather = viewModel::refreshMapWeather,
+    onRefreshMapStation = viewModel::fetchStationWeatherForMap,
     modifier = modifier,
   )
 }
@@ -108,6 +113,7 @@ fun MeteoTabloContent(
   onSelectWindUnit: (WindSpeedUnit) -> Unit,
   onTogglePressureUnit: () -> Unit,
   onSelectPressureUnit: (PressureUnit) -> Unit,
+  onSelectUnitSystem: (UnitSystem) -> Unit = {},
   onToggleFavorite: (String) -> Unit,
   onAddFavorite: (String) -> Unit,
   onRemoveFavorite: (String) -> Unit,
@@ -123,6 +129,8 @@ fun MeteoTabloContent(
   onClearAlerts: () -> Unit = {},
   onDismissWeatherAlertBanner: () -> Unit = {},
   onDismissBanner: () -> Unit,
+  onRefreshMapWeather: () -> Unit = {},
+  onRefreshMapStation: (String) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -131,6 +139,71 @@ fun MeteoTabloContent(
   var showLogDialog by remember { mutableStateOf(false) }
   var showAlertsDialog by remember { mutableStateOf(false) }
   var showMetarTable by remember { mutableStateOf(false) }
+  var showSettings by remember { mutableStateOf(false) }
+  var showMapScreen by remember { mutableStateOf(false) }
+
+  if (showSettings) {
+    SettingsScreen(
+      station = uiState.station,
+      weather = uiState.weather,
+      primaryRunwayCalc = uiState.primaryRunwayCalc,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      isNightMode = uiState.isNightMode,
+      isFullscreen = uiState.isFullscreen,
+      onBack = { showSettings = false },
+      onSelectUnitSystem = onSelectUnitSystem,
+      onSelectWindUnit = onSelectWindUnit,
+      onSelectPressureUnit = onSelectPressureUnit,
+      onToggleNight = onToggleNight,
+      onToggleFullscreen = onToggleFullscreen,
+      onOpenServerSettings = {
+        stationDialogInitialTab = 2
+        showStationDialog = true
+      },
+      onOpenAlertsSettings = { showAlertsDialog = true },
+      modifier = modifier,
+    )
+    if (showStationDialog) {
+      StationAndMetarDialog(
+        currentStation = uiState.station,
+        currentMetar = uiState.weather.rawMetar,
+        currentTaf = uiState.weather.rawTaf,
+        windUnit = uiState.windUnit,
+        pressureUnit = uiState.pressureUnit,
+        favoriteIcaos = uiState.favoriteIcaos,
+        serverConfig = uiState.serverConfig,
+        selectedRunwayPairIndex = uiState.selectedRunwayPairIndex,
+        savedPresets = uiState.savedPresets,
+        onSaveCurrentSetup = onSaveCurrentSetup,
+        onApplySavedPreset = onApplySavedPreset,
+        onDeleteSavedPreset = onDeleteSavedPreset,
+        onSelectStation = onSelectStation,
+        onApplyCustomMetar = onApplyCustomMetar,
+        onSelectWindUnit = onSelectWindUnit,
+        onSelectPressureUnit = onSelectPressureUnit,
+        onToggleFavorite = onToggleFavorite,
+        onSaveServerConfig = onSaveServerConfig,
+        onDismiss = { showStationDialog = false },
+        initialTab = stationDialogInitialTab,
+      )
+    }
+    if (showAlertsDialog) {
+      WeatherAlertsDialog(
+        favoriteIcaos = uiState.favoriteIcaos,
+        alertConfig = uiState.alertConfig,
+        alerts = uiState.weatherAlerts,
+        isCheckingFavorites = uiState.isCheckingFavorites,
+        onUpdateConfig = onUpdateAlertConfig,
+        onCheckFavoritesNow = onCheckFavoritesNow,
+        onOpenAlertStation = onOpenAlertStation,
+        onMarkAllRead = onMarkAllAlertsRead,
+        onClearAlerts = onClearAlerts,
+        onDismiss = { showAlertsDialog = false },
+      )
+    }
+    return
+  }
 
   if (showMetarTable) {
     MetarTableScreen(
@@ -141,6 +214,7 @@ fun MeteoTabloContent(
       favoriteIcaos = uiState.favoriteIcaos,
       isCurrentFavorite = uiState.isCurrentStationFavorite,
       isFullscreen = uiState.isFullscreen,
+      windTrend = uiState.windTrend,
       onBack = { showMetarTable = false },
       onEditRawMetar = { showStationDialog = true },
       onToggleWindUnit = onToggleWindUnit,
@@ -174,6 +248,31 @@ fun MeteoTabloContent(
         onDismiss = { showStationDialog = false },
       )
     }
+    return
+  }
+
+  if (showMapScreen) {
+    AirportMapScreen(
+      stations = uiState.mapStations,
+      weatherByIcao = uiState.mapWeatherByIcao,
+      activeStationIcao = uiState.station.icao,
+      favoriteIcaos = uiState.favoriteIcaos,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      isFullscreen = uiState.isFullscreen,
+      isRefreshingMap = uiState.isRefreshingMap,
+      loadingMapIcao = uiState.loadingMapIcao,
+      isNightMode = uiState.isNightMode,
+      onBack = { showMapScreen = false },
+      onSelectStationOnBoard = { icao ->
+        onSelectStation(icao)
+        showMapScreen = false
+      },
+      onRefreshAll = onRefreshMapWeather,
+      onRefreshStation = onRefreshMapStation,
+      onToggleFavorite = onToggleFavorite,
+      modifier = modifier,
+    )
     return
   }
 
@@ -244,6 +343,19 @@ fun MeteoTabloContent(
             stationDialogInitialTab = 3
             showStationDialog = true
           },
+          onOpenSettings = { showSettings = true },
+          onOpenMap = {
+            showMapScreen = true
+            onRefreshMapWeather()
+          },
+          compactMode = isCompactHeight,
+        )
+
+        AirportSearchBar(
+          currentIcao = uiState.station.icao,
+          favoriteIcaos = uiState.favoriteIcaos,
+          isLoading = uiState.isLoading,
+          onSelectStation = onSelectStation,
           compactMode = isCompactHeight,
         )
 
@@ -365,6 +477,8 @@ fun MeteoTabloContent(
                 localClock = uiState.liveLocalClock,
                 pressureUnit = uiState.pressureUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                windTrend = uiState.windTrend,
+                windUnit = uiState.windUnit,
                 compactMode = isCompactHeight,
                 modifier = Modifier.weight(0.95f),
               )
@@ -423,6 +537,8 @@ fun MeteoTabloContent(
               localClock = uiState.liveLocalClock,
               pressureUnit = uiState.pressureUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              windTrend = uiState.windTrend,
+              windUnit = uiState.windUnit,
             )
           }
 

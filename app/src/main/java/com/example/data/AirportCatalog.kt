@@ -159,4 +159,33 @@ object AirportCatalog {
         runways = listOf(RunwayPair("36", 360, "18", 180)),
       )
   }
+
+  fun search(
+    query: String,
+    extraIcaos: List<String> = emptyList(),
+  ): List<AirportStation> {
+    val trimmed = query.trim()
+    val extraStations = extraIcaos
+      .map { it.trim().uppercase() }
+      .filter { code -> code.length == 4 && presets.none { it.icao == code } }
+      .distinct()
+      .map { findOrDefault(it) }
+    val allKnown = presets + extraStations
+
+    if (trimmed.isEmpty()) {
+      return allKnown.take(8)
+    }
+    val upper = trimmed.uppercase()
+    val exactAndPrefix = allKnown.filter {
+      it.icao.startsWith(upper)
+    }
+    val substringMatches = allKnown.filter { station ->
+      station !in exactAndPrefix && (
+        station.icao.contains(upper) ||
+          station.city.contains(trimmed, ignoreCase = true) ||
+          station.name.contains(trimmed, ignoreCase = true)
+        )
+    }
+    return (exactAndPrefix + substringMatches).take(8)
+  }
 }

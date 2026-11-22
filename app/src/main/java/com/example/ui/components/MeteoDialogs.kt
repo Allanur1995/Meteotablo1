@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
+import com.example.diagnostics.CrashReporter
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
 import com.example.model.LogEntry
@@ -623,6 +624,26 @@ fun StationAndMetarDialog(
               color = palette.textSecondary,
               fontSize = 11.sp,
             )
+            val diag = remember(selectedTab) { CrashReporter.getDiagnosticsSnapshot(context) }
+            Text(
+              text = if (diag.isCrashlyticsActive) {
+                "Firebase Crashlytics: активен · этап: ${diag.currentLaunchStage} · событий: ${diag.breadcrumbCount}"
+              } else {
+                "Диагностика сбоев: локальный режим · этап: ${diag.currentLaunchStage}"
+              },
+              color = if (diag.isCrashlyticsActive) palette.metarAmber else palette.textMuted,
+              fontSize = 11.sp,
+              fontFamily = FontFamily.Monospace,
+              modifier = Modifier.testTag("crashlytics_status_text"),
+            )
+            diag.lastCrashSummary?.let { lastCrash ->
+              Text(
+                text = "Последний сбой: $lastCrash",
+                color = palette.tailwindNegative,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+              )
+            }
           }
         }
       }
