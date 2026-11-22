@@ -137,3 +137,68 @@ class DesktopServerConfigStorage(
     const val KEY_USE_VATSIM = "use_vatsim_metar"
   }
 }
+
+class DesktopWeatherPresetStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.WeatherPresetStorage {
+
+  override fun loadPresets(): List<com.example.model.SavedWeatherPreset> {
+    val props = loadProps(configFile)
+    return com.example.data.WeatherPresetSerializer.fromJson(props.getProperty(KEY_WEATHER_PRESETS, null))
+  }
+
+  override fun savePresets(presets: List<com.example.model.SavedWeatherPreset>) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_WEATHER_PRESETS, com.example.data.WeatherPresetSerializer.toJson(presets))
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_WEATHER_PRESETS = "saved_weather_presets_json"
+  }
+}
+
+class DesktopWeatherAlertStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.WeatherAlertStorage {
+
+  override fun loadConfig(): com.example.model.WeatherAlertConfig {
+    val props = loadProps(configFile)
+    return com.example.data.WeatherAlertSerializer.configFromJson(props.getProperty(KEY_ALERT_CONFIG, null))
+  }
+
+  override fun saveConfig(config: com.example.model.WeatherAlertConfig) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_ALERT_CONFIG, com.example.data.WeatherAlertSerializer.configToJson(config))
+    saveProps(configFile, props)
+  }
+
+  override fun loadSnapshots(): Map<String, com.example.model.FavoriteWeatherSnapshot> {
+    val props = loadProps(configFile)
+    return com.example.data.WeatherAlertSerializer.snapshotsFromJson(props.getProperty(KEY_ALERT_SNAPSHOTS, null))
+  }
+
+  override fun saveSnapshots(snapshots: Map<String, com.example.model.FavoriteWeatherSnapshot>) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_ALERT_SNAPSHOTS, com.example.data.WeatherAlertSerializer.snapshotsToJson(snapshots))
+    saveProps(configFile, props)
+  }
+
+  override fun loadAlerts(): List<com.example.model.WeatherChangeAlert> {
+    val props = loadProps(configFile)
+    return com.example.data.WeatherAlertSerializer.alertsFromJson(props.getProperty(KEY_ALERT_HISTORY, null))
+  }
+
+  override fun saveAlerts(alerts: List<com.example.model.WeatherChangeAlert>) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_ALERT_HISTORY, com.example.data.WeatherAlertSerializer.alertsToJson(alerts))
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_ALERT_CONFIG = "weather_alert_config_json"
+    const val KEY_ALERT_SNAPSHOTS = "weather_alert_snapshots_json"
+    const val KEY_ALERT_HISTORY = "weather_alert_history_json"
+  }
+}
+

@@ -15,10 +15,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "Meteotablo\0"
+            VALUE "CompanyName", "Allanur Saparow\0"
             VALUE "FileDescription", "Meteotablo Aviation Weather Display\0"
             VALUE "FileVersion", "1.0.0.0\0"
             VALUE "InternalName", "Meteotablo\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Allanur Saparow (@Allanur1995). All rights reserved.\0"
             VALUE "OriginalFilename", "Meteotablo.exe\0"
             VALUE "ProductName", "Meteotablo\0"
             VALUE "ProductVersion", "1.0.0.0\0"

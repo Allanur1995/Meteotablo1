@@ -104,3 +104,65 @@ class SharedPreferencesServerConfigStorage(
     fun normalizeServerUrl(raw: String): String = ServerConfig.normalizeServerUrl(raw)
   }
 }
+
+class SharedPreferencesWeatherPresetStorage(
+  context: Context,
+) : WeatherPresetStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadPresets(): List<com.example.model.SavedWeatherPreset> {
+    val raw = prefs.getString(KEY_WEATHER_PRESETS, null)
+    return WeatherPresetSerializer.fromJson(raw)
+  }
+
+  override fun savePresets(presets: List<com.example.model.SavedWeatherPreset>) {
+    prefs.edit()
+      .putString(KEY_WEATHER_PRESETS, WeatherPresetSerializer.toJson(presets))
+      .apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_WEATHER_PRESETS = "saved_weather_presets_json"
+  }
+}
+
+class SharedPreferencesWeatherAlertStorage(
+  context: Context,
+) : WeatherAlertStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadConfig(): com.example.model.WeatherAlertConfig {
+    return WeatherAlertSerializer.configFromJson(prefs.getString(KEY_ALERT_CONFIG, null))
+  }
+
+  override fun saveConfig(config: com.example.model.WeatherAlertConfig) {
+    prefs.edit().putString(KEY_ALERT_CONFIG, WeatherAlertSerializer.configToJson(config)).apply()
+  }
+
+  override fun loadSnapshots(): Map<String, com.example.model.FavoriteWeatherSnapshot> {
+    return WeatherAlertSerializer.snapshotsFromJson(prefs.getString(KEY_ALERT_SNAPSHOTS, null))
+  }
+
+  override fun saveSnapshots(snapshots: Map<String, com.example.model.FavoriteWeatherSnapshot>) {
+    prefs.edit().putString(KEY_ALERT_SNAPSHOTS, WeatherAlertSerializer.snapshotsToJson(snapshots)).apply()
+  }
+
+  override fun loadAlerts(): List<com.example.model.WeatherChangeAlert> {
+    return WeatherAlertSerializer.alertsFromJson(prefs.getString(KEY_ALERT_HISTORY, null))
+  }
+
+  override fun saveAlerts(alerts: List<com.example.model.WeatherChangeAlert>) {
+    prefs.edit().putString(KEY_ALERT_HISTORY, WeatherAlertSerializer.alertsToJson(alerts)).apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_ALERT_CONFIG = "weather_alert_config_json"
+    const val KEY_ALERT_SNAPSHOTS = "weather_alert_snapshots_json"
+    const val KEY_ALERT_HISTORY = "weather_alert_history_json"
+  }
+}
+

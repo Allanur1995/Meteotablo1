@@ -5,6 +5,7 @@ import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
+import com.example.model.AuthorBrand
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.WindSpeedUnit
@@ -105,7 +106,60 @@ object DesktopDialogs {
         add(btn)
       }
     }
-    stationPanel.add(customIcaoRow, BorderLayout.NORTH)
+    val presetsListPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 4)).apply {
+      background = palette.panelSurface
+      state.savedPresets.forEach { preset ->
+        val applyBtn = JButton("★ ${preset.name}").apply {
+          font = Font("Segoe UI", Font.PLAIN, 11)
+          margin = Insets(2, 6, 2, 6)
+          addActionListener {
+            controller.applySavedPreset(preset.id)
+            dialog.dispose()
+          }
+        }
+        val delBtn = JButton("×").apply {
+          font = Font("Segoe UI", Font.BOLD, 11)
+          margin = Insets(2, 4, 2, 4)
+          toolTipText = "Удалить профиль"
+          addActionListener {
+            controller.deleteSavedPreset(preset.id)
+            dialog.dispose()
+            showStationAndServerDialog(owner, controller, initialTab = 0)
+          }
+        }
+        add(applyBtn)
+        add(delBtn)
+      }
+    }
+
+    val activePair = state.activeRunwayPair
+    val presetNameField = JTextField(14)
+    val savePresetBtn = JButton("Сохранить ВПП (${state.station.icao} ${activePair.primaryDesignator}/${activePair.reciprocalDesignator})").apply {
+      addActionListener {
+        controller.saveCurrentSetup(presetNameField.text.trim().takeIf { it.isNotBlank() })
+        dialog.dispose()
+        showStationAndServerDialog(owner, controller, initialTab = 0)
+      }
+    }
+
+    val savePresetRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4)).apply {
+      background = palette.panelSurface
+      add(JLabel("Название профиля:"))
+      add(presetNameField)
+      add(savePresetBtn)
+    }
+
+    val northSection = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      background = palette.panelSurface
+      add(customIcaoRow)
+      add(savePresetRow)
+      if (state.savedPresets.isNotEmpty()) {
+        add(presetsListPanel)
+      }
+    }
+
+    stationPanel.add(northSection, BorderLayout.NORTH)
     stationPanel.add(JScrollPane(presetsPanel), BorderLayout.CENTER)
     tabs.addTab("Станции", stationPanel)
 
@@ -236,7 +290,34 @@ object DesktopDialogs {
     serverPanel.add(serverButtons, gbc)
 
     tabs.addTab("Сервер", serverPanel)
-    tabs.selectedIndex = initialTab.coerceIn(0, 2)
+
+    // Tab 4: About / Author Attribution
+    val aboutPanel = JPanel(BorderLayout(8, 8)).apply {
+      border = BorderFactory.createEmptyBorder(14, 14, 14, 14)
+    }
+    val aboutInfo = JTextArea(
+      buildString {
+        appendLine("${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} (${AuthorBrand.SUBTITLE})")
+        appendLine()
+        appendLine("Автор / Разработчик: ${AuthorBrand.AUTHOR_NAME} (${AuthorBrand.AUTHOR_HANDLE})")
+        appendLine("Email: ${AuthorBrand.AUTHOR_EMAIL}")
+        appendLine("GitHub: ${AuthorBrand.AUTHOR_URL}")
+        appendLine("Копирайт: ${AuthorBrand.COPYRIGHT_LINE}")
+        appendLine("Идентификатор: ${AuthorBrand.ANDROID_PACKAGE_ID}")
+        appendLine()
+        append(AuthorBrand.OWNERSHIP_NOTICE)
+      },
+    ).apply {
+      isEditable = false
+      lineWrap = true
+      wrapStyleWord = true
+      font = Font("Segoe UI", Font.PLAIN, 13)
+      border = BorderFactory.createEmptyBorder(10, 10, 10, 10)
+    }
+    aboutPanel.add(JScrollPane(aboutInfo), BorderLayout.CENTER)
+    tabs.addTab("Автор", aboutPanel)
+
+    tabs.selectedIndex = initialTab.coerceIn(0, 3)
 
     dialog.contentPane.layout = BorderLayout()
     dialog.contentPane.add(tabs, BorderLayout.CENTER)
@@ -422,6 +503,147 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    dialog.isVisible = true
+  }
+
+  fun showAlertsDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val dialog = JDialog(owner, "Метеооповещения избранных аэродромов", true)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(680, 480)
+    dialog.setLocationRelativeTo(owner)
+
+    val state = controller.state
+    val cfg = state.alertConfig
+    val enabledCheck = JCheckBox("Включить оповещения об изменениях погоды (${state.favoriteIcaos.joinToString(", ")})", cfg.enabled)
+    val windCombo = JComboBox(arrayOf("±5 kt", "±8 kt", "±12 kt")).apply {
+      selectedIndex = when (cfg.windChangeThresholdKt) {
+        5 -> 0
+        12 -> 2
+        else -> 1
+      }
+    }
+    val visCombo = JComboBox(arrayOf("< 1500 м / ВНГО 150 м", "< 3000 м / ВНГО 300 м", "< 5000 м / ВНГО 450 м")).apply {
+      selectedIndex = when (cfg.visibilityThresholdMeters) {
+        1500 -> 0
+        5000 -> 2
+        else -> 1
+      }
+    }
+
+    fun applyAlertPrefs() {
+      val windKt = when (windCombo.selectedIndex) {
+        0 -> 5
+        2 -> 12
+        else -> 8
+      }
+      val (visM, ceilM) = when (visCombo.selectedIndex) {
+        0 -> 1500 to 150
+        2 -> 5000 to 450
+        else -> 3000 to 300
+      }
+      controller.updateAlertConfig(
+        cfg.copy(
+          enabled = enabledCheck.isSelected,
+          windChangeThresholdKt = windKt,
+          visibilityThresholdMeters = visM,
+          ceilingThresholdMeters = ceilM,
+        ),
+      )
+    }
+
+    enabledCheck.addActionListener { applyAlertPrefs() }
+    windCombo.addActionListener { applyAlertPrefs() }
+    visCombo.addActionListener { applyAlertPrefs() }
+
+    val topPanel = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
+      add(enabledCheck)
+      val threshRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4)).apply {
+        add(JLabel("Сдвиг ветра:"))
+        add(windCombo)
+        add(JLabel("Порог видимости:"))
+        add(visCombo)
+      }
+      add(threshRow)
+    }
+
+    val listPanel = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      border = BorderFactory.createEmptyBorder(6, 10, 6, 10)
+    }
+    if (state.weatherAlerts.isEmpty()) {
+      listPanel.add(JLabel("Пока нет зафиксированных изменений погоды для избранных аэродромов."))
+    } else {
+      state.weatherAlerts.forEach { alert ->
+        val card = JPanel(BorderLayout(6, 4)).apply {
+          border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(
+              if (alert.severity == com.example.model.WeatherAlertSeverity.CRITICAL) Color(0xC6, 0x28, 0x28)
+              else Color(0xC9, 0x7A, 0x00),
+              1,
+            ),
+            BorderFactory.createEmptyBorder(6, 8, 6, 8),
+          )
+          maximumSize = Dimension(Int.MAX_VALUE, 90)
+        }
+        val titleLbl = JLabel("${alert.icao} (${alert.airportName}) · ${alert.severity.label} · ${alert.observationTimeUtc}").apply {
+          font = Font("Segoe UI", Font.BOLD, 12)
+        }
+        val bodyLbl = JLabel("<html><b>${alert.summary}</b><br/><code>${alert.rawMetar}</code></html>").apply {
+          font = Font("Segoe UI", Font.PLAIN, 11)
+        }
+        val openBtn = JButton("Открыть").apply {
+          addActionListener {
+            controller.openAlertStation(alert.icao)
+            dialog.dispose()
+          }
+        }
+        card.add(titleLbl, BorderLayout.NORTH)
+        card.add(bodyLbl, BorderLayout.CENTER)
+        card.add(openBtn, BorderLayout.EAST)
+        listPanel.add(card)
+        listPanel.add(Box.createVerticalStrut(6))
+      }
+    }
+
+    val footerRow = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 6)).apply {
+      add(
+        JButton("Проверить избранные сейчас").apply {
+          addActionListener {
+            controller.checkFavoritesWeatherNow()
+            dialog.dispose()
+          }
+        },
+      )
+      if (state.weatherAlerts.isNotEmpty()) {
+        add(
+          JButton("Очистить").apply {
+            addActionListener {
+              controller.clearWeatherAlerts()
+              dialog.dispose()
+            }
+          },
+        )
+        add(
+          JButton("Прочитано").apply {
+            addActionListener {
+              controller.markAllAlertsRead()
+              dialog.dispose()
+            }
+          },
+        )
+      }
+      add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+    }
+
+    dialog.contentPane.layout = BorderLayout(8, 8)
+    dialog.contentPane.add(topPanel, BorderLayout.NORTH)
+    dialog.contentPane.add(JScrollPane(listPanel), BorderLayout.CENTER)
+    dialog.contentPane.add(footerRow, BorderLayout.SOUTH)
     dialog.isVisible = true
   }
 

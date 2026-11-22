@@ -63,6 +63,7 @@ tasks.register<Jar>("fatJar") {
     attributes["Main-Class"] = "com.example.windows.MainKt"
     attributes["Implementation-Title"] = "Meteotablo"
     attributes["Implementation-Version"] = project.version
+    attributes["Implementation-Vendor"] = "Allanur Saparow (@Allanur1995)"
   }
 
   from(sourceSets.main.get().output)

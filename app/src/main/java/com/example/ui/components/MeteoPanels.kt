@@ -20,10 +20,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.TableChart
@@ -57,6 +60,7 @@ import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
+import com.example.model.SavedWeatherPreset
 import com.example.model.WindSpeedUnit
 import com.example.ui.theme.LocalMeteoPalette
 import java.util.Locale
@@ -82,14 +86,23 @@ fun MeteoTopToolbar(
   onToggleFavorite: () -> Unit,
   onSelectStation: (String) -> Unit,
   onSelectSourceMode: (DataSourceMode) -> Unit,
+  favoriteIcaos: List<String> = emptyList(),
+  savedPresets: List<SavedWeatherPreset> = emptyList(),
+  unreadAlertCount: Int = 0,
+  alertsEnabled: Boolean = true,
+  onSaveCurrentSetup: () -> Unit = {},
+  onApplySavedPreset: (String) -> Unit = {},
+  onOpenAlertsDialog: () -> Unit = {},
   onOpenStationDialog: () -> Unit,
   onOpenServerDialog: () -> Unit,
+  onOpenAboutDialog: () -> Unit = {},
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   var stationMenuExpanded by remember { mutableStateOf(false) }
   var sourceMenuExpanded by remember { mutableStateOf(false) }
+  var presetsMenuExpanded by remember { mutableStateOf(false) }
 
   Row(
     verticalAlignment = Alignment.CenterVertically,
@@ -105,14 +118,15 @@ fun MeteoTopToolbar(
       modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
     ) {
       Text(
-        text = "SAT Weather Display",
+        text = com.example.model.AuthorBrand.APP_TITLE,
         color = palette.textPrimary,
         fontSize = 15.sp,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Bold,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
           .widthIn(max = 170.dp)
+          .testTag("toolbar_brand_title")
           .clip(RoundedCornerShape(4.dp))
           .clickable(onClick = onOpenStationDialog)
           .padding(horizontal = 4.dp, vertical = 4.dp),
@@ -146,6 +160,36 @@ fun MeteoTopToolbar(
           expanded = stationMenuExpanded,
           onDismissRequest = { stationMenuExpanded = false },
         ) {
+          if (savedPresets.isNotEmpty()) {
+            DropdownMenuItem(
+              text = {
+                Text(
+                  text = "Сохранённые ВПП / профили:",
+                  color = palette.textSecondary,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold,
+                )
+              },
+              enabled = false,
+              onClick = {},
+            )
+            savedPresets.forEach { preset ->
+              DropdownMenuItem(
+                text = {
+                  Text(
+                    text = "★ ${preset.name}",
+                    fontWeight = FontWeight.SemiBold,
+                  )
+                },
+                onClick = {
+                  stationMenuExpanded = false
+                  onApplySavedPreset(preset.id)
+                },
+                modifier = Modifier.testTag("station_menu_preset_${preset.id}"),
+              )
+            }
+            HorizontalDivider()
+          }
           AirportCatalog.presets.filter { it.icao.startsWith("UT") }.forEach { preset ->
             DropdownMenuItem(
               text = {
@@ -258,6 +302,71 @@ fun MeteoTopToolbar(
             },
             modifier = Modifier.testTag("source_mode_open_settings"),
           )
+          DropdownMenuItem(
+            text = { Text("О программе / Автор…") },
+            onClick = {
+              sourceMenuExpanded = false
+              onOpenAboutDialog()
+            },
+            modifier = Modifier.testTag("source_mode_open_about"),
+          )
+        }
+      }
+
+      Box {
+        ToolbarButton(
+          label = if (savedPresets.isEmpty()) "Профили" else "Профили (${savedPresets.size})",
+          isActive = savedPresets.isNotEmpty(),
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.Bookmark,
+              contentDescription = "Сохранённые профили погоды",
+              tint = if (savedPresets.isNotEmpty()) palette.metarAmber else palette.textPrimary,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_presets_button",
+          onClick = { presetsMenuExpanded = true },
+        )
+        DropdownMenu(
+          expanded = presetsMenuExpanded,
+          onDismissRequest = { presetsMenuExpanded = false },
+        ) {
+          DropdownMenuItem(
+            text = {
+              Text(
+                text = "+ Сохранить текущую ВПП (${station.icao})",
+                fontWeight = FontWeight.Bold,
+              )
+            },
+            onClick = {
+              presetsMenuExpanded = false
+              onSaveCurrentSetup()
+            },
+            modifier = Modifier.testTag("preset_menu_save_current"),
+          )
+          if (savedPresets.isNotEmpty()) {
+            HorizontalDivider()
+            savedPresets.forEach { preset ->
+              DropdownMenuItem(
+                text = { Text(preset.name) },
+                onClick = {
+                  presetsMenuExpanded = false
+                  onApplySavedPreset(preset.id)
+                },
+                modifier = Modifier.testTag("preset_menu_item_${preset.id}"),
+              )
+            }
+          }
+          HorizontalDivider()
+          DropdownMenuItem(
+            text = { Text("Управление профилями…") },
+            onClick = {
+              presetsMenuExpanded = false
+              onOpenStationDialog()
+            },
+            modifier = Modifier.testTag("preset_menu_manage"),
+          )
         }
       }
 
@@ -308,6 +417,25 @@ fun MeteoTopToolbar(
         },
         testTag = "metar_table_button",
         onClick = onOpenMetarTable,
+      )
+
+      ToolbarButton(
+        label = if (unreadAlertCount > 0) "Тревога ($unreadAlertCount)" else "Оповещ.",
+        isActive = unreadAlertCount > 0,
+        icon = {
+          Icon(
+            imageVector = if (unreadAlertCount > 0) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+            contentDescription = "Метеооповещения избранных аэродромов",
+            tint = when {
+              unreadAlertCount > 0 -> palette.tailwindNegative
+              alertsEnabled -> palette.metarAmber
+              else -> palette.textMuted
+            },
+            modifier = Modifier.size(14.dp),
+          )
+        },
+        testTag = "toolbar_alerts_button",
+        onClick = onOpenAlertsDialog,
       )
 
       ToolbarButton(
@@ -1101,6 +1229,7 @@ fun MetarTafFooter(
   weather: DecodedWeather,
   station: AirportStation,
   onOpenMetarTable: () -> Unit,
+  onOpenAboutDialog: () -> Unit = {},
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
@@ -1202,6 +1331,36 @@ fun MetarTafFooter(
         lineHeight = if (compactMode) 12.sp else 14.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
+      )
+    }
+
+    // Discreet app owner & application info footer
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(3.dp))
+        .clickable(onClick = onOpenAboutDialog)
+        .padding(horizontal = 4.dp, vertical = if (compactMode) 1.dp else 2.dp)
+        .testTag("board_owner_footer"),
+    ) {
+      Text(
+        text = "${com.example.model.AuthorBrand.APP_TITLE} v${com.example.model.AuthorBrand.APP_VERSION}",
+        color = palette.textMuted,
+        fontSize = if (compactMode) 9.5.sp else 10.sp,
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+        modifier = Modifier.padding(end = 8.dp),
+      )
+      Text(
+        text = com.example.model.AuthorBrand.COPYRIGHT_LINE,
+        color = palette.textMuted,
+        fontSize = if (compactMode) 9.5.sp else 10.sp,
+        textAlign = TextAlign.End,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
       )
     }
   }

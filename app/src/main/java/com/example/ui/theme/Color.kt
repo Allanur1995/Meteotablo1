@@ -77,3 +77,26 @@ val NightMeteoPalette =
   )
 
 val LocalMeteoPalette = staticCompositionLocalOf { DayMeteoPalette }
+
+object SplashColors {
+  val backgroundTop = Color(0xFF060B12)
+  val backgroundCenter = Color(0xFF102036)
+  val backgroundBottom = Color(0xFF09101A)
+  val radarGrid = Color(0xFF1F334D)
+  val radarGlow = Color(0xFF38BDF8)
+  val bezelOuter = Color(0xFF334E70)
+  val bezelInner = Color(0xFF101C2D)
+  val compassTickMajor = Color(0xFFE2ECF8)
+  val compassTickMinor = Color(0xFF5D7696)
+  val runwayFill = Color(0xFFF1F5F9)
+  val runwayEdge = Color(0xFF94A3B8)
+  val runwayStripe = Color(0xFF162233)
+  val windAmber = Color(0xFFFF981A)
+  val windAmberGlow = Color(0xFFFFB74D)
+  val skyAccent = Color(0xFF60A5FA)
+  val wordmarkPrimary = Color(0xFFF4F8FF)
+  val subtitleText = Color(0xFF9FB3C8)
+  val telemetryMuted = Color(0xFF6E849E)
+  val pillSurface = Color(0xFF101C2C)
+  val pillBorder = Color(0xFF233852)
+}

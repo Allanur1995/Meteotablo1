@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Meteotablo</string>
+    <string name="splash_logo_description">Meteotablo aviation compass and runway logo</string>
+    <string name="splash_subtitle">Aviation Weather Display</string>
+    <string name="splash_initializing">METAR / TAF · Initializing telemetry…</string>
+    <string name="splash_tap_to_continue">Tap anywhere to enter</string>
 </resources>

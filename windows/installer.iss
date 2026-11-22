@@ -1,7 +1,9 @@
 [Setup]
 AppName=Meteotablo
 AppVersion=1.0.0
-AppPublisher=Meteotablo
+AppPublisher=Allanur Saparow (@Allanur1995)
+AppPublisherURL=https://github.com/Allanur1995
+AppCopyright=Copyright (C) 2026 Allanur Saparow
 DefaultDirName={autopf}\Meteotablo
 DefaultGroupName=Meteotablo
 OutputDir=build\installer

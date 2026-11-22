@@ -4,6 +4,7 @@ import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
+import com.example.model.AuthorBrand
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
 import java.awt.BorderLayout
@@ -28,20 +29,22 @@ import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JFrame
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.JTextField
 import javax.swing.SwingConstants
 
 class MeteoDesktopFrame(
   private val controller: DesktopController,
-) : JFrame("Meteotablo — Авиационная метеостанция") {
+) : JFrame("${AuthorBrand.APP_TITLE} — Авиационная метеостанция · ${AuthorBrand.AUTHOR_NAME}") {
 
   private var suppressingEvents = false
 
   // Toolbar controls
   private val rootPanel = JPanel(BorderLayout(8, 8))
   private val toolbarPanel = JPanel(BorderLayout(8, 4))
-  private val titleButton = JButton("SAT Weather Display")
+  private val titleButton = JButton(AuthorBrand.APP_TITLE)
   private val stationCombo = JComboBox<String>()
   private val favoriteButton = JButton("☆")
   private val metarUtcLabel = JLabel("METAR --:--Z")
@@ -51,8 +54,16 @@ class MeteoDesktopFrame(
   private val windUnitButton = JButton("kt")
   private val pressureUnitButton = JButton("гПа")
   private val tableButton = JButton("Таблица")
+  private val alertsButton = JButton("Оповещ.")
   private val logButton = JButton("Лог")
+  private val presetsButton = JButton("Профили")
   private val serverButton = JButton("Сервер")
+
+  // Weather Alert Banner
+  private val alertBannerPanel = JPanel(BorderLayout(8, 4))
+  private val alertBannerLabel = JLabel()
+  private val alertBannerOpenBtn = JButton("Открыть")
+  private val alertBannerOkBtn = JButton("OK")
 
   // Status Banner
   private val bannerPanel = JPanel(BorderLayout(8, 4))
@@ -96,6 +107,9 @@ class MeteoDesktopFrame(
   private val footerPanel = JPanel(GridLayout(2, 1, 4, 4))
   private val tafLabel = JLabel("TAF: --")
   private val metarLabel = JLabel("METAR: --")
+  private val ownerFooterPanel = JPanel(BorderLayout())
+  private val ownerLeftLabel = JLabel("${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · ${AuthorBrand.SUBTITLE}")
+  private val ownerRightLabel = JLabel("${AuthorBrand.COPYRIGHT_LINE} · ${AuthorBrand.AUTHOR_EMAIL}")
 
   init {
     defaultCloseOperation = EXIT_ON_CLOSE
@@ -148,13 +162,27 @@ class MeteoDesktopFrame(
       add(windUnitButton)
       add(pressureUnitButton)
       add(tableButton)
+      add(alertsButton)
       add(logButton)
+      add(presetsButton)
       add(serverButton)
     }
 
     toolbarPanel.border = BorderFactory.createEmptyBorder(4, 6, 4, 6)
     toolbarPanel.add(leftTool, BorderLayout.WEST)
     toolbarPanel.add(rightTool, BorderLayout.CENTER)
+
+    // Weather Alert Banner
+    alertBannerPanel.border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
+    alertBannerLabel.font = Font("Segoe UI", Font.BOLD, 12)
+    val alertActions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+      isOpaque = false
+      add(alertBannerOpenBtn)
+      add(alertBannerOkBtn)
+    }
+    alertBannerPanel.add(alertBannerLabel, BorderLayout.CENTER)
+    alertBannerPanel.add(alertActions, BorderLayout.EAST)
+    alertBannerPanel.isVisible = false
 
     // Banner
     bannerPanel.border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
@@ -168,6 +196,7 @@ class MeteoDesktopFrame(
       isOpaque = false
       add(toolbarPanel)
       add(Box.createVerticalStrut(4))
+      add(alertBannerPanel)
       add(bannerPanel)
     }
     rootPanel.add(northStack, BorderLayout.NORTH)
@@ -242,7 +271,22 @@ class MeteoDesktopFrame(
     footerPanel.toolTipText = "Нажмите для открытия таблицы METAR"
     footerPanel.add(tafLabel)
     footerPanel.add(metarLabel)
-    rootPanel.add(footerPanel, BorderLayout.SOUTH)
+
+    ownerLeftLabel.font = Font("Segoe UI", Font.PLAIN, 11)
+    ownerRightLabel.font = Font("Segoe UI", Font.PLAIN, 11)
+    ownerFooterPanel.isOpaque = false
+    ownerFooterPanel.border = BorderFactory.createEmptyBorder(3, 4, 0, 4)
+    ownerFooterPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    ownerFooterPanel.toolTipText = "Информация о приложении и авторе"
+    ownerFooterPanel.add(ownerLeftLabel, BorderLayout.WEST)
+    ownerFooterPanel.add(ownerRightLabel, BorderLayout.EAST)
+
+    val southStack = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      add(footerPanel, BorderLayout.CENTER)
+      add(ownerFooterPanel, BorderLayout.SOUTH)
+    }
+    rootPanel.add(southStack, BorderLayout.SOUTH)
   }
 
   private fun buildRunwayColumn(
@@ -323,8 +367,14 @@ class MeteoDesktopFrame(
     windUnitButton.addActionListener { controller.toggleWindUnit() }
     pressureUnitButton.addActionListener { controller.togglePressureUnit() }
     tableButton.addActionListener { DesktopDialogs.showMetarTableDialog(this, controller) }
+    alertsButton.addActionListener { DesktopDialogs.showAlertsDialog(this, controller) }
     logButton.addActionListener { DesktopDialogs.showLogDialog(this, controller) }
+    presetsButton.addActionListener { showPresetsPopup() }
     serverButton.addActionListener { DesktopDialogs.showStationAndServerDialog(this, controller, initialTab = 2) }
+    alertBannerOpenBtn.addActionListener {
+      controller.state.latestWeatherAlert?.icao?.let { controller.openAlertStation(it) }
+    }
+    alertBannerOkBtn.addActionListener { controller.dismissLatestWeatherAlert() }
     bannerOkBtn.addActionListener { controller.dismissBanner() }
 
     qnhField.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -336,6 +386,11 @@ class MeteoDesktopFrame(
     footerPanel.addMouseListener(object : MouseAdapter() {
       override fun mouseClicked(e: MouseEvent?) {
         DesktopDialogs.showMetarTableDialog(this@MeteoDesktopFrame, controller)
+      }
+    })
+    ownerFooterPanel.addMouseListener(object : MouseAdapter() {
+      override fun mouseClicked(e: MouseEvent?) {
+        DesktopDialogs.showStationAndServerDialog(this@MeteoDesktopFrame, controller, initialTab = 3)
       }
     })
   }
@@ -358,6 +413,20 @@ class MeteoDesktopFrame(
         BorderFactory.createLineBorder(pal.border, 1),
         BorderFactory.createEmptyBorder(6, 8, 6, 8),
       )
+
+      val latestAlert = state.latestWeatherAlert
+      alertBannerPanel.background = pal.fieldBackground
+      val alertAccent = if (latestAlert?.severity == com.example.model.WeatherAlertSeverity.CRITICAL) {
+        Color(0xE5, 0x39, 0x35)
+      } else {
+        pal.metarAmber
+      }
+      alertBannerPanel.border = BorderFactory.createLineBorder(alertAccent, 1)
+      alertBannerLabel.foreground = alertAccent
+      alertBannerPanel.isVisible = latestAlert != null
+      if (latestAlert != null) {
+        alertBannerLabel.text = "⚠ ${latestAlert.icao} (${latestAlert.observationTimeUtc}): ${latestAlert.summary}"
+      }
 
       bannerPanel.background = pal.fieldBackground
       bannerPanel.border = BorderFactory.createLineBorder(pal.metarAmber, 1)
@@ -401,6 +470,9 @@ class MeteoDesktopFrame(
       nightButton.text = if (state.isNightMode) "День" else "Ночь"
       windUnitButton.text = state.windUnit.label
       pressureUnitButton.text = state.pressureUnit.label
+      alertsButton.text = if (state.unreadAlertCount > 0) "Тревога (${state.unreadAlertCount})" else "Оповещ."
+      alertsButton.foreground = if (state.unreadAlertCount > 0) Color(0xC6, 0x28, 0x28) else Color.BLACK
+      presetsButton.text = if (state.savedPresets.isEmpty()) "Профили" else "Профили (${state.savedPresets.size})"
 
       // Runway selector
       leftRunwayCombo.removeAllItems()
@@ -479,6 +551,8 @@ class MeteoDesktopFrame(
       tafLabel.foreground = pal.textSecondary
       metarLabel.text = w.rawMetar
       metarLabel.foreground = pal.textPrimary
+      ownerLeftLabel.foreground = pal.textMuted
+      ownerRightLabel.foreground = pal.textMuted
     } finally {
       suppressingEvents = false
     }
@@ -531,5 +605,33 @@ class MeteoDesktopFrame(
     tf.isEditable = false
     tf.horizontalAlignment = SwingConstants.CENTER
     tf.font = Font("Segoe UI", Font.BOLD, 12)
+  }
+
+  private fun showPresetsPopup() {
+    val cur = controller.state
+    val pair = cur.activeRunwayPair
+    val menu = JPopupMenu()
+    menu.add(
+      JMenuItem("+ Сохранить (${cur.station.icao} · ВПП ${pair.primaryDesignator}/${pair.reciprocalDesignator})").apply {
+        addActionListener { controller.saveCurrentSetup() }
+      },
+    )
+    if (cur.savedPresets.isNotEmpty()) {
+      menu.addSeparator()
+      cur.savedPresets.forEach { preset ->
+        menu.add(
+          JMenuItem("★ ${preset.name}").apply {
+            addActionListener { controller.applySavedPreset(preset.id) }
+          },
+        )
+      }
+    }
+    menu.addSeparator()
+    menu.add(
+      JMenuItem("Управление профилями…").apply {
+        addActionListener { DesktopDialogs.showStationAndServerDialog(this@MeteoDesktopFrame, controller, initialTab = 0) }
+      },
+    )
+    menu.show(presetsButton, 0, presetsButton.height)
   }
 }

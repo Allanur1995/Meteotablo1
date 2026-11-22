@@ -6,16 +6,25 @@ import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
 import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
+import com.example.data.InMemoryWeatherAlertStorage
+import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
+import com.example.data.WeatherAlertStorage
+import com.example.data.WeatherPresetStorage
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
+import com.example.domain.WeatherChangeDetector
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
+import com.example.model.FavoriteWeatherSnapshot
 import com.example.model.LogEntry
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
 import com.example.model.RunwayPair
+import com.example.model.SavedWeatherPreset
+import com.example.model.WeatherAlertConfig
+import com.example.model.WeatherChangeAlert
 import com.example.model.WindSpeedUnit
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -36,7 +45,12 @@ data class DesktopUiState(
   val windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   val pressureUnit: PressureUnit = PressureUnit.HPA,
   val favoriteIcaos: List<String> = emptyList(),
+  val savedPresets: List<SavedWeatherPreset> = emptyList(),
   val serverConfig: ServerConfig = ServerConfig(),
+  val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+  val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
+  val latestWeatherAlert: WeatherChangeAlert? = null,
+  val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
   val statusBanner: String? = null,
   val liveLocalClock: String = "--:--",
@@ -48,6 +62,15 @@ data class DesktopUiState(
   val isCurrentStationFavorite: Boolean
     get() = station.icao in favoriteIcaos
 
+  val currentSetupId: String
+    get() = SavedWeatherPreset.buildId(station.icao, selectedRunwayPairIndex, windUnit, pressureUnit)
+
+  val isCurrentSetupSaved: Boolean
+    get() = savedPresets.any { it.id == currentSetupId }
+
+  val unreadAlertCount: Int
+    get() = weatherAlerts.count { !it.isRead }
+
   val palette: DesktopPalette
     get() = if (isNightMode) NightDesktopPalette else DayDesktopPalette
 }
@@ -55,6 +78,9 @@ data class DesktopUiState(
 class DesktopController(
   private val favoriteStorage: FavoriteAirportsStorage = InMemoryFavoriteStorage(),
   private val serverConfigStorage: ServerConfigStorage = InMemoryServerConfigStorage(),
+  private val presetStorage: WeatherPresetStorage = InMemoryWeatherPresetStorage(),
+  private val alertStorage: WeatherAlertStorage = InMemoryWeatherAlertStorage(),
+  private val weatherNotifier: DesktopWeatherNotifier = NoOpDesktopWeatherNotifier,
   private val autoFetch: Boolean = true,
 ) {
   private val repository = AviationWeatherRepository()
@@ -63,6 +89,8 @@ class DesktopController(
     Thread(r, "MeteotabloClock").apply { isDaemon = true }
   }
   private val listeners = CopyOnWriteArrayList<(DesktopUiState) -> Unit>()
+  private val weatherSnapshots: MutableMap<String, FavoriteWeatherSnapshot> =
+    alertStorage.loadSnapshots().toMutableMap()
 
   @Volatile
   var state: DesktopUiState
@@ -83,7 +111,10 @@ class DesktopController(
       primaryRunwayCalc = pCalc,
       reciprocalRunwayCalc = rCalc,
       favoriteIcaos = favoriteStorage.loadFavorites(),
+      savedPresets = presetStorage.loadPresets(),
       serverConfig = serverConfigStorage.loadConfig(),
+      alertConfig = alertStorage.loadConfig(),
+      weatherAlerts = alertStorage.loadAlerts(),
       liveLocalClock = initialWeather.receivedTimeLocal,
       logs = listOf(
         LogEntry(
@@ -105,9 +136,14 @@ class DesktopController(
     )
 
     if (autoFetch) {
-      // Auto-refresh live weather every 5 minutes
+      // Auto-refresh live weather every 5 minutes + evaluate favorites
       scheduler.scheduleAtFixedRate(
-        { fetchLiveForStation(state.station) },
+        {
+          fetchLiveForStation(state.station)
+          if (state.alertConfig.enabled && state.favoriteIcaos.isNotEmpty()) {
+            checkFavoritesWeatherNow()
+          }
+        },
         300,
         300,
         TimeUnit.SECONDS,
@@ -127,6 +163,7 @@ class DesktopController(
 
   fun shutdown() {
     scheduler.shutdownNow()
+    weatherNotifier.dispose()
   }
 
   fun toggleNightMode() {
@@ -270,6 +307,90 @@ class DesktopController(
     }
   }
 
+  fun saveCurrentSetup(customName: String? = null) {
+    updateState { cur ->
+      val pair = cur.activeRunwayPair
+      val runwayLabel = "${pair.primaryDesignator}/${pair.reciprocalDesignator}"
+      val id = SavedWeatherPreset.buildId(
+        icao = cur.station.icao,
+        runwayPairIndex = cur.selectedRunwayPairIndex,
+        windUnit = cur.windUnit,
+        pressureUnit = cur.pressureUnit,
+      )
+      val label = customName?.trim()?.takeIf { it.isNotBlank() }
+        ?: SavedWeatherPreset.defaultLabel(cur.station.icao, runwayLabel, cur.windUnit, cur.pressureUnit)
+      val preset = SavedWeatherPreset(
+        id = id,
+        name = label,
+        icao = cur.station.icao,
+        runwayPairIndex = cur.selectedRunwayPairIndex,
+        runwayLabel = runwayLabel,
+        windUnit = cur.windUnit,
+        pressureUnit = cur.pressureUnit,
+        sourceMode = cur.serverConfig.resolvedMode(),
+      )
+      val updated = (listOf(preset) + cur.savedPresets.filterNot { it.id == id }).distinctBy { it.id }
+      presetStorage.savePresets(updated)
+      cur.copy(
+        savedPresets = updated,
+        logs = appendLog(cur.logs, "INFO", "Сохранён профиль: $label", cur.station),
+      )
+    }
+  }
+
+  fun applySavedPreset(presetId: String) {
+    val target = state.savedPresets.firstOrNull { it.id == presetId } ?: return
+    val station = AirportCatalog.findOrDefault(target.icao)
+    val safeRunwayIdx = target.runwayPairIndex.coerceIn(0, station.runways.lastIndex)
+    val sameStation = state.station.icao.equals(station.icao, ignoreCase = true)
+    val nextServerConfig = target.sourceMode?.let { mode ->
+      val cfg = state.serverConfig.withMode(mode)
+      serverConfigStorage.saveConfig(cfg)
+      cfg
+    } ?: state.serverConfig
+    val baseWeather = if (sameStation) {
+      state.weather
+    } else {
+      repository.createEmptyWeather(
+        station = station,
+        sourceLabel = if (autoFetch) "загрузка с сервера..." else "ожидание обновления",
+      )
+    }
+    val pair = station.runways[safeRunwayIdx]
+    val (pCalc, rCalc) = computeRunwayCalcs(pair, baseWeather)
+
+    updateState { cur ->
+      cur.copy(
+        station = station,
+        selectedRunwayPairIndex = safeRunwayIdx,
+        windUnit = target.windUnit,
+        pressureUnit = target.pressureUnit,
+        serverConfig = nextServerConfig,
+        weather = baseWeather,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        liveLocalClock = if (sameStation) cur.liveLocalClock else baseWeather.receivedTimeLocal,
+        statusBanner = null,
+        logs = appendLog(cur.logs, "INFO", "Загружен профиль: ${target.name}", station),
+      )
+    }
+    if (autoFetch && !sameStation) {
+      fetchLiveForStation(station)
+    }
+  }
+
+  fun deleteSavedPreset(presetId: String) {
+    updateState { cur ->
+      val removed = cur.savedPresets.firstOrNull { it.id == presetId }
+      val updated = cur.savedPresets.filterNot { it.id == presetId }
+      presetStorage.savePresets(updated)
+      cur.copy(
+        savedPresets = updated,
+        logs = appendLog(cur.logs, "INFO", "Удалён профиль: ${removed?.name ?: presetId}", cur.station),
+      )
+    }
+  }
+
   fun applyCustomMetar(rawMetar: String, rawTaf: String) {
     val cur = state
     if (rawMetar.isBlank()) return
@@ -291,6 +412,89 @@ class DesktopController(
         logs = appendLog(s.logs, "INFO", "Применён ручной METAR для ${cur.station.icao}", cur.station),
       )
     }
+    evaluateFavoriteObservation(cur.station, parsed)
+  }
+
+  fun updateAlertConfig(config: WeatherAlertConfig) {
+    alertStorage.saveConfig(config)
+    updateState { cur ->
+      cur.copy(
+        alertConfig = config,
+        logs = appendLog(
+          cur.logs,
+          "INFO",
+          if (config.enabled) "Уведомления о погоде избранных аэродромов включены"
+          else "Уведомления о погоде избранных аэродромов отключены",
+          cur.station,
+        ),
+      )
+    }
+  }
+
+  fun checkFavoritesWeatherNow() {
+    val favorites = state.favoriteIcaos
+    if (favorites.isEmpty()) return
+    scope.launch {
+      updateState { it.copy(isCheckingFavorites = true) }
+      var alertsTriggered = 0
+      favorites.forEach { icao ->
+        val station = AirportCatalog.findOrDefault(icao)
+        repository.fetchLiveWeather(station, state.serverConfig).onSuccess { fetched ->
+          if (evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)) {
+            alertsTriggered++
+          }
+        }
+      }
+      updateState { cur ->
+        val msg = if (alertsTriggered > 0) {
+          "Проверка избранных (${favorites.size}): обнаружено изменений — $alertsTriggered"
+        } else {
+          "Проверка избранных (${favorites.size}): значимых изменений не выявлено"
+        }
+        cur.copy(
+          isCheckingFavorites = false,
+          logs = appendLog(cur.logs, "INFO", msg, cur.station),
+        )
+      }
+    }
+  }
+
+  fun markAllAlertsRead() {
+    updateState { cur ->
+      val updated = cur.weatherAlerts.map { it.copy(isRead = true) }
+      alertStorage.saveAlerts(updated)
+      cur.copy(weatherAlerts = updated, latestWeatherAlert = null)
+    }
+  }
+
+  fun clearWeatherAlerts() {
+    updateState { cur ->
+      alertStorage.saveAlerts(emptyList())
+      cur.copy(
+        weatherAlerts = emptyList(),
+        latestWeatherAlert = null,
+        logs = appendLog(cur.logs, "INFO", "История метеооповещений очищена", cur.station),
+      )
+    }
+  }
+
+  fun dismissLatestWeatherAlert() {
+    updateState { it.copy(latestWeatherAlert = null) }
+  }
+
+  fun openAlertStation(icao: String) {
+    val clean = icao.trim().uppercase()
+    updateState { cur ->
+      val updated = cur.weatherAlerts.map { alert ->
+        if (alert.icao == clean) alert.copy(isRead = true) else alert
+      }
+      alertStorage.saveAlerts(updated)
+      cur.copy(
+        weatherAlerts = updated,
+        latestWeatherAlert = if (cur.latestWeatherAlert?.icao == clean) null else cur.latestWeatherAlert,
+      )
+    }
+    selectStation(clean)
   }
 
   fun setDataSourceMode(mode: DataSourceMode, fetchNow: Boolean = true) {
@@ -328,6 +532,46 @@ class DesktopController(
     updateState { it.copy(statusBanner = null) }
   }
 
+  private fun evaluateFavoriteObservation(
+    station: AirportStation,
+    weather: DecodedWeather,
+  ): Boolean {
+    val cleanIcao = station.icao.trim().uppercase()
+    val current = state
+    if (cleanIcao !in current.favoriteIcaos) return false
+
+    val result = synchronized(weatherSnapshots) {
+      val eval = WeatherChangeDetector.evaluate(
+        station = station,
+        previous = weatherSnapshots[cleanIcao],
+        current = weather,
+        config = current.alertConfig,
+      )
+      eval.snapshot?.let { snap ->
+        weatherSnapshots[cleanIcao] = snap
+        alertStorage.saveSnapshots(weatherSnapshots.toMap())
+      }
+      eval
+    }
+    val alert = result.alert ?: return false
+    var recorded = false
+    updateState { cur ->
+      if (cur.weatherAlerts.any { it.id == alert.id }) return@updateState cur
+      recorded = true
+      val updatedAlerts = (listOf(alert) + cur.weatherAlerts).take(40)
+      alertStorage.saveAlerts(updatedAlerts)
+      cur.copy(
+        weatherAlerts = updatedAlerts,
+        latestWeatherAlert = alert,
+        logs = appendLog(cur.logs, "ALERT", "${alert.icao}: ${alert.summary}", station),
+      )
+    }
+    if (recorded) {
+      weatherNotifier.notify(alert)
+    }
+    return recorded
+  }
+
   private fun fetchLiveForStation(station: AirportStation) {
     scope.launch {
       updateState { it.copy(isLoading = true, statusBanner = null) }
@@ -353,6 +597,7 @@ class DesktopController(
             logs = updatedLogs,
           )
         }
+        evaluateFavoriteObservation(resolved, fetched.weather)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки METAR"
         updateState { cur ->

@@ -1,5 +1,8 @@
 package com.example
 
+import android.Manifest
+import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
@@ -14,6 +17,8 @@ import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
+import com.example.data.SharedPreferencesWeatherAlertStorage
+import com.example.notifications.AndroidWeatherNotifier
 import com.example.ui.MeteoTabloScreen
 import com.example.ui.theme.MeteoTabloTheme
 import com.example.viewmodel.MeteoViewModel
@@ -24,6 +29,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -222,5 +228,184 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("metar_row_visibility").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("metar_row_qnh").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithText("30,21 дм", substring = true).assertIsDisplayed()
+  }
+
+  @Test
+  fun `branded splash screen displays Meteotablo name and logo then transitions to main board`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    val showSplashState = androidx.compose.runtime.mutableStateOf(true)
+    composeTestRule.mainClock.autoAdvance = false
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteotabloAppHost(
+          viewModel = vm,
+          showSplash = showSplashState.value,
+          onSplashFinished = { showSplashState.value = false },
+          splashDurationMillis = 800L,
+        )
+      }
+    }
+
+    composeTestRule.mainClock.advanceTimeBy(400L)
+    composeTestRule.onNodeWithTag("splash_screen").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("splash_logo").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("splash_app_name").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("splash_app_name").assertTextContains("Meteotablo")
+    composeTestRule.onNodeWithTag("splash_author_credit").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("splash_author_credit").assertTextContains("Allanur Saparow", substring = true)
+
+    composeTestRule.mainClock.advanceTimeBy(1200L)
+    composeTestRule.mainClock.autoAdvance = true
+    composeTestRule.waitForIdle()
+
+    assertFalse(showSplashState.value)
+    composeTestRule.onNodeWithTag("splash_screen").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("toolbar_brand_title").assertTextContains("Meteotablo")
+    composeTestRule.onNodeWithTag("toolbar_station_selector").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("board_owner_footer").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("board_owner_footer").assertTextContains("Allanur Saparow", substring = true)
+
+    composeTestRule.onNodeWithTag("board_owner_footer").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("about_author_card").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Автор: Allanur Saparow", substring = true).assertIsDisplayed()
+  }
+
+  @Test
+  fun `saved weather setups persist runway configurations and recall them from toolbar`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val presetStorage = com.example.data.SharedPreferencesWeatherPresetStorage(context)
+    presetStorage.savePresets(emptyList())
+    val vm = MeteoViewModel(presetStorage = presetStorage, autoFetch = false)
+
+    vm.selectStation("UTAA")
+    vm.selectRunwayPair(1)
+    vm.setWindUnit(com.example.model.WindSpeedUnit.MPS)
+    vm.setPressureUnit(com.example.model.PressureUnit.INHG)
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("preset_menu_save_current").performClick()
+    composeTestRule.waitForIdle()
+
+    val savedId = com.example.model.SavedWeatherPreset.buildId(
+      icao = "UTAA",
+      runwayPairIndex = 1,
+      windUnit = com.example.model.WindSpeedUnit.MPS,
+      pressureUnit = com.example.model.PressureUnit.INHG,
+    )
+    assertEquals(1, presetStorage.loadPresets().size)
+    assertEquals(1, presetStorage.loadPresets().first().runwayPairIndex)
+
+    // Switch away to a different station and units
+    vm.selectStation("UTAN")
+    vm.setWindUnit(com.example.model.WindSpeedUnit.KT)
+    vm.setPressureUnit(com.example.model.PressureUnit.HPA)
+    composeTestRule.waitForIdle()
+    assertEquals("UTAN", vm.uiState.value.station.icao)
+
+    // Recall saved UTAA 12R/30L setup via toolbar presets menu
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("preset_menu_item_$savedId").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("UTAA", vm.uiState.value.station.icao)
+    assertEquals(1, vm.uiState.value.selectedRunwayPairIndex)
+    assertEquals("12R", vm.uiState.value.activeRunwayPair.primaryDesignator)
+    assertEquals(com.example.model.WindSpeedUnit.MPS, vm.uiState.value.windUnit)
+    assertEquals(com.example.model.PressureUnit.INHG, vm.uiState.value.pressureUnit)
+    composeTestRule.onNodeWithTag("wind_center_box_12R").assertExists()
+
+    // Delete via dialog management
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("preset_menu_manage").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("recall_preset_$savedId").performScrollTo().assertExists()
+    composeTestRule.onNodeWithTag("delete_preset_$savedId").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(presetStorage.loadPresets().isEmpty())
+  }
+
+  @Test
+  fun `favorite airport weather deterioration triggers local notification banner and dialog history`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+
+    val notificationManager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    notificationManager.cancelAll()
+
+    val alertStorage = SharedPreferencesWeatherAlertStorage(app)
+    alertStorage.saveSnapshots(emptyMap())
+    alertStorage.saveAlerts(emptyList())
+    alertStorage.saveConfig(com.example.model.WeatherAlertConfig(enabled = true))
+
+    val notifier = AndroidWeatherNotifier(app)
+    val vm = MeteoViewModel(
+      favoriteStorage = SharedPreferencesFavoriteStorage(app),
+      alertStorage = alertStorage,
+      weatherNotifier = notifier,
+      autoFetch = false,
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+
+    // 1. Baseline calm weather for favorite UTAA establishes snapshot without false alarm
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151000Z 09006KT CAVOK 24/08 Q1016 NOSIG",
+      rawTaf = "TAF UTAA 150900Z 1512/1612 09006MPS 9999 FEW040",
+    )
+    composeTestRule.waitForIdle()
+    assertTrue(vm.uiState.value.weatherAlerts.isEmpty())
+    assertEquals(0, Shadows.shadowOf(notificationManager).allNotifications.size)
+
+    // 2. Sudden thunderstorm + strong gusts + low visibility at favorite UTAA triggers notification
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 151030Z 31024G35KT 1200 +TSRA BKN005CB 19/17 Q1009",
+      rawTaf = "TAF UTAA 150900Z 1512/1612 31015G20MPS 2000 +TSRA BKN006CB",
+    )
+    composeTestRule.waitForIdle()
+
+    assertEquals(1, vm.uiState.value.weatherAlerts.size)
+    val firedAlert = vm.uiState.value.weatherAlerts.first()
+    assertEquals("UTAA", firedAlert.icao)
+    assertEquals(com.example.model.WeatherAlertSeverity.CRITICAL, firedAlert.severity)
+    assertEquals(1, vm.uiState.value.unreadAlertCount)
+
+    // Verify real Android NotificationManager posted local notification
+    val posted = Shadows.shadowOf(notificationManager).allNotifications
+    assertEquals(1, posted.size)
+    val title = posted.first().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
+    assertTrue(title.contains("UTAA"))
+
+    // Verify banner & toolbar unread alert counter
+    composeTestRule.onNodeWithTag("weather_alert_banner").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_alerts_button").performScrollTo().assertTextContains("Тревога (1)")
+
+    // Open alerts dialog, verify alert item rendered, then mark all read
+    composeTestRule.onNodeWithTag("toolbar_alerts_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("weather_alerts_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("alert_item_${firedAlert.id}").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("mark_alerts_read_button").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals(0, vm.uiState.value.unreadAlertCount)
+    assertEquals(1, alertStorage.loadAlerts().size)
+    assertTrue(alertStorage.loadAlerts().first().isRead)
   }
 }

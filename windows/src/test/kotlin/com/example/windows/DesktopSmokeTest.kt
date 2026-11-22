@@ -86,4 +86,112 @@ class DesktopSmokeTest {
       controller.shutdown()
     }
   }
+
+  @Test
+  fun `desktop splash panel renders Meteotablo branding cleanly`() {
+    val panel = DesktopSplashPanel()
+    assertEquals("Meteotablo", panel.appTitle)
+    assertTrue(panel.authorCredit.contains("Allanur Saparow"))
+    assertTrue(com.example.model.AuthorBrand.isExpectedBrand("Meteotablo"))
+    assertFalse(com.example.model.AuthorBrand.isExpectedBrand("OtherApp"))
+    panel.setSize(480, 340)
+    panel.progress = 0.65f
+    val image = java.awt.image.BufferedImage(480, 340, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    val g2 = image.createGraphics()
+    try {
+      panel.paint(g2)
+    } finally {
+      g2.dispose()
+    }
+  }
+
+  @Test
+  fun `desktop preset storage saves and recalls airport and runway setups`() {
+    val tmpFile = File.createTempFile("meteotablo_win_presets", ".properties")
+    tmpFile.deleteOnExit()
+    tmpFile.delete()
+
+    val presetStorage = DesktopWeatherPresetStorage(tmpFile)
+    val controller1 = DesktopController(presetStorage = presetStorage, autoFetch = false)
+    try {
+      controller1.selectStation("UTAM")
+      controller1.selectRunwayPair(1)
+      controller1.setWindUnit(WindSpeedUnit.MPS)
+      controller1.setPressureUnit(PressureUnit.INHG)
+      controller1.saveCurrentSetup("Мары 35R")
+      assertEquals(1, controller1.state.savedPresets.size)
+      assertEquals("Мары 35R", controller1.state.savedPresets.first().name)
+    } finally {
+      controller1.shutdown()
+    }
+
+    val controller2 = DesktopController(presetStorage = DesktopWeatherPresetStorage(tmpFile), autoFetch = false)
+    try {
+      controller2.selectStation("UTAE")
+      controller2.setWindUnit(WindSpeedUnit.KT)
+      controller2.setPressureUnit(PressureUnit.HPA)
+      val savedId = controller2.state.savedPresets.first().id
+      controller2.applySavedPreset(savedId)
+      assertEquals("UTAM", controller2.state.station.icao)
+      assertEquals(1, controller2.state.selectedRunwayPairIndex)
+      assertEquals("35R", controller2.state.activeRunwayPair.primaryDesignator)
+      assertEquals(WindSpeedUnit.MPS, controller2.state.windUnit)
+      assertEquals(PressureUnit.INHG, controller2.state.pressureUnit)
+
+      controller2.deleteSavedPreset(savedId)
+      assertTrue(controller2.state.savedPresets.isEmpty())
+    } finally {
+      controller2.shutdown()
+    }
+  }
+
+  @Test
+  fun `desktop controller detects significant weather changes for favorite airports and persists alerts`() {
+    val tmpFile = File.createTempFile("meteotablo_win_alerts", ".properties")
+    tmpFile.deleteOnExit()
+    tmpFile.delete()
+
+    val alertStorage = DesktopWeatherAlertStorage(tmpFile)
+    val notifiedAlerts = mutableListOf<com.example.model.WeatherChangeAlert>()
+    val fakeNotifier = object : DesktopWeatherNotifier {
+      override fun notify(alert: com.example.model.WeatherChangeAlert) {
+        notifiedAlerts.add(alert)
+      }
+    }
+
+    val controller = DesktopController(
+      favoriteStorage = DesktopFavoriteStorage(tmpFile),
+      alertStorage = alertStorage,
+      weatherNotifier = fakeNotifier,
+      autoFetch = false,
+    )
+    try {
+      controller.selectStation("UTAA")
+      // 1. Baseline weather
+      controller.applyCustomMetar(
+        rawMetar = "METAR UTAA 151000Z 09006KT CAVOK 24/08 Q1016 NOSIG",
+        rawTaf = "TAF UTAA",
+      )
+      assertTrue(notifiedAlerts.isEmpty())
+
+      // 2. Significant deterioration
+      controller.applyCustomMetar(
+        rawMetar = "METAR UTAA 151030Z 31024G35KT 1200 +TSRA BKN005CB 19/17 Q1009",
+        rawTaf = "TAF UTAA",
+      )
+      assertEquals(1, notifiedAlerts.size)
+      assertEquals("UTAA", notifiedAlerts.first().icao)
+      assertEquals(1, controller.state.unreadAlertCount)
+
+      // 3. Persistence across reload
+      val reloaded = DesktopWeatherAlertStorage(tmpFile).loadAlerts()
+      assertEquals(1, reloaded.size)
+      assertEquals("UTAA", reloaded.first().icao)
+
+      controller.markAllAlertsRead()
+      assertEquals(0, controller.state.unreadAlertCount)
+    } finally {
+      controller.shutdown()
+    }
+  }
 }

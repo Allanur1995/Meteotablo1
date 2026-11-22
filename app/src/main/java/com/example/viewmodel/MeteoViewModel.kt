@@ -9,17 +9,28 @@ import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
 import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
+import com.example.data.InMemoryWeatherAlertStorage
+import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
+import com.example.data.WeatherAlertStorage
+import com.example.data.WeatherPresetStorage
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
+import com.example.domain.WeatherChangeDetector
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
+import com.example.model.FavoriteWeatherSnapshot
 import com.example.model.LogEntry
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
 import com.example.model.RunwayPair
+import com.example.model.SavedWeatherPreset
+import com.example.model.WeatherAlertConfig
+import com.example.model.WeatherChangeAlert
 import com.example.model.WindSpeedUnit
+import com.example.notifications.LocalWeatherNotifier
+import com.example.notifications.NoOpWeatherNotifier
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +49,12 @@ data class MeteoUiState(
   val windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   val pressureUnit: PressureUnit = PressureUnit.HPA,
   val favoriteIcaos: List<String> = emptyList(),
+  val savedPresets: List<SavedWeatherPreset> = emptyList(),
   val serverConfig: ServerConfig = ServerConfig(),
+  val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+  val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
+  val latestWeatherAlert: WeatherChangeAlert? = null,
+  val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
   val statusBanner: String? = null,
   val liveLocalClock: String = "22:11",
@@ -49,15 +65,29 @@ data class MeteoUiState(
 
   val isCurrentStationFavorite: Boolean
     get() = station.icao in favoriteIcaos
+
+  val currentSetupId: String
+    get() = SavedWeatherPreset.buildId(station.icao, selectedRunwayPairIndex, windUnit, pressureUnit)
+
+  val isCurrentSetupSaved: Boolean
+    get() = savedPresets.any { it.id == currentSetupId }
+
+  val unreadAlertCount: Int
+    get() = weatherAlerts.count { !it.isRead }
 }
 
 class MeteoViewModel(
   private val favoriteStorage: FavoriteAirportsStorage = InMemoryFavoriteStorage(),
   private val serverConfigStorage: ServerConfigStorage = InMemoryServerConfigStorage(),
+  private val presetStorage: WeatherPresetStorage = InMemoryWeatherPresetStorage(),
+  private val alertStorage: WeatherAlertStorage = InMemoryWeatherAlertStorage(),
+  private val weatherNotifier: LocalWeatherNotifier = NoOpWeatherNotifier,
   private val autoFetch: Boolean = true,
 ) : ViewModel() {
 
   private val repository = AviationWeatherRepository()
+  private val weatherSnapshots: MutableMap<String, FavoriteWeatherSnapshot> =
+    alertStorage.loadSnapshots().toMutableMap()
 
   private val _uiState: MutableStateFlow<MeteoUiState>
   val uiState: StateFlow<MeteoUiState>
@@ -72,7 +102,10 @@ class MeteoViewModel(
     val (primaryCalc, reciprocalCalc) = computeRunwayCalcs(pair, initialWeather)
 
     val initialFavorites = favoriteStorage.loadFavorites()
+    val initialPresets = presetStorage.loadPresets()
     val initialServerConfig = serverConfigStorage.loadConfig()
+    val initialAlertConfig = alertStorage.loadConfig()
+    val initialAlerts = alertStorage.loadAlerts()
     _uiState = MutableStateFlow(
       MeteoUiState(
         station = defaultStation,
@@ -81,7 +114,10 @@ class MeteoViewModel(
         primaryRunwayCalc = primaryCalc,
         reciprocalRunwayCalc = reciprocalCalc,
         favoriteIcaos = initialFavorites,
+        savedPresets = initialPresets,
         serverConfig = initialServerConfig,
+        alertConfig = initialAlertConfig,
+        weatherAlerts = initialAlerts,
         liveLocalClock = initialWeather.receivedTimeLocal,
         logs = listOf(
           LogEntry(
@@ -94,9 +130,16 @@ class MeteoViewModel(
     )
     uiState = _uiState.asStateFlow()
 
+    weatherNotifier.syncBackgroundSchedule(
+      enabled = initialAlertConfig.enabled,
+      intervalMinutes = initialAlertConfig.checkIntervalMinutes,
+      hasFavorites = initialFavorites.isNotEmpty(),
+    )
+
     startClockTicker()
     if (autoFetch) {
       fetchLiveForStation(defaultStation)
+      startFavoriteMonitorLoop()
     }
   }
 
@@ -107,6 +150,18 @@ class MeteoViewModel(
         val current = _uiState.value
         val nowLocal = AviationWeatherParser.currentLocalTimeString(current.station.utcOffsetHours)
         _uiState.update { it.copy(liveLocalClock = nowLocal) }
+      }
+    }
+  }
+
+  private fun startFavoriteMonitorLoop() {
+    viewModelScope.launch {
+      while (true) {
+        val intervalMin = _uiState.value.alertConfig.checkIntervalMinutes.coerceIn(5, 120)
+        delay(intervalMin * 60_000L)
+        if (_uiState.value.alertConfig.enabled && _uiState.value.favoriteIcaos.isNotEmpty()) {
+          checkFavoritesWeatherNow()
+        }
       }
     }
   }
@@ -167,6 +222,11 @@ class MeteoViewModel(
         (state.favoriteIcaos + clean).distinct()
       }
       favoriteStorage.saveFavorites(updated)
+      weatherNotifier.syncBackgroundSchedule(
+        enabled = state.alertConfig.enabled,
+        intervalMinutes = state.alertConfig.checkIntervalMinutes,
+        hasFavorites = updated.isNotEmpty(),
+      )
       val msg = if (clean in updated) "Добавлено в избранное: $clean" else "Удалено из избранного: $clean"
       state.copy(
         favoriteIcaos = updated,
@@ -181,6 +241,11 @@ class MeteoViewModel(
     _uiState.update { state ->
       val updated = (state.favoriteIcaos + clean).distinct()
       favoriteStorage.saveFavorites(updated)
+      weatherNotifier.syncBackgroundSchedule(
+        enabled = state.alertConfig.enabled,
+        intervalMinutes = state.alertConfig.checkIntervalMinutes,
+        hasFavorites = updated.isNotEmpty(),
+      )
       state.copy(
         favoriteIcaos = updated,
         logs = appendLog(state.logs, "INFO", "Аэропорт $clean сохранён в избранное"),
@@ -196,9 +261,100 @@ class MeteoViewModel(
     _uiState.update { state ->
       val updated = state.favoriteIcaos.filterNot { it == clean }
       favoriteStorage.saveFavorites(updated)
+      weatherNotifier.syncBackgroundSchedule(
+        enabled = state.alertConfig.enabled,
+        intervalMinutes = state.alertConfig.checkIntervalMinutes,
+        hasFavorites = updated.isNotEmpty(),
+      )
       state.copy(
         favoriteIcaos = updated,
         logs = appendLog(state.logs, "INFO", "Удалено из избранного: $clean"),
+      )
+    }
+  }
+
+  fun saveCurrentSetup(customName: String? = null) {
+    _uiState.update { state ->
+      val pair = state.activeRunwayPair
+      val runwayLabel = "${pair.primaryDesignator}/${pair.reciprocalDesignator}"
+      val id = SavedWeatherPreset.buildId(
+        icao = state.station.icao,
+        runwayPairIndex = state.selectedRunwayPairIndex,
+        windUnit = state.windUnit,
+        pressureUnit = state.pressureUnit,
+      )
+      val label = customName?.trim()?.takeIf { it.isNotBlank() }
+        ?: SavedWeatherPreset.defaultLabel(state.station.icao, runwayLabel, state.windUnit, state.pressureUnit)
+      val preset = SavedWeatherPreset(
+        id = id,
+        name = label,
+        icao = state.station.icao,
+        runwayPairIndex = state.selectedRunwayPairIndex,
+        runwayLabel = runwayLabel,
+        windUnit = state.windUnit,
+        pressureUnit = state.pressureUnit,
+        sourceMode = state.serverConfig.resolvedMode(),
+      )
+      val updated = (listOf(preset) + state.savedPresets.filterNot { it.id == id }).distinctBy { it.id }
+      presetStorage.savePresets(updated)
+      state.copy(
+        savedPresets = updated,
+        logs = appendLog(state.logs, "INFO", "Сохранён профиль: $label"),
+      )
+    }
+  }
+
+  fun applySavedPreset(presetId: String) {
+    val target = _uiState.value.savedPresets.firstOrNull { it.id == presetId } ?: return
+    val station = AirportCatalog.findOrDefault(target.icao)
+    val safeRunwayIdx = target.runwayPairIndex.coerceIn(0, station.runways.lastIndex)
+    val current = _uiState.value
+    val nextServerConfig = target.sourceMode?.let { mode ->
+      val cfg = current.serverConfig.withMode(mode)
+      serverConfigStorage.saveConfig(cfg)
+      cfg
+    } ?: current.serverConfig
+
+    val sameStation = current.station.icao.equals(station.icao, ignoreCase = true)
+    val baseWeather = if (sameStation) {
+      current.weather
+    } else {
+      repository.createEmptyWeather(
+        station = station,
+        sourceLabel = if (autoFetch) "загрузка с сервера..." else "ожидание обновления",
+      )
+    }
+    val pair = station.runways[safeRunwayIdx]
+    val (pCalc, rCalc) = computeRunwayCalcs(pair, baseWeather)
+
+    _uiState.update { state ->
+      state.copy(
+        station = station,
+        selectedRunwayPairIndex = safeRunwayIdx,
+        windUnit = target.windUnit,
+        pressureUnit = target.pressureUnit,
+        serverConfig = nextServerConfig,
+        weather = baseWeather,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        liveLocalClock = if (sameStation) state.liveLocalClock else baseWeather.receivedTimeLocal,
+        statusBanner = null,
+        logs = appendLog(state.logs, "INFO", "Загружен профиль: ${target.name}"),
+      )
+    }
+    if (autoFetch && !sameStation) {
+      fetchLiveForStation(station)
+    }
+  }
+
+  fun deleteSavedPreset(presetId: String) {
+    _uiState.update { state ->
+      val removed = state.savedPresets.firstOrNull { it.id == presetId }
+      val updated = state.savedPresets.filterNot { it.id == presetId }
+      presetStorage.savePresets(updated)
+      state.copy(
+        savedPresets = updated,
+        logs = appendLog(state.logs, "INFO", "Удалён профиль: ${removed?.name ?: presetId}"),
       )
     }
   }
@@ -311,10 +467,137 @@ class MeteoViewModel(
         logs = appendLog(state.logs, "INFO", "Применён ручной METAR для ${current.station.icao}"),
       )
     }
+    evaluateFavoriteObservation(current.station, parsed)
+  }
+
+  fun updateAlertConfig(config: WeatherAlertConfig) {
+    alertStorage.saveConfig(config)
+    _uiState.update { state ->
+      weatherNotifier.syncBackgroundSchedule(
+        enabled = config.enabled,
+        intervalMinutes = config.checkIntervalMinutes,
+        hasFavorites = state.favoriteIcaos.isNotEmpty(),
+      )
+      state.copy(
+        alertConfig = config,
+        logs = appendLog(
+          state.logs,
+          "INFO",
+          if (config.enabled) "Уведомления о погоде избранных аэродромов включены"
+          else "Уведомления о погоде избранных аэродромов отключены",
+        ),
+      )
+    }
+  }
+
+  fun checkFavoritesWeatherNow() {
+    val stateSnapshot = _uiState.value
+    val favorites = stateSnapshot.favoriteIcaos
+    if (favorites.isEmpty()) return
+    viewModelScope.launch {
+      _uiState.update { it.copy(isCheckingFavorites = true) }
+      var alertsTriggered = 0
+      favorites.forEach { icao ->
+        val station = AirportCatalog.findOrDefault(icao)
+        repository.fetchLiveWeather(station, _uiState.value.serverConfig).onSuccess { fetched ->
+          val fired = evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)
+          if (fired) alertsTriggered++
+        }
+      }
+      _uiState.update { state ->
+        val summaryMsg = if (alertsTriggered > 0) {
+          "Проверка избранных (${favorites.size}): обнаружено изменений — $alertsTriggered"
+        } else {
+          "Проверка избранных (${favorites.size}): значимых изменений не выявлено"
+        }
+        state.copy(
+          isCheckingFavorites = false,
+          logs = appendLog(state.logs, "INFO", summaryMsg),
+        )
+      }
+    }
+  }
+
+  fun markAllAlertsRead() {
+    _uiState.update { state ->
+      val updated = state.weatherAlerts.map { it.copy(isRead = true) }
+      alertStorage.saveAlerts(updated)
+      state.copy(
+        weatherAlerts = updated,
+        latestWeatherAlert = null,
+      )
+    }
+  }
+
+  fun clearWeatherAlerts() {
+    _uiState.update { state ->
+      alertStorage.saveAlerts(emptyList())
+      state.copy(
+        weatherAlerts = emptyList(),
+        latestWeatherAlert = null,
+        logs = appendLog(state.logs, "INFO", "История метеооповещений очищена"),
+      )
+    }
+  }
+
+  fun dismissLatestWeatherAlert() {
+    _uiState.update { it.copy(latestWeatherAlert = null) }
+  }
+
+  fun openAlertStation(icao: String) {
+    val clean = icao.trim().uppercase()
+    _uiState.update { state ->
+      val updated = state.weatherAlerts.map { alert ->
+        if (alert.icao == clean) alert.copy(isRead = true) else alert
+      }
+      alertStorage.saveAlerts(updated)
+      state.copy(
+        weatherAlerts = updated,
+        latestWeatherAlert = if (state.latestWeatherAlert?.icao == clean) null else state.latestWeatherAlert,
+      )
+    }
+    selectStation(clean)
   }
 
   fun dismissBanner() {
     _uiState.update { it.copy(statusBanner = null) }
+  }
+
+  private fun evaluateFavoriteObservation(
+    station: AirportStation,
+    weather: DecodedWeather,
+  ): Boolean {
+    val cleanIcao = station.icao.trim().uppercase()
+    val current = _uiState.value
+    if (cleanIcao !in current.favoriteIcaos) return false
+
+    val result = WeatherChangeDetector.evaluate(
+      station = station,
+      previous = weatherSnapshots[cleanIcao],
+      current = weather,
+      config = current.alertConfig,
+    )
+    result.snapshot?.let { snap ->
+      weatherSnapshots[cleanIcao] = snap
+      alertStorage.saveSnapshots(weatherSnapshots.toMap())
+    }
+    val alert = result.alert ?: return false
+    var recorded = false
+    _uiState.update { state ->
+      if (state.weatherAlerts.any { it.id == alert.id }) return@update state
+      recorded = true
+      val updatedAlerts = (listOf(alert) + state.weatherAlerts).take(40)
+      alertStorage.saveAlerts(updatedAlerts)
+      state.copy(
+        weatherAlerts = updatedAlerts,
+        latestWeatherAlert = alert,
+        logs = appendLog(state.logs, "ALERT", "${alert.icao}: ${alert.summary}"),
+      )
+    }
+    if (recorded) {
+      weatherNotifier.notify(alert)
+    }
+    return recorded
   }
 
   private fun fetchLiveForStation(station: AirportStation) {
@@ -342,6 +625,7 @@ class MeteoViewModel(
             logs = updatedLogs,
           )
         }
+        evaluateFavoriteObservation(resolved, fetched.weather)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки METAR"
         _uiState.update { state ->

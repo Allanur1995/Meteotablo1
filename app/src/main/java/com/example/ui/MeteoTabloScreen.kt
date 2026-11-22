@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,6 +38,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.model.PressureUnit
+import com.example.model.WeatherAlertConfig
+import com.example.model.WeatherAlertSeverity
 import com.example.model.WindSpeedUnit
 import com.example.ui.components.CenterWeatherPanel
 import com.example.ui.components.LogViewerDialog
@@ -44,6 +47,7 @@ import com.example.ui.components.MetarTafFooter
 import com.example.ui.components.MeteoTopToolbar
 import com.example.ui.components.RunwayColumnPanel
 import com.example.ui.components.StationAndMetarDialog
+import com.example.ui.components.WeatherAlertsDialog
 import com.example.ui.theme.LocalMeteoPalette
 import com.example.viewmodel.MeteoUiState
 import com.example.viewmodel.MeteoViewModel
@@ -77,6 +81,15 @@ fun MeteoTabloScreen(
     onRemoveFavorite = viewModel::removeFavorite,
     onSelectSourceMode = { mode -> viewModel.setDataSourceMode(mode, fetchNow = true) },
     onSaveServerConfig = { cfg -> viewModel.updateServerConfig(cfg, fetchNow = true) },
+    onSaveCurrentSetup = viewModel::saveCurrentSetup,
+    onApplySavedPreset = viewModel::applySavedPreset,
+    onDeleteSavedPreset = viewModel::deleteSavedPreset,
+    onUpdateAlertConfig = viewModel::updateAlertConfig,
+    onCheckFavoritesNow = viewModel::checkFavoritesWeatherNow,
+    onOpenAlertStation = viewModel::openAlertStation,
+    onMarkAllAlertsRead = viewModel::markAllAlertsRead,
+    onClearAlerts = viewModel::clearWeatherAlerts,
+    onDismissWeatherAlertBanner = viewModel::dismissLatestWeatherAlert,
     onDismissBanner = viewModel::dismissBanner,
     modifier = modifier,
   )
@@ -100,6 +113,15 @@ fun MeteoTabloContent(
   onRemoveFavorite: (String) -> Unit,
   onSelectSourceMode: (DataSourceMode) -> Unit,
   onSaveServerConfig: (ServerConfig) -> Unit,
+  onSaveCurrentSetup: (String?) -> Unit = {},
+  onApplySavedPreset: (String) -> Unit = {},
+  onDeleteSavedPreset: (String) -> Unit = {},
+  onUpdateAlertConfig: (WeatherAlertConfig) -> Unit = {},
+  onCheckFavoritesNow: () -> Unit = {},
+  onOpenAlertStation: (String) -> Unit = {},
+  onMarkAllAlertsRead: () -> Unit = {},
+  onClearAlerts: () -> Unit = {},
+  onDismissWeatherAlertBanner: () -> Unit = {},
   onDismissBanner: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -107,6 +129,7 @@ fun MeteoTabloContent(
   var showStationDialog by remember { mutableStateOf(false) }
   var stationDialogInitialTab by remember { mutableIntStateOf(0) }
   var showLogDialog by remember { mutableStateOf(false) }
+  var showAlertsDialog by remember { mutableStateOf(false) }
   var showMetarTable by remember { mutableStateOf(false) }
 
   if (showMetarTable) {
@@ -137,6 +160,11 @@ fun MeteoTabloContent(
         pressureUnit = uiState.pressureUnit,
         favoriteIcaos = uiState.favoriteIcaos,
         serverConfig = uiState.serverConfig,
+        selectedRunwayPairIndex = uiState.selectedRunwayPairIndex,
+        savedPresets = uiState.savedPresets,
+        onSaveCurrentSetup = onSaveCurrentSetup,
+        onApplySavedPreset = onApplySavedPreset,
+        onDeleteSavedPreset = onDeleteSavedPreset,
         onSelectStation = onSelectStation,
         onApplyCustomMetar = onApplyCustomMetar,
         onSelectWindUnit = onSelectWindUnit,
@@ -188,6 +216,12 @@ fun MeteoTabloContent(
           pressureUnit = uiState.pressureUnit,
           isFavorite = uiState.isCurrentStationFavorite,
           serverConfig = uiState.serverConfig,
+          savedPresets = uiState.savedPresets,
+          unreadAlertCount = uiState.unreadAlertCount,
+          alertsEnabled = uiState.alertConfig.enabled,
+          onSaveCurrentSetup = { onSaveCurrentSetup(null) },
+          onApplySavedPreset = onApplySavedPreset,
+          onOpenAlertsDialog = { showAlertsDialog = true },
           onRefresh = onRefresh,
           onToggleNight = onToggleNight,
           onOpenLog = { showLogDialog = true },
@@ -206,8 +240,62 @@ fun MeteoTabloContent(
             stationDialogInitialTab = 2
             showStationDialog = true
           },
+          onOpenAboutDialog = {
+            stationDialogInitialTab = 3
+            showStationDialog = true
+          },
           compactMode = isCompactHeight,
         )
+
+        // Significant weather change alert banner for favorite stations
+        val latestAlert = uiState.latestWeatherAlert
+        AnimatedVisibility(visible = latestAlert != null) {
+          if (latestAlert != null) {
+            val accent = if (latestAlert.severity == WeatherAlertSeverity.CRITICAL) {
+              palette.tailwindNegative
+            } else {
+              palette.metarAmber
+            }
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("weather_alert_banner")
+                .background(palette.fieldBackground, RoundedCornerShape(3.dp))
+                .border(1.dp, accent, RoundedCornerShape(3.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+              Text(
+                text = "⚠ ${latestAlert.icao} (${latestAlert.observationTimeUtc}): ${latestAlert.summary}",
+                color = accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                  .weight(1f)
+                  .clickable { onOpenAlertStation(latestAlert.icao) },
+              )
+              Text(
+                text = "Открыть",
+                color = palette.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                  .clickable { onOpenAlertStation(latestAlert.icao) }
+                  .padding(horizontal = 8.dp, vertical = 4.dp),
+              )
+              Text(
+                text = "OK",
+                color = palette.textSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                  .clickable(onClick = onDismissWeatherAlertBanner)
+                  .padding(horizontal = 8.dp, vertical = 4.dp),
+              )
+            }
+          }
+        }
 
         // Optional transient network warning banner
         AnimatedVisibility(visible = uiState.statusBanner != null) {
@@ -347,6 +435,10 @@ fun MeteoTabloContent(
             weather = uiState.weather,
             station = uiState.station,
             onOpenMetarTable = { showMetarTable = true },
+            onOpenAboutDialog = {
+              stationDialogInitialTab = 3
+              showStationDialog = true
+            },
             compactMode = isCompactHeight,
           )
         }
@@ -363,6 +455,11 @@ fun MeteoTabloContent(
       pressureUnit = uiState.pressureUnit,
       favoriteIcaos = uiState.favoriteIcaos,
       serverConfig = uiState.serverConfig,
+      selectedRunwayPairIndex = uiState.selectedRunwayPairIndex,
+      savedPresets = uiState.savedPresets,
+      onSaveCurrentSetup = onSaveCurrentSetup,
+      onApplySavedPreset = onApplySavedPreset,
+      onDeleteSavedPreset = onDeleteSavedPreset,
       onSelectStation = onSelectStation,
       onApplyCustomMetar = onApplyCustomMetar,
       onSelectWindUnit = onSelectWindUnit,
@@ -378,6 +475,21 @@ fun MeteoTabloContent(
     LogViewerDialog(
       logs = uiState.logs,
       onDismiss = { showLogDialog = false },
+    )
+  }
+
+  if (showAlertsDialog) {
+    WeatherAlertsDialog(
+      favoriteIcaos = uiState.favoriteIcaos,
+      alertConfig = uiState.alertConfig,
+      alerts = uiState.weatherAlerts,
+      isCheckingFavorites = uiState.isCheckingFavorites,
+      onUpdateConfig = onUpdateAlertConfig,
+      onCheckFavoritesNow = onCheckFavoritesNow,
+      onOpenAlertStation = onOpenAlertStation,
+      onMarkAllRead = onMarkAllAlertsRead,
+      onClearAlerts = onClearAlerts,
+      onDismiss = { showAlertsDialog = false },
     )
   }
 }
