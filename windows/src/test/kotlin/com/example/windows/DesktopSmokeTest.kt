@@ -29,13 +29,13 @@ class DesktopSmokeTest {
 
     val serverStorage = DesktopServerConfigStorage(tmpFile)
     val defCfg = serverStorage.loadConfig()
-    assertEquals("http://217.174.229.206:8181/", defCfg.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", defCfg.url)
     assertEquals("meteo", defCfg.username)
     assertEquals("meteo", defCfg.password)
 
     serverStorage.saveConfig(
       ServerConfig(
-        url = "217.174.229.206:8181",
+        url = "217.174.229.206:8181/cgi-bin/wlogin",
         username = "meteo",
         password = "meteo2",
         useCustomServer = true,
@@ -47,7 +47,7 @@ class DesktopSmokeTest {
       ),
     )
     val reloadedCfg = DesktopServerConfigStorage(tmpFile).loadConfig()
-    assertEquals("http://217.174.229.206:8181/", reloadedCfg.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", reloadedCfg.url)
     assertEquals("meteo2", reloadedCfg.password)
     assertEquals(DataSourceMode.AUTO_INTERNET_FIRST, reloadedCfg.resolvedMode())
     assertFalse(reloadedCfg.useNoaaTgftp)
@@ -72,6 +72,7 @@ class DesktopSmokeTest {
       assertEquals(1018, controller.state.weather.qnhHpa)
       assertEquals(24, controller.state.weather.temperatureC)
       assertEquals(8, controller.state.weather.wind.speedKt)
+      assertEquals(4000, controller.state.weather.clouds.first().baseFeet)
 
       controller.toggleWindUnit()
       assertEquals(WindSpeedUnit.MPS, controller.state.windUnit)
@@ -238,6 +239,105 @@ class DesktopSmokeTest {
       assertEquals(com.example.model.WindTrendDirection.DECREASING, reloaded.state.windTrend.direction)
     } finally {
       reloaded.shutdown()
+    }
+  }
+
+  @Test
+  fun `server config normalization preserves php endpoints and builds retrofit base url`() {
+    assertEquals(
+      "http://217.174.229.206:8181/",
+      ServerConfig.normalizeServerUrl("217.174.229.206:8181"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/cgi-bin/wlogin",
+      ServerConfig.normalizeServerUrl("217.174.229.206:8181/cgi-bin/wlogin"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/index.php",
+      ServerConfig.normalizeServerUrl("217.174.229.206:8181/index.php"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/meteo/svodka.php?station=UTAM",
+      ServerConfig.normalizeServerUrl("http://217.174.229.206:8181/meteo/svodka.php?station=UTAM"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/meteo/",
+      ServerConfig.retrofitBaseUrl("http://217.174.229.206:8181/meteo/svodka.php?station=UTAM"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/",
+      ServerConfig.retrofitBaseUrl("http://217.174.229.206:8181/index.php"),
+    )
+  }
+
+  @Test
+  fun `custom meteo server client extracts frames meta refresh and multiline metar`() {
+    val base = okhttp3.HttpUrl.Builder().scheme("http").host("217.174.229.206").port(8181).build()
+    val htmlWithRefresh = """
+      <html><head><meta http-equiv="refresh" content="0; url=/tablo/main.php"></head></html>
+    """.trimIndent()
+    assertEquals(
+      "http://217.174.229.206:8181/tablo/main.php",
+      com.example.data.CustomMeteoServerClient.extractMetaRefreshUrl(htmlWithRefresh, base),
+    )
+
+    val framesHtml = """
+      <frameset cols="200,*"><frame src="nav.php"><iframe src="/meteo/utam.php"></iframe></frameset>
+    """.trimIndent()
+    val frames = com.example.data.CustomMeteoServerClient.extractFrameUrls(framesHtml, base)
+    assertEquals(2, frames.size)
+    assertTrue(frames.any { it.endsWith("/meteo/utam.php") })
+
+    val tableHtml = """
+      <table><tr><td>METAR<br>UTAM 231100Z 09012MPS 6000 BKN030 22/08 Q1017 NOSIG=</td></tr>
+      <tr><td>TAF UTAM 231000Z 2312/2412 09010MPS 9999 SCT040=</td></tr></table>
+    """.trimIndent()
+    val (metar, taf) = com.example.data.CustomMeteoServerClient.extractMetarAndTaf(tableHtml, "UTAM")
+    assertTrue(metar != null && metar.contains("UTAM 231100Z") && metar.contains("09012MPS"))
+    assertTrue(taf != null && taf.contains("TAF UTAM 231000Z"))
+  }
+
+  @Test
+  fun `desktop airport map panel computes mercator tiles caches pin weather and paints cleanly`() {
+    val controller = DesktopController(autoFetch = false)
+    try {
+      controller.selectStation("UTAA")
+      controller.applyCustomMetar("METAR UTAA 231100Z 08014KT CAVOK 26/07 Q1019 NOSIG", "TAF UTAA")
+      assertTrue(controller.state.mapWeatherByIcao.containsKey("UTAA"))
+      assertTrue(controller.state.mapStations.any { it.icao == "UTAM" })
+
+      val cam = com.example.domain.AirportMapProjection.cameraForRegion(
+        preset = com.example.domain.MapRegionPreset.TURKMENISTAN,
+        stations = controller.state.mapStations,
+        widthPx = 800f,
+        heightPx = 500f,
+      )
+      val tiles = com.example.domain.AirportMapProjection.visibleTiles(cam, 800f, 500f)
+      assertTrue(tiles.isNotEmpty())
+      val panned = com.example.domain.AirportMapProjection.panCamera(cam, 120f, -60f)
+      assertTrue(panned.centerLon != cam.centerLon || panned.centerLat != cam.centerLat)
+
+      val mapPanel = AirportMapDesktopPanel(
+        onBackToBoard = {},
+        onOpenStationOnBoard = {},
+        onRefreshAllStations = {},
+        onRefreshSingleStation = {},
+        onToggleFavorite = {},
+      )
+      mapPanel.setLiveTileFetchingEnabled(false)
+      mapPanel.applyState(controller.state)
+      mapPanel.selectPin("UTAA")
+      mapPanel.setSize(980, 560)
+      mapPanel.doLayout()
+      val image = java.awt.image.BufferedImage(980, 560, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+      val g2 = image.createGraphics()
+      try {
+        mapPanel.paint(g2)
+      } finally {
+        g2.dispose()
+      }
+    } finally {
+      controller.shutdown()
     }
   }
 }

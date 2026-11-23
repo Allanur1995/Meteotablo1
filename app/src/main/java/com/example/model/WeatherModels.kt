@@ -62,6 +62,7 @@ data class DecodedWeather(
   val weatherPhenomena: String,
   val clouds: List<CloudLayer>,
   val ceilingMeters: Int?,
+  val ceilingFeet: Int? = null,
   val ceilingCode: String?,
   val temperatureC: Int?,
   val dewPointC: Int?,
@@ -116,3 +117,42 @@ data class LogEntry(
   val level: String,
   val message: String,
 )
+
+enum class TafChangeType(
+  val code: String,
+  val label: String,
+) {
+  BASE("BASE", "Основной прогноз"),
+  FM("FM", "С времени (FM)"),
+  BECMG("BECMG", "Переход (BECMG)"),
+  TEMPO("TEMPO", "Временно (TEMPO)"),
+  PROB("PROB", "Вероятность (PROB)"),
+}
+
+data class TafForecastPeriod(
+  val type: TafChangeType,
+  val badgeLabel: String,
+  val validityLabel: String,
+  val windSummary: String,
+  val visibilitySummary: String,
+  val cloudsSummary: String,
+  val phenomenaSummary: String,
+  val isHazardous: Boolean,
+  val rawSegment: String,
+  val windSpeedKt: Int? = null,
+  val gustKt: Int? = null,
+  val visibilityMeters: Int? = null,
+  val isWindAlert: Boolean = false,
+  val isVisibilityAlert: Boolean = false,
+)
+
+data class DecodedTaf(
+  val stationIcao: String,
+  val issuedUtc: String,
+  val validityWindow: String,
+  val isCancelled: Boolean,
+  val isNil: Boolean,
+  val periods: List<TafForecastPeriod>,
+  val rawTaf: String,
+)
+

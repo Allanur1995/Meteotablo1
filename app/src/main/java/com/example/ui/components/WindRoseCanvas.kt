@@ -44,12 +44,14 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.UnitConverter
+import com.example.model.RunwayCalculation
 import com.example.model.WindData
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendSummary
 import com.example.ui.theme.LocalMeteoPalette
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -60,6 +62,7 @@ fun WindRoseCanvas(
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
   modifier: Modifier = Modifier,
+  activeRunway: RunwayCalculation? = null,
 ) {
   val palette = LocalMeteoPalette.current
   val textMeasurer = rememberTextMeasurer()
@@ -93,6 +96,11 @@ fun WindRoseCanvas(
     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
     label = "windRoseGustRatio",
   )
+  val animatedRunwayHeading by animateFloatAsState(
+    targetValue = (activeRunway?.headingDeg ?: 0).toFloat(),
+    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+    label = "windRoseRunwayHeading",
+  )
 
   val speedDisplay = rawSpeed.roundToInt()
   val dirDisplay = when {
@@ -105,6 +113,7 @@ fun WindRoseCanvas(
   val accessibilitySummary = buildString {
     append("Роза ветров: направление $dirDisplay, скорость $speedDisplay ${windUnit.label}")
     if (rawGust > 0f) append(", порывы ${rawGust.roundToInt()} ${windUnit.label}")
+    if (activeRunway != null) append(", ВПП ${activeRunway.designator}")
   }
 
   Box(
@@ -257,6 +266,45 @@ fun WindRoseCanvas(
         )
       }
 
+      // Runway alignment strip inside compass if an active runway is provided
+      if (activeRunway != null) {
+        rotate(degrees = animatedRunwayHeading, pivot = Offset(cx, cy)) {
+          val rwyWidth = outerRadius * 0.24f
+          val rwyLength = outerRadius * 1.72f
+          val rwyLeft = cx - rwyWidth / 2f
+          val rwyTop = cy - rwyLength / 2f
+
+          drawRect(
+            color = palette.runwayFill.copy(alpha = 0.68f),
+            topLeft = Offset(rwyLeft, rwyTop),
+            size = Size(rwyWidth, rwyLength),
+          )
+          drawRect(
+            color = palette.runwayStroke.copy(alpha = 0.72f),
+            topLeft = Offset(rwyLeft, rwyTop),
+            size = Size(rwyWidth, rwyLength),
+            style = Stroke(width = 1.2.dp.toPx()),
+          )
+          // Dashed runway centerline
+          drawLine(
+            color = palette.runwayStroke.copy(alpha = 0.65f),
+            start = Offset(cx, rwyTop + 6.dp.toPx()),
+            end = Offset(cx, rwyTop + rwyLength - 6.dp.toPx()),
+            strokeWidth = 1.1.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f), 0f),
+          )
+          // Small directional landing chevron at approach end pointing toward runway heading
+          val arrowTipY = cy + rwyLength * 0.28f
+          val rwyArrow = Path().apply {
+            moveTo(cx, arrowTipY)
+            lineTo(cx - 4.dp.toPx(), arrowTipY + 7.dp.toPx())
+            lineTo(cx + 4.dp.toPx(), arrowTipY + 7.dp.toPx())
+            close()
+          }
+          drawPath(rwyArrow, color = palette.runwayStroke)
+        }
+      }
+
       // Graphical Wind Speed & Direction Vector
       if (wind.isCalm) {
         drawCircle(
@@ -407,6 +455,7 @@ fun WindRoseCard(
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
   windTrend: WindTrendSummary? = null,
+  activeRunway: RunwayCalculation? = null,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -436,6 +485,7 @@ fun WindRoseCard(
         wind = wind,
         windUnit = windUnit,
         onToggleUnit = onToggleUnit,
+        activeRunway = activeRunway,
         modifier = Modifier.weight(1f),
       )
 
@@ -472,6 +522,38 @@ fun WindRoseCard(
       }
     }
 
+    if (activeRunway != null) {
+      val hw = UnitConverter.convertWindFromKnots(activeRunway.headwindKt, windUnit)
+      val xw = UnitConverter.convertWindFromKnots(activeRunway.crosswindKt, windUnit)
+      val isTailwind = hw < -0.05
+      val hwLabel = if (isTailwind) "Попутный" else "Встречный"
+      val hwColor = if (isTailwind) palette.tailwindNegative else palette.headwindPositive
+      val xwColor = when {
+        activeRunway.crosswindKt >= 15.0 -> palette.tailwindNegative
+        activeRunway.crosswindKt >= 10.0 -> palette.metarAmber
+        else -> palette.textPrimary
+      }
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("wind_rose_runway_strip"),
+      ) {
+        WindStatBox(
+          label = "ВПП ${activeRunway.designator} · $hwLabel",
+          value = String.format(Locale.US, "%.1f %s", abs(hw), windUnit.label),
+          valueColor = hwColor,
+          modifier = Modifier.weight(1f),
+        )
+        WindStatBox(
+          label = "ВПП ${activeRunway.designator} · Боковой",
+          value = String.format(Locale.US, "%.1f %s", xw, windUnit.label),
+          valueColor = xwColor,
+          modifier = Modifier.weight(1f),
+        )
+      }
+    }
+
     if (windTrend != null) {
       WindTrendIndicator(
         trend = windTrend,
@@ -485,10 +567,12 @@ fun WindRoseCard(
 private fun WindStatBox(
   label: String,
   value: String,
+  valueColor: Color? = null,
+  modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   Column(
-    modifier = Modifier
+    modifier = modifier
       .fillMaxWidth()
       .background(palette.fieldBackground, RoundedCornerShape(3.dp))
       .border(0.8.dp, palette.border, RoundedCornerShape(3.dp))
@@ -501,7 +585,7 @@ private fun WindStatBox(
     )
     Text(
       text = value,
-      color = palette.textPrimary,
+      color = valueColor ?: palette.textPrimary,
       fontSize = 14.sp,
       fontWeight = FontWeight.Bold,
     )

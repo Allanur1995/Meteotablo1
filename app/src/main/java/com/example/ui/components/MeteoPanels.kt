@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
@@ -101,6 +102,7 @@ fun MeteoTopToolbar(
   onOpenAboutDialog: () -> Unit = {},
   onOpenSettings: () -> Unit = {},
   onOpenMap: () -> Unit = {},
+  onOpenHistory24h: () -> Unit = {},
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
@@ -444,6 +446,20 @@ fun MeteoTopToolbar(
         },
         testTag = "toolbar_map_button",
         onClick = onOpenMap,
+      )
+
+      ToolbarButton(
+        label = "24ч",
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.History,
+            contentDescription = "История 24ч и график QNH",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(14.dp),
+          )
+        },
+        testTag = "toolbar_history_24h_button",
+        onClick = onOpenHistory24h,
       )
 
       ToolbarButton(
@@ -893,8 +909,8 @@ fun CenterWeatherPanel(
         )
         CompactInlineMetric(
           label = "ВНГО",
-          value = weather.ceilingMeters?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
-          unit = if (weather.ceilingMeters != null) "м" else "",
+          value = weather.ceilingFeet?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
+          unit = if (weather.ceilingFeet != null) "ft" else "",
           modifier = Modifier.weight(1f),
         )
       }
@@ -1106,8 +1122,8 @@ fun CenterWeatherPanel(
     )
     InstrumentValueRow(
       label = "ВНГО",
-      value = weather.ceilingMeters?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
-      unit = if (weather.ceilingMeters != null) "м" else "",
+      value = weather.ceilingFeet?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
+      unit = if (weather.ceilingFeet != null) "ft" else "",
       isHighlighted = true,
     )
 

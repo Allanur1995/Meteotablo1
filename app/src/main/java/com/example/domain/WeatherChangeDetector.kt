@@ -77,7 +77,8 @@ object WeatherChangeDetector {
         isCritical = true
       }
       if (curCeil != null && curCeil <= 200) {
-        reasons.add("Низкая ВНГО: $curCeil м")
+        val curCeilFt = current.ceilingFeet ?: kotlin.math.round(curCeil * 3.28084).toInt()
+        reasons.add("Низкая ВНГО: $curCeilFt ft")
         isCritical = true
       }
       if (curWindKt >= 25 || (curGustKt != null && curGustKt >= 25)) {
@@ -133,15 +134,17 @@ object WeatherChangeDetector {
       // 4. Ceiling (ВНГО) drop
       val prevCeil = previous.ceilingMeters
       if (curCeil != null) {
+        val curCeilFt = current.ceilingFeet ?: kotlin.math.round(curCeil * 3.28084).toInt()
         if (prevCeil != null) {
+          val prevCeilFt = kotlin.math.round(prevCeil * 3.28084).toInt()
           val crossedBelow = prevCeil > config.ceilingThresholdMeters && curCeil <= config.ceilingThresholdMeters
           val sharpDrop = prevCeil - curCeil >= 200 && curCeil <= 600
           if (crossedBelow || sharpDrop) {
-            reasons.add("Снижение ВНГО ${prevCeil}→$curCeil м")
+            reasons.add("Снижение ВНГО ${prevCeilFt}→$curCeilFt ft")
             if (curCeil <= 150) isCritical = true
           }
         } else if (curCeil <= config.ceilingThresholdMeters) {
-          reasons.add("Низкая ВНГО: $curCeil м")
+          reasons.add("Низкая ВНГО: $curCeilFt ft")
           if (curCeil <= 150) isCritical = true
         }
       }

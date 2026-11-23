@@ -35,7 +35,8 @@ data class ServerConfig(
   }
 
   companion object {
-    const val DEFAULT_SERVER_URL = "http://217.174.229.206:8181/"
+    const val DEFAULT_SERVER_URL = "http://217.174.229.206:8181/cgi-bin/wlogin"
+    const val LEGACY_ROOT_URL = "http://217.174.229.206:8181/"
     const val DEFAULT_USERNAME = "meteo"
     const val DEFAULT_PASSWORD = "meteo"
 
@@ -49,7 +50,30 @@ data class ServerConfig(
       } else {
         "http://$trimmed"
       }
-      return if (withScheme.endsWith("/")) withScheme else "$withScheme/"
+      if (withScheme.endsWith("/") || withScheme.contains("?")) {
+        return withScheme
+      }
+      val schemeIdx = withScheme.indexOf("://")
+      val pathStart = if (schemeIdx >= 0) withScheme.indexOf('/', schemeIdx + 3) else withScheme.indexOf('/')
+      // Bare host[:port] without path gets a trailing "/"; any explicit path (e.g. /cgi-bin/wlogin or /index.php) is preserved as-is.
+      return if (pathStart < 0) "$withScheme/" else withScheme
+    }
+
+    fun retrofitBaseUrl(raw: String): String {
+      val normalized = normalizeServerUrl(raw).substringBefore('?')
+      if (normalized.endsWith("/")) return normalized
+      val schemeIdx = normalized.indexOf("://")
+      val firstPathSlash = if (schemeIdx >= 0) normalized.indexOf('/', schemeIdx + 3) else normalized.indexOf('/')
+      return if (firstPathSlash < 0) {
+        "$normalized/"
+      } else {
+        val lastSlash = normalized.lastIndexOf('/')
+        if (lastSlash > firstPathSlash) {
+          normalized.substring(0, lastSlash + 1)
+        } else {
+          normalized.substring(0, firstPathSlash + 1)
+        }
+      }
     }
   }
 }

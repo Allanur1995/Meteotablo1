@@ -96,6 +96,7 @@ fun MeteoTabloScreen(
     onDismissBanner = viewModel::dismissBanner,
     onRefreshMapWeather = viewModel::refreshMapWeather,
     onRefreshMapStation = viewModel::fetchStationWeatherForMap,
+    onLoad24hHistory = viewModel::load24hHistory,
     modifier = modifier,
   )
 }
@@ -131,6 +132,7 @@ fun MeteoTabloContent(
   onDismissBanner: () -> Unit,
   onRefreshMapWeather: () -> Unit = {},
   onRefreshMapStation: (String) -> Unit = {},
+  onLoad24hHistory: (Boolean) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -141,6 +143,43 @@ fun MeteoTabloContent(
   var showMetarTable by remember { mutableStateOf(false) }
   var showSettings by remember { mutableStateOf(false) }
   var showMapScreen by remember { mutableStateOf(false) }
+  var showHistory24h by remember { mutableStateOf(false) }
+  var showThresholdConfig by remember { mutableStateOf(false) }
+
+  if (showThresholdConfig) {
+    ThresholdConfigScreen(
+      station = uiState.station,
+      weather = uiState.weather,
+      windUnit = uiState.windUnit,
+      alertConfig = uiState.alertConfig,
+      isFullscreen = uiState.isFullscreen,
+      onUpdateAlertConfig = onUpdateAlertConfig,
+      onBack = { showThresholdConfig = false },
+      modifier = modifier,
+    )
+    return
+  }
+
+  if (showHistory24h) {
+    WeatherHistory24hScreen(
+      station = uiState.station,
+      entries = uiState.weatherHistory24h,
+      qnhTrend = uiState.qnhTrend24h,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      alertConfig = uiState.alertConfig,
+      isFullscreen = uiState.isFullscreen,
+      isLoading = uiState.isLoadingHistory,
+      statusMessage = uiState.historyStatusMessage,
+      onBack = { showHistory24h = false },
+      onRefresh24h = { onLoad24hHistory(true) },
+      onToggleWindUnit = onToggleWindUnit,
+      onTogglePressureUnit = onTogglePressureUnit,
+      onOpenThresholdConfig = { showThresholdConfig = true },
+      modifier = modifier,
+    )
+    return
+  }
 
   if (showSettings) {
     SettingsScreen(
@@ -151,6 +190,7 @@ fun MeteoTabloContent(
       pressureUnit = uiState.pressureUnit,
       isNightMode = uiState.isNightMode,
       isFullscreen = uiState.isFullscreen,
+      alertConfig = uiState.alertConfig,
       onBack = { showSettings = false },
       onSelectUnitSystem = onSelectUnitSystem,
       onSelectWindUnit = onSelectWindUnit,
@@ -162,6 +202,11 @@ fun MeteoTabloContent(
         showStationDialog = true
       },
       onOpenAlertsSettings = { showAlertsDialog = true },
+      onOpenThresholdConfig = { showThresholdConfig = true },
+      onOpenHistory24h = {
+        showHistory24h = true
+        onLoad24hHistory(false)
+      },
       modifier = modifier,
     )
     if (showStationDialog) {
@@ -215,6 +260,9 @@ fun MeteoTabloContent(
       isCurrentFavorite = uiState.isCurrentStationFavorite,
       isFullscreen = uiState.isFullscreen,
       windTrend = uiState.windTrend,
+      activeRunway = uiState.primaryRunwayCalc,
+      alertConfig = uiState.alertConfig,
+      qnhTrend24h = uiState.qnhTrend24h,
       onBack = { showMetarTable = false },
       onEditRawMetar = { showStationDialog = true },
       onToggleWindUnit = onToggleWindUnit,
@@ -223,6 +271,11 @@ fun MeteoTabloContent(
       onSelectFavoriteStation = onSelectStation,
       onAddFavorite = onAddFavorite,
       onRemoveFavorite = onRemoveFavorite,
+      onOpenThresholdConfig = { showThresholdConfig = true },
+      onOpenHistory24h = {
+        showHistory24h = true
+        onLoad24hHistory(false)
+      },
       modifier = modifier,
     )
     if (showStationDialog) {
@@ -347,6 +400,10 @@ fun MeteoTabloContent(
           onOpenMap = {
             showMapScreen = true
             onRefreshMapWeather()
+          },
+          onOpenHistory24h = {
+            showHistory24h = true
+            onLoad24hHistory(false)
           },
           compactMode = isCompactHeight,
         )

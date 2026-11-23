@@ -96,10 +96,16 @@ class DesktopServerConfigStorage(
       !fallbackNoaa -> com.example.data.DataSourceMode.IP_ONLY
       else -> com.example.data.DataSourceMode.AUTO_IP_FIRST
     }
+    val loadedUrl = props.getProperty(KEY_SERVER_URL, ServerConfig.DEFAULT_SERVER_URL)
+      .trim()
+      .ifBlank { ServerConfig.DEFAULT_SERVER_URL }
+    val migratedUrl = if (loadedUrl == ServerConfig.LEGACY_ROOT_URL) {
+      ServerConfig.DEFAULT_SERVER_URL
+    } else {
+      loadedUrl
+    }
     return ServerConfig(
-      url = props.getProperty(KEY_SERVER_URL, ServerConfig.DEFAULT_SERVER_URL)
-        .trim()
-        .ifBlank { ServerConfig.DEFAULT_SERVER_URL },
+      url = migratedUrl,
       username = props.getProperty(KEY_USERNAME, ServerConfig.DEFAULT_USERNAME).orEmpty(),
       password = props.getProperty(KEY_PASSWORD, ServerConfig.DEFAULT_PASSWORD).orEmpty(),
       useCustomServer = useCustom,

@@ -78,13 +78,13 @@ class ExampleRobolectricTest {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val storage1 = SharedPreferencesServerConfigStorage(context)
     val initial = storage1.loadConfig()
-    assertEquals("http://217.174.229.206:8181/", initial.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", initial.url)
     assertEquals("meteo", initial.username)
     assertEquals("meteo", initial.password)
 
     storage1.saveConfig(
       ServerConfig(
-        url = "217.174.229.206:8181",
+        url = "217.174.229.206:8181/cgi-bin/wlogin",
         username = "meteo",
         password = "secret",
         useCustomServer = true,
@@ -98,7 +98,7 @@ class ExampleRobolectricTest {
 
     val storage2 = SharedPreferencesServerConfigStorage(context)
     val reloaded = storage2.loadConfig()
-    assertEquals("http://217.174.229.206:8181/", reloaded.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", reloaded.url)
     assertEquals("secret", reloaded.password)
     assertFalse(reloaded.fallbackToNoaa)
     assertEquals(DataSourceMode.IP_ONLY, reloaded.resolvedMode())
@@ -247,6 +247,9 @@ class ExampleRobolectricTest {
 
     composeTestRule.onNodeWithTag("raw_metar_full_text").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("wind_rose_canvas").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("wind_rose_runway_strip").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("ВПП 35L · Встречный").assertExists()
+    composeTestRule.onNodeWithText("ВПП 35L · Боковой").assertExists()
     composeTestRule.onNodeWithTag("metar_table_unit_toggle").performScrollTo().assertTextContains("kt")
     composeTestRule.onNodeWithTag("wind_rose_canvas").performScrollTo().performClick()
     composeTestRule.onNodeWithTag("metar_table_unit_toggle").performScrollTo().assertTextContains("м/с")
@@ -258,8 +261,30 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("metar_structured_table").assertExists()
     composeTestRule.onNodeWithTag("metar_row_wind").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("metar_row_visibility").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("metar_row_clouds").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("ВНГО 23000 ft").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("BKN 23000 ft").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("metar_row_qnh").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithText("30,21 дм", substring = true).performScrollTo().assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("taf_structured_table").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("taf_row_0").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("SCT 3000 ft").performScrollTo().assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("table_tab_TAF").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("metar_structured_table").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("taf_structured_table").assertExists()
+
+    composeTestRule.onNodeWithTag("table_tab_METAR").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("metar_structured_table").assertExists()
+    composeTestRule.onNodeWithTag("taf_structured_table").assertDoesNotExist()
+
+    composeTestRule.onNodeWithTag("table_tab_ALL").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("metar_structured_table").assertExists()
+    composeTestRule.onNodeWithTag("taf_structured_table").assertExists()
   }
 
   @Test
@@ -483,7 +508,12 @@ class ExampleRobolectricTest {
         Box(modifier = Modifier.size(0.dp)) {
           MeteotabloSplashScreen(onFinished = {}, durationMillis = 5000L)
           WindTrendIndicator(trend = sampleTrend, windUnit = WindSpeedUnit.KT)
-          WindRoseCanvas(wind = zeroWind, windUnit = WindSpeedUnit.KT, onToggleUnit = {})
+          WindRoseCanvas(
+            wind = zeroWind,
+            windUnit = WindSpeedUnit.KT,
+            onToggleUnit = {},
+            activeRunway = zeroCalc,
+          )
           RunwayWindRose(
             calculation = zeroCalc,
             wind = zeroWind,
@@ -806,29 +836,32 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("map_canvas_container").assertIsDisplayed()
 
     // Initially active station UTAM is selected -> shows IFR & wind summary
-    composeTestRule.onNodeWithTag("map_summary_icao").assertTextContains("UTAM")
-    composeTestRule.onNodeWithTag("map_summary_flight_category").assertTextContains("IFR")
-    composeTestRule.onNodeWithTag("map_summary_pressure").assertTextContains("1006 гПа")
+    composeTestRule.onNodeWithTag("map_summary_icao").performScrollTo().assertTextContains("UTAM")
+    composeTestRule.onNodeWithTag("map_summary_flight_category").performScrollTo().assertTextContains("IFR")
+    composeTestRule.onNodeWithTag("map_summary_pressure").performScrollTo().assertTextContains("1006 гПа")
 
     // Tap UTAA pin -> summary updates to UTAA weather brief
     composeTestRule.onNodeWithTag("map_pin_UTAA").performClick()
     composeTestRule.waitForIdle()
 
-    composeTestRule.onNodeWithTag("map_summary_icao").assertTextContains("UTAA")
-    composeTestRule.onNodeWithTag("map_summary_flight_category").assertTextContains("VFR")
-    composeTestRule.onNodeWithTag("map_summary_wind").assertTextContains("090° 14 kt")
-    composeTestRule.onNodeWithTag("map_summary_visibility").assertTextContains("CAVOK", substring = true)
-    composeTestRule.onNodeWithTag("map_summary_temperature").assertTextContains("26°C / 7°C")
-    composeTestRule.onNodeWithTag("map_summary_pressure").assertTextContains("1019 гПа")
+    composeTestRule.onNodeWithTag("map_summary_icao").performScrollTo().assertTextContains("UTAA")
+    composeTestRule.onNodeWithTag("map_summary_flight_category").performScrollTo().assertTextContains("VFR")
+    composeTestRule.onNodeWithTag("map_summary_wind").performScrollTo().assertTextContains("090° 14 kt")
+    composeTestRule.onNodeWithTag("map_summary_visibility").performScrollTo().assertTextContains("CAVOK", substring = true)
+    composeTestRule.onNodeWithTag("map_summary_temperature").performScrollTo().assertTextContains("26°C / 7°C")
+    composeTestRule.onNodeWithTag("map_summary_pressure").performScrollTo().assertTextContains("1019 гПа")
 
-    // Toggle favorite directly from map summary card
-    assertFalse("UTAA" in vm.uiState.value.favoriteIcaos)
-    composeTestRule.onNodeWithTag("map_summary_favorite_toggle").performClick()
+    // Toggle favorite directly from map summary card (both remove & re-add)
+    val wasFav = "UTAA" in vm.uiState.value.favoriteIcaos
+    composeTestRule.onNodeWithTag("map_summary_favorite_toggle").performScrollTo().performClick()
     composeTestRule.waitForIdle()
-    assertTrue("UTAA" in vm.uiState.value.favoriteIcaos)
+    assertEquals(!wasFav, "UTAA" in vm.uiState.value.favoriteIcaos)
+    composeTestRule.onNodeWithTag("map_summary_favorite_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(wasFav, "UTAA" in vm.uiState.value.favoriteIcaos)
 
     // Switch region to Regional and verify regional hubs (OMDB, LTFM) are pinned
-    composeTestRule.onNodeWithTag("map_region_REGIONAL").performClick()
+    composeTestRule.onNodeWithTag("map_region_REGIONAL").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("map_pin_OMDB").assertExists()
     composeTestRule.onNodeWithTag("map_pin_LTFM").assertExists()
@@ -841,10 +874,69 @@ class ExampleRobolectricTest {
     // Select UTAA again and tap Open on Board -> navigates back with UTAA active
     composeTestRule.onNodeWithTag("map_station_chip_UTAA").performScrollTo().performClick()
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("map_open_on_board_button").performClick()
+    composeTestRule.onNodeWithTag("map_open_on_board_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
 
     assertEquals("UTAA", vm.uiState.value.station.icao)
     composeTestRule.onNodeWithTag("toolbar_station_selector").assertTextContains("UTAA", substring = true)
+  }
+
+  @Test
+  fun `slippy map projection generates mercator tiles and valid tile urls for all layers`() {
+    val cam = AirportMapProjection.cameraForRegion(
+      preset = MapRegionPreset.TURKMENISTAN,
+      stations = AirportCatalog.presets,
+      widthPx = 1080f,
+      heightPx = 720f,
+    )
+    val tiles = AirportMapProjection.visibleTiles(cam, 1080f, 720f)
+    assertTrue(tiles.isNotEmpty())
+    assertTrue(tiles.all { it.z in 1..16 && it.y >= 0 && it.tileSizePx > 0f })
+
+    val osmUrl = com.example.domain.MapLayerStyle.OSM.tileUrl(5, 20, 12)
+    val cartoUrl = com.example.domain.MapLayerStyle.CARTO_VOYAGER.tileUrl(5, 20, 12)
+    val satUrl = com.example.domain.MapLayerStyle.ESRI_SATELLITE.tileUrl(5, 20, 12)
+    assertEquals("https://tile.openstreetmap.org/5/20/12.png", osmUrl)
+    assertEquals("https://basemaps.cartocdn.com/rastertiles/voyager/5/20/12.png", cartoUrl)
+    assertTrue(satUrl.endsWith("/5/12/20"))
+  }
+
+  @Test
+  fun `server config preserves php endpoints and map layer switcher toggles satellite view`() {
+    assertEquals(
+      "http://217.174.229.206:8181/tablo.php",
+      ServerConfig.normalizeServerUrl("217.174.229.206:8181/tablo.php"),
+    )
+    assertEquals(
+      "http://217.174.229.206:8181/",
+      ServerConfig.retrofitBaseUrl("217.174.229.206:8181/tablo.php"),
+    )
+
+    val vm = MeteoViewModel(autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open Server dialog and verify the diagnostic "Проверить IP-сервер" button exists
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("settings_open_server_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("server_test_connection_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("Закрыть").performClick()
+    composeTestRule.onNodeWithTag("settings_back_button").performClick()
+    composeTestRule.waitForIdle()
+
+    // Open Map screen and switch raster tile styles (OSM -> Satellite -> Carto Dark)
+    composeTestRule.onNodeWithTag("toolbar_map_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("map_layer_ESRI_SATELLITE").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("map_layer_CARTO_DARK").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("map_layer_OSM").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("map_canvas_container").assertIsDisplayed()
   }
 }

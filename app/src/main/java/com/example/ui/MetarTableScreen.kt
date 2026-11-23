@@ -28,21 +28,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Thermostat
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -56,35 +50,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.domain.UnitConverter
+import com.example.domain.AviationWeatherParser
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
+import com.example.model.QnhTrendSummary
+import com.example.model.RunwayCalculation
+import com.example.model.WeatherAlertConfig
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendSummary
+import com.example.ui.components.AviationTableTab
+import com.example.ui.components.AviationWeatherTable
+import com.example.ui.components.QnhHistoryLineChart
 import com.example.ui.components.WindRoseCard
 import com.example.ui.theme.LocalMeteoPalette
-import java.util.Locale
-import kotlin.math.roundToInt
-
-private data class MetarTableRowData(
-  val icon: ImageVector,
-  val label: String,
-  val subLabel: String,
-  val primaryValue: String,
-  val secondaryDetails: String,
-  val rawToken: String,
-  val testTag: String,
-)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -97,6 +83,9 @@ fun MetarTableScreen(
   isCurrentFavorite: Boolean,
   isFullscreen: Boolean,
   windTrend: WindTrendSummary? = null,
+  activeRunway: RunwayCalculation? = null,
+  alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+  qnhTrend24h: QnhTrendSummary? = null,
   onBack: () -> Unit,
   onEditRawMetar: () -> Unit,
   onToggleWindUnit: () -> Unit,
@@ -105,6 +94,8 @@ fun MetarTableScreen(
   onSelectFavoriteStation: (String) -> Unit,
   onAddFavorite: (String) -> Unit,
   onRemoveFavorite: (String) -> Unit,
+  onOpenThresholdConfig: () -> Unit = {},
+  onOpenHistory24h: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -122,10 +113,6 @@ fun MetarTableScreen(
 
   val tokens = remember(weather.rawMetar) {
     weather.rawMetar.split(" ").filter { it.isNotBlank() }
-  }
-
-  val tableRows = remember(weather, station, windUnit, pressureUnit) {
-    buildMetarTableRows(station, weather, windUnit, pressureUnit)
   }
 
   Box(
@@ -379,6 +366,69 @@ fun MetarTableScreen(
         }
       }
 
+      // Quick Operational Actions Strip: Threshold Alerts & 24h History
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .testTag("metar_table_thresholds_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.panelSurface)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenThresholdConfig)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Tune,
+            contentDescription = "Настроить пороги видимости и ветра",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = if (alertConfig.tableAlertsEnabled) {
+              "Пороги тревоги (≥${alertConfig.tableWindAlertKt} kt · ≤${alertConfig.tableVisibilityAlertMeters} м)"
+            } else {
+              "Пороги тревоги (выкл.)"
+            },
+            color = palette.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .testTag("metar_table_history_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.panelSurface)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenHistory24h)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.History,
+            contentDescription = "История METAR/TAF за 24 часа",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = "История 24ч · QNH",
+            color = palette.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+
       // Raw METAR Banner & Token Strip
       Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -485,69 +535,50 @@ fun MetarTableScreen(
         }
       }
 
-      // Graphical Wind Rose Card (Canvas)
+      val resolvedRunway = remember(activeRunway, station, weather) {
+        activeRunway ?: station.runways.firstOrNull()?.let { rwy ->
+          AviationWeatherParser.calculateRunwayComponents(
+            designator = rwy.primaryDesignator,
+            runwayHeadingDeg = rwy.primaryHeadingDeg,
+            wind = weather.wind,
+            frictionCoeff = weather.frictionCoeff,
+            rvrMeters = weather.rvrPrimaryMeters,
+          )
+        }
+      }
+
+      // Graphical Wind Rose Card (Canvas) with Runway Wind Overlay
       WindRoseCard(
         wind = weather.wind,
         windUnit = windUnit,
         onToggleUnit = onToggleWindUnit,
         windTrend = windTrend,
+        activeRunway = resolvedRunway,
       )
 
-      // Structured Readable METAR Table
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("metar_structured_table")
-          .background(palette.panelSurface)
-          .border(1.dp, palette.border),
-      ) {
-        // Table Column Header
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier
-            .fillMaxWidth()
-            .background(palette.secondaryFieldBackground)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-          Text(
-            text = "ПАРАМЕТР",
-            color = palette.textSecondary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp,
-            modifier = Modifier.weight(1.1f),
-          )
-          Text(
-            text = "ЗНАЧЕНИЕ / РАСШИФРОВКА",
-            color = palette.textSecondary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp,
-            modifier = Modifier.weight(1.5f),
-          )
-          Text(
-            text = "КОД",
-            color = palette.textSecondary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp,
-            textAlign = TextAlign.End,
-            modifier = Modifier.weight(0.65f),
-          )
-        }
-
-        HorizontalDivider(thickness = 1.dp, color = palette.borderStrong)
-
-        tableRows.forEachIndexed { index, row ->
-          MetarTableRowItem(
-            row = row,
-            isAlternate = index % 2 == 1,
-          )
-          if (index < tableRows.lastIndex) {
-            HorizontalDivider(thickness = 0.8.dp, color = palette.border)
-          }
-        }
+      // Compact 24h QNH Trend Chart when available
+      if (qnhTrend24h != null) {
+        QnhHistoryLineChart(
+          trend = qnhTrend24h,
+          pressureUnit = pressureUnit,
+          onTogglePressureUnit = onTogglePressureUnit,
+          compactMode = true,
+        )
       }
+
+      // Reusable Aviation Weather Table (Parsed METAR + TAF Periods)
+      AviationWeatherTable(
+        station = station,
+        weather = weather,
+        windUnit = windUnit,
+        pressureUnit = pressureUnit,
+        initialTab = AviationTableTab.ALL,
+        windTrend = windTrend,
+        alertConfig = alertConfig,
+        onToggleWindUnit = onToggleWindUnit,
+        onTogglePressureUnit = onTogglePressureUnit,
+        onOpenThresholdConfig = onOpenThresholdConfig,
+      )
 
       // Footer Status
       Box(
@@ -606,258 +637,6 @@ fun MetarTableScreen(
   }
 }
 
-@Composable
-private fun MetarTableRowItem(
-  row: MetarTableRowData,
-  isAlternate: Boolean,
-) {
-  val palette = LocalMeteoPalette.current
-
-  Row(
-    verticalAlignment = Alignment.CenterVertically,
-    modifier = Modifier
-      .fillMaxWidth()
-      .testTag(row.testTag)
-      .background(if (isAlternate) palette.secondaryFieldBackground.copy(alpha = 0.45f) else palette.fieldBackground)
-      .padding(horizontal = 12.dp, vertical = 10.dp),
-  ) {
-    // Column 1: Clear Icon + Parameter Label
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      modifier = Modifier
-        .weight(1.1f)
-        .padding(end = 8.dp),
-    ) {
-      Icon(
-        imageVector = row.icon,
-        contentDescription = row.label,
-        tint = palette.metarAmber,
-        modifier = Modifier.size(18.dp),
-      )
-      Spacer(modifier = Modifier.width(8.dp))
-      Column {
-        Text(
-          text = row.label,
-          color = palette.textPrimary,
-          fontSize = 13.sp,
-          fontWeight = FontWeight.Bold,
-        )
-        Text(
-          text = row.subLabel,
-          color = palette.textMuted,
-          fontSize = 10.5.sp,
-        )
-      }
-    }
-
-    // Column 2: Decoded Value + Details
-    Column(
-      modifier = Modifier
-        .weight(1.5f)
-        .padding(end = 8.dp),
-    ) {
-      Text(
-        text = row.primaryValue,
-        color = palette.textPrimary,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Bold,
-      )
-      if (row.secondaryDetails.isNotBlank()) {
-        Text(
-          text = row.secondaryDetails,
-          color = palette.textSecondary,
-          fontSize = 11.5.sp,
-          lineHeight = 15.sp,
-        )
-      }
-    }
-
-    // Column 3: Raw METAR Token Badge
-    Box(
-      contentAlignment = Alignment.CenterEnd,
-      modifier = Modifier.weight(0.65f),
-    ) {
-      Box(
-        modifier = Modifier
-          .background(palette.secondaryFieldBackground, RoundedCornerShape(3.dp))
-          .border(0.8.dp, palette.border, RoundedCornerShape(3.dp))
-          .padding(horizontal = 6.dp, vertical = 3.dp),
-      ) {
-        Text(
-          text = row.rawToken,
-          color = palette.textPrimary,
-          fontSize = 11.sp,
-          fontFamily = FontFamily.Monospace,
-          fontWeight = FontWeight.SemiBold,
-          textAlign = TextAlign.End,
-        )
-      }
-    }
-  }
-}
-
-private fun buildMetarTableRows(
-  station: AirportStation,
-  weather: DecodedWeather,
-  windUnit: WindSpeedUnit,
-  pressureUnit: PressureUnit,
-): List<MetarTableRowData> {
-  val tokens = weather.rawMetar.split(" ").filter { it.isNotBlank() }
-
-  val windToken = tokens.firstOrNull { Regex("^(\\d{3}|VRB)\\d{2,3}(G\\d{2,3})?(KT|MPS)$").matches(it) } ?: "---"
-  val visToken = when {
-    weather.isCavok -> "CAVOK"
-    else -> tokens.firstOrNull { Regex("^(\\d{4}|\\d+SM)$").matches(it) && it != windToken } ?: "---"
-  }
-  val qnhToken = tokens.firstOrNull { Regex("^[QA]\\d{4}$").matches(it) } ?: "---"
-  val obsToken = tokens.firstOrNull { Regex("^\\d{6}Z$").matches(it) } ?: "---"
-  val tempToken = tokens.firstOrNull { Regex("^M?\\d{2}/M?\\d{2}$").matches(it) } ?: "---"
-  val rwyStateToken = tokens.firstOrNull { Regex("^R\\d{2}[LRC]?/.*$").matches(it) } ?: "---"
-  val cloudTokens = weather.clouds.joinToString(" ") { it.rawToken }.ifBlank {
-    if (weather.isCavok) "CAVOK" else "NSC"
-  }
-
-  val windDirText = when {
-    weather.wind.isCalm -> "Штиль"
-    weather.wind.isVariable -> "Переменный (VRB)"
-    weather.wind.directionDeg != null -> String.format(Locale.US, "%03d°", weather.wind.directionDeg)
-    else -> "--"
-  }
-  val activeSpeed = UnitConverter.formatWindSpeedValue(weather.wind.speedKt, windUnit)
-  val speedKt = weather.wind.speedKt
-  val speedMps = weather.wind.speedMps.roundToInt()
-  val speedKph = UnitConverter.formatWindSpeedValue(weather.wind.speedKt, WindSpeedUnit.KPH)
-  val windSpeedPrimary = "$activeSpeed ${windUnit.label}"
-  val allWindConversions = "$speedKt kt · $speedMps м/с · $speedKph км/ч"
-
-  val gustPart = weather.wind.gustKt?.let { gKt ->
-    val gVal = UnitConverter.formatWindSpeedValue(gKt, windUnit)
-    " · порывы $gVal ${windUnit.label}"
-  }.orEmpty()
-  val varPart = if (weather.wind.variableFromDeg != null && weather.wind.variableToDeg != null) {
-    " · сектор ${weather.wind.variableFromDeg}°–${weather.wind.variableToDeg}°"
-  } else {
-    ""
-  }
-
-  val visPrimary = when {
-    weather.isCavok -> "≥ 10 км (CAVOK)"
-    weather.visibilityMeters != null && weather.visibilityMeters >= 9999 -> "≥ 10 км (9999 м)"
-    weather.visibilityMeters != null -> "${weather.visibilityMeters} м"
-    else -> "Нет данных"
-  }
-  val rvrDetail = buildString {
-    append("Явления: ${weather.weatherPhenomena}")
-    if (weather.rvrPrimaryMeters != null) {
-      append(" · RVR ${weather.rvrPrimaryMeters} м")
-    }
-  }
-
-  val (qnhVal, qnhUnitLabel) = UnitConverter.formatPressurePrimary(
-    hpa = weather.qnhHpa,
-    inHg = weather.qnhInHg,
-    unit = pressureUnit,
-  )
-  val qnhPrimary = "$qnhVal $qnhUnitLabel"
-  val qnhSecondary = buildString {
-    append(
-      UnitConverter.formatPressureSecondary(
-        hpa = weather.qnhHpa,
-        mmHg = weather.qnhMmHg,
-        inHg = weather.qnhInHg,
-        activeUnit = pressureUnit,
-      ),
-    )
-    if (weather.qfeHpa != null && weather.qfeMmHg != null) {
-      val (qfeVal, qfeUnit) = UnitConverter.formatPressurePrimary(weather.qfeHpa, weather.qfeInHg, pressureUnit)
-      append("\nQFE (${station.elevationMeters} м): $qfeVal $qfeUnit / ${weather.qfeMmHg} мм")
-    }
-  }
-
-  val tempPrimary = if (weather.temperatureC != null && weather.dewPointC != null) {
-    "${weather.temperatureC} °C / ${weather.dewPointC} °C"
-  } else {
-    "-- / --"
-  }
-  val spreadDetail = if (weather.temperatureC != null && weather.dewPointC != null) {
-    "Дефицит точки росы: ${weather.temperatureC - weather.dewPointC} °C"
-  } else {
-    ""
-  }
-
-  val ceilingPrimary = weather.ceilingMeters?.let { "ВНГО $it м" } ?: if (weather.isCavok) "CAVOK" else "Без значимой облачности"
-  val cloudsDetail = if (weather.clouds.isNotEmpty()) {
-    weather.clouds.joinToString(", ") { "${it.cover} ${it.baseMeters} м (${it.baseFeet} ft)" }
-  } else {
-    "Слои облачности не зафиксированы"
-  }
-
-  return listOf(
-    MetarTableRowData(
-      icon = Icons.Filled.Air,
-      label = "Ветер",
-      subLabel = "Wind",
-      primaryValue = "$windDirText, $windSpeedPrimary",
-      secondaryDetails = "$allWindConversions$gustPart$varPart",
-      rawToken = windToken,
-      testTag = "metar_row_wind",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.Visibility,
-      label = "Видимость",
-      subLabel = "Visibility (MOR)",
-      primaryValue = visPrimary,
-      secondaryDetails = rvrDetail,
-      rawToken = visToken,
-      testTag = "metar_row_visibility",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.Compress,
-      label = "Давление QNH",
-      subLabel = "Altimeter / QNH",
-      primaryValue = qnhPrimary,
-      secondaryDetails = qnhSecondary,
-      rawToken = qnhToken,
-      testTag = "metar_row_qnh",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.Cloud,
-      label = "Облачность",
-      subLabel = "Clouds / ВНГО",
-      primaryValue = ceilingPrimary,
-      secondaryDetails = cloudsDetail,
-      rawToken = cloudTokens,
-      testTag = "metar_row_clouds",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.Thermostat,
-      label = "Температура / DP",
-      subLabel = "Temp / Dew Point",
-      primaryValue = tempPrimary,
-      secondaryDetails = spreadDetail,
-      rawToken = tempToken,
-      testTag = "metar_row_temp",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.WaterDrop,
-      label = "Состояние ВПП",
-      subLabel = "Runway / КСц",
-      primaryValue = weather.frictionCoeff?.let { String.format(Locale.US, "КСц %.2f", it) } ?: "Нет данных",
-      secondaryDetails = "Особые условия: ${weather.specialConditions}",
-      rawToken = rwyStateToken,
-      testTag = "metar_row_runway",
-    ),
-    MetarTableRowData(
-      icon = Icons.Filled.Schedule,
-      label = "Время наблюдения",
-      subLabel = "Observation Time",
-      primaryValue = "${weather.observationTimeUtc} (${weather.localObsTime} ${station.timezoneLabel})",
-      secondaryDetails = "Восход ${weather.sunriseLocal} · Заход ${weather.sunsetLocal}",
-      rawToken = obsToken,
-      testTag = "metar_row_time",
-    ),
-  )
-}
 
 private fun classifyMetarToken(token: String): String {
   return when {

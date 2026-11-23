@@ -66,6 +66,7 @@ object AviationWeatherParser {
       it.cover == "BKN" || it.cover == "OVC" || it.cover == "VV"
     }
     val ceilingMeters = ceilingLayer?.baseMeters
+    val ceilingFeet = ceilingLayer?.baseFeet
     val ceilingCode = ceilingLayer?.rawToken ?: clouds.firstOrNull()?.rawToken
 
     val (tempC, dewPointC) = parseTempDewPoint(tokens)
@@ -102,6 +103,7 @@ object AviationWeatherParser {
       weatherPhenomena = weatherPhenomena,
       clouds = clouds,
       ceilingMeters = ceilingMeters,
+      ceilingFeet = ceilingFeet,
       ceilingCode = ceilingCode,
       temperatureC = tempC,
       dewPointC = dewPointC,

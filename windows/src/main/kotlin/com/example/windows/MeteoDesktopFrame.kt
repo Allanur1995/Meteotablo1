@@ -2,6 +2,8 @@ package com.example.windows
 
 import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
+import com.example.domain.AirportMapProjection
+import com.example.domain.FlightCategory
 import com.example.domain.UnitConverter
 import com.example.domain.WindTrendAnalyzer
 import com.example.model.AirportStation
@@ -13,6 +15,7 @@ import com.example.model.WindTrendDirection
 import com.example.model.WindTrendSummary
 import java.awt.BasicStroke
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
@@ -45,12 +48,15 @@ import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JTextField
 import javax.swing.SwingConstants
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 class MeteoDesktopFrame(
   private val controller: DesktopController,
 ) : JFrame("${AuthorBrand.APP_TITLE} — Авиационная метеостанция · ${AuthorBrand.AUTHOR_NAME}") {
 
   private var suppressingEvents = false
+  private var isMapVisible = false
 
   // Toolbar controls
   private val rootPanel = JPanel(BorderLayout(8, 8))
@@ -64,11 +70,19 @@ class MeteoDesktopFrame(
   private val nightButton = JButton("Ночь")
   private val windUnitButton = JButton("kt")
   private val pressureUnitButton = JButton("гПа")
+  private val mapButton = JButton("Карта")
   private val tableButton = JButton("Таблица")
   private val alertsButton = JButton("Оповещ.")
   private val logButton = JButton("Лог")
   private val presetsButton = JButton("Профили")
   private val serverButton = JButton("Сервер")
+
+  // Top ICAO Search Bar
+  private val searchBarPanel = JPanel(BorderLayout(8, 4))
+  private val searchField = JTextField()
+  private val searchClearBtn = JButton("×")
+  private val searchSubmitBtn = JButton("Найти METAR")
+  private val searchSuggestionsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
 
   // Weather Alert Banner
   private val alertBannerPanel = JPanel(BorderLayout(8, 4))
@@ -81,8 +95,20 @@ class MeteoDesktopFrame(
   private val bannerLabel = JLabel()
   private val bannerOkBtn = JButton("OK")
 
-  // Main 3-column board
+  // Center Deck: Board vs Airport Map View
+  private val centerCardLayout = CardLayout()
+  private val centerDeckPanel = JPanel(centerCardLayout)
   private val boardPanel = JPanel(GridBagLayout())
+  private val mapPanel = AirportMapDesktopPanel(
+    onBackToBoard = { setMapViewVisible(false) },
+    onOpenStationOnBoard = { icao ->
+      controller.selectStation(icao)
+      setMapViewVisible(false)
+    },
+    onRefreshAllStations = { controller.refreshMapWeather() },
+    onRefreshSingleStation = { icao -> controller.fetchStationWeatherForMap(icao) },
+    onToggleFavorite = { icao -> controller.toggleFavorite(icao) },
+  )
   private val leftRunwayHeader = JLabel("", SwingConstants.CENTER)
   private val leftRunwayCombo = JComboBox<String>()
   private val leftWindRose = RunwayWindRosePanel { controller.toggleWindUnit() }
@@ -102,6 +128,7 @@ class MeteoDesktopFrame(
   // Center weather fields
   private val centerPanel = JPanel(BorderLayout(6, 6))
   private val localClockLabel = JLabel("--:--", SwingConstants.CENTER)
+  private val flightCatBadge = JLabel("Н/Д", SwingConstants.CENTER)
   private val stationSubtitleLabel = JLabel("", SwingConstants.CENTER)
   private val visField = createReadonlyField()
   private val cloudsField = createReadonlyField()
@@ -125,8 +152,8 @@ class MeteoDesktopFrame(
 
   init {
     defaultCloseOperation = EXIT_ON_CLOSE
-    minimumSize = Dimension(920, 580)
-    setSize(1140, 680)
+    minimumSize = Dimension(960, 620)
+    setSize(1220, 740)
     setLocationRelativeTo(null)
 
     buildUi()
@@ -173,6 +200,7 @@ class MeteoDesktopFrame(
       add(nightButton)
       add(windUnitButton)
       add(pressureUnitButton)
+      add(mapButton)
       add(tableButton)
       add(alertsButton)
       add(logButton)
@@ -180,12 +208,40 @@ class MeteoDesktopFrame(
       add(serverButton)
     }
 
-    toolbarPanel.border = BorderFactory.createEmptyBorder(4, 6, 4, 6)
+    toolbarPanel.border = BorderFactory.createEmptyBorder(6, 10, 6, 10)
     toolbarPanel.add(leftTool, BorderLayout.WEST)
     toolbarPanel.add(rightTool, BorderLayout.CENTER)
 
+    // Top ICAO Search Bar
+    val searchPromptLabel = JLabel("ICAO:").apply {
+      font = Font("Segoe UI", Font.BOLD, 12)
+    }
+    searchField.font = Font("Segoe UI", Font.BOLD, 13)
+    searchField.toolTipText = "Введите 4-буквенный код ICAO (напр. UTAA, OMDB, KJFK) или название города"
+    searchClearBtn.font = Font("Segoe UI", Font.BOLD, 13)
+    searchClearBtn.isVisible = false
+    searchSubmitBtn.font = Font("Segoe UI", Font.BOLD, 12)
+    val searchInputWrap = JPanel(BorderLayout(6, 0)).apply {
+      isOpaque = false
+      add(searchPromptLabel, BorderLayout.WEST)
+      add(searchField, BorderLayout.CENTER)
+      add(
+        JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+          isOpaque = false
+          add(searchClearBtn)
+          add(searchSubmitBtn)
+        },
+        BorderLayout.EAST,
+      )
+    }
+    searchSuggestionsPanel.isOpaque = false
+    searchSuggestionsPanel.isVisible = false
+    searchBarPanel.border = BorderFactory.createEmptyBorder(5, 10, 5, 10)
+    searchBarPanel.add(searchInputWrap, BorderLayout.CENTER)
+    searchBarPanel.add(searchSuggestionsPanel, BorderLayout.SOUTH)
+
     // Weather Alert Banner
-    alertBannerPanel.border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
+    alertBannerPanel.border = BorderFactory.createEmptyBorder(5, 10, 5, 10)
     alertBannerLabel.font = Font("Segoe UI", Font.BOLD, 12)
     val alertActions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
       isOpaque = false
@@ -197,7 +253,7 @@ class MeteoDesktopFrame(
     alertBannerPanel.isVisible = false
 
     // Banner
-    bannerPanel.border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
+    bannerPanel.border = BorderFactory.createEmptyBorder(5, 10, 5, 10)
     bannerLabel.font = Font("Segoe UI", Font.BOLD, 12)
     bannerPanel.add(bannerLabel, BorderLayout.CENTER)
     bannerPanel.add(bannerOkBtn, BorderLayout.EAST)
@@ -207,6 +263,8 @@ class MeteoDesktopFrame(
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = false
       add(toolbarPanel)
+      add(Box.createVerticalStrut(4))
+      add(searchBarPanel)
       add(Box.createVerticalStrut(4))
       add(alertBannerPanel)
       add(bannerPanel)
@@ -236,12 +294,20 @@ class MeteoDesktopFrame(
     )
 
     // Center Weather Column
-    val clockHeader = JPanel(GridLayout(2, 1)).apply {
+    val clockHeader = JPanel(BorderLayout(4, 4)).apply {
       isOpaque = false
       localClockLabel.font = Font("Consolas", Font.BOLD, 30)
+      flightCatBadge.font = Font("Segoe UI", Font.BOLD, 11)
+      flightCatBadge.isOpaque = true
+      flightCatBadge.border = BorderFactory.createEmptyBorder(2, 8, 2, 8)
       stationSubtitleLabel.font = Font("Segoe UI", Font.PLAIN, 12)
-      add(localClockLabel)
-      add(stationSubtitleLabel)
+      val clockRow = JPanel(FlowLayout(FlowLayout.CENTER, 10, 0)).apply {
+        isOpaque = false
+        add(localClockLabel)
+        add(flightCatBadge)
+      }
+      add(clockRow, BorderLayout.NORTH)
+      add(stationSubtitleLabel, BorderLayout.SOUTH)
     }
     val telemetryGrid = JPanel(GridLayout(10, 2, 6, 4)).apply {
       isOpaque = false
@@ -257,7 +323,7 @@ class MeteoDesktopFrame(
       add(JLabel("Восх. / Зак.:")); add(sunField)
       add(JLabel("Источник:")); add(sourceField)
     }
-    centerPanel.border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
+    centerPanel.border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
     centerPanel.add(clockHeader, BorderLayout.NORTH)
     centerPanel.add(telemetryGrid, BorderLayout.CENTER)
     centerPanel.add(windTrendPanel, BorderLayout.SOUTH)
@@ -274,7 +340,11 @@ class MeteoDesktopFrame(
     gbc.gridx = 2; gbc.weightx = 0.34
     boardPanel.add(rightCol, gbc)
 
-    rootPanel.add(boardPanel, BorderLayout.CENTER)
+    centerDeckPanel.isOpaque = false
+    centerDeckPanel.add(boardPanel, "BOARD")
+    centerDeckPanel.add(mapPanel, "MAP")
+    centerCardLayout.show(centerDeckPanel, "BOARD")
+    rootPanel.add(centerDeckPanel, BorderLayout.CENTER)
 
     // Footer
     tafLabel.font = Font("Consolas", Font.PLAIN, 12)
@@ -379,6 +449,7 @@ class MeteoDesktopFrame(
     nightButton.addActionListener { controller.toggleNightMode() }
     windUnitButton.addActionListener { controller.toggleWindUnit() }
     pressureUnitButton.addActionListener { controller.togglePressureUnit() }
+    mapButton.addActionListener { setMapViewVisible(!isMapVisible) }
     tableButton.addActionListener { DesktopDialogs.showMetarTableDialog(this, controller) }
     alertsButton.addActionListener { DesktopDialogs.showAlertsDialog(this, controller) }
     logButton.addActionListener { DesktopDialogs.showLogDialog(this, controller) }
@@ -389,6 +460,18 @@ class MeteoDesktopFrame(
     }
     alertBannerOkBtn.addActionListener { controller.dismissLatestWeatherAlert() }
     bannerOkBtn.addActionListener { controller.dismissBanner() }
+
+    searchField.document.addDocumentListener(object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) = refreshSearchSuggestions()
+      override fun removeUpdate(e: DocumentEvent?) = refreshSearchSuggestions()
+      override fun changedUpdate(e: DocumentEvent?) = refreshSearchSuggestions()
+    })
+    searchField.addActionListener { submitSearchQuery() }
+    searchSubmitBtn.addActionListener { submitSearchQuery() }
+    searchClearBtn.addActionListener {
+      searchField.text = ""
+      refreshSearchSuggestions()
+    }
 
     qnhField.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     qnhField.addMouseListener(object : MouseAdapter() {
@@ -408,6 +491,72 @@ class MeteoDesktopFrame(
     })
   }
 
+  fun setMapViewVisible(visible: Boolean) {
+    isMapVisible = visible
+    centerCardLayout.show(centerDeckPanel, if (visible) "MAP" else "BOARD")
+    applyButtonTheme(controller.state)
+    if (visible) {
+      mapPanel.applyState(controller.state)
+    }
+  }
+
+  private fun submitSearchQuery() {
+    val raw = searchField.text.trim().uppercase()
+    val firstMatch = AirportCatalog.search(raw, controller.state.favoriteIcaos).firstOrNull()?.icao
+    val target = when {
+      raw.length == 4 && raw.all { it.isLetter() } -> raw
+      firstMatch != null -> firstMatch
+      else -> null
+    }
+    if (target != null) {
+      controller.selectStation(target)
+      searchField.text = ""
+      refreshSearchSuggestions()
+      if (isMapVisible) {
+        mapPanel.selectPin(target)
+      }
+    }
+  }
+
+  private fun refreshSearchSuggestions() {
+    val query = searchField.text.trim().uppercase()
+    val pal = controller.state.palette
+    searchClearBtn.isVisible = query.isNotEmpty()
+    searchSuggestionsPanel.removeAll()
+    if (query.isEmpty()) {
+      searchSuggestionsPanel.isVisible = false
+      searchBarPanel.revalidate()
+      searchBarPanel.repaint()
+      return
+    }
+    val matches = AirportCatalog.search(query, controller.state.favoriteIcaos).take(8)
+    matches.forEach { st ->
+      val chip = JButton("${st.icao} · ${st.city}").apply {
+        font = Font("Segoe UI", Font.BOLD, 11)
+        isFocusPainted = false
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        background = pal.fieldBackground
+        foreground = pal.textPrimary
+        border = BorderFactory.createCompoundBorder(
+          BorderFactory.createLineBorder(pal.border, 1),
+          BorderFactory.createEmptyBorder(3, 8, 3, 8),
+        )
+        addActionListener {
+          controller.selectStation(st.icao)
+          searchField.text = ""
+          refreshSearchSuggestions()
+          if (isMapVisible) {
+            mapPanel.selectPin(st.icao)
+          }
+        }
+      }
+      searchSuggestionsPanel.add(chip)
+    }
+    searchSuggestionsPanel.isVisible = matches.isNotEmpty()
+    searchBarPanel.revalidate()
+    searchBarPanel.repaint()
+  }
+
   private fun applyState(state: DesktopUiState) {
     suppressingEvents = true
     try {
@@ -416,15 +565,29 @@ class MeteoDesktopFrame(
       toolbarPanel.background = pal.panelSurface
       toolbarPanel.border = BorderFactory.createCompoundBorder(
         BorderFactory.createLineBorder(pal.border, 1),
-        BorderFactory.createEmptyBorder(4, 6, 4, 6),
+        BorderFactory.createEmptyBorder(6, 10, 6, 10),
       )
+      searchBarPanel.background = pal.panelSurface
+      searchBarPanel.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.border, 1),
+        BorderFactory.createEmptyBorder(5, 10, 5, 10),
+      )
+      searchField.background = pal.fieldBackground
+      searchField.foreground = pal.textPrimary
+      searchField.caretColor = pal.textPrimary
+      searchField.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.border, 1),
+        BorderFactory.createEmptyBorder(4, 8, 4, 8),
+      )
+      applyLabelTheme(searchBarPanel, pal)
+
       boardPanel.background = pal.bezelSurface
       centerPanel.background = pal.panelSurface
       centerPanel.border = BorderFactory.createLineBorder(pal.border, 1)
       footerPanel.background = pal.panelSurface
       footerPanel.border = BorderFactory.createCompoundBorder(
         BorderFactory.createLineBorder(pal.border, 1),
-        BorderFactory.createEmptyBorder(6, 8, 6, 8),
+        BorderFactory.createEmptyBorder(6, 10, 6, 10),
       )
 
       val latestAlert = state.latestWeatherAlert
@@ -471,7 +634,6 @@ class MeteoDesktopFrame(
       }
 
       favoriteButton.text = if (state.isCurrentStationFavorite) "★" else "☆"
-      favoriteButton.foreground = if (state.isCurrentStationFavorite) pal.metarAmber else pal.textMuted
       metarUtcLabel.text = "METAR ${state.weather.observationTimeUtc}"
       metarUtcLabel.foreground = pal.metarAmber
       val modeIdx = state.serverConfig.resolvedMode().ordinal
@@ -484,8 +646,8 @@ class MeteoDesktopFrame(
       windUnitButton.text = state.windUnit.label
       pressureUnitButton.text = state.pressureUnit.label
       alertsButton.text = if (state.unreadAlertCount > 0) "Тревога (${state.unreadAlertCount})" else "Оповещ."
-      alertsButton.foreground = if (state.unreadAlertCount > 0) Color(0xC6, 0x28, 0x28) else Color.BLACK
       presetsButton.text = if (state.savedPresets.isEmpty()) "Профили" else "Профили (${state.savedPresets.size})"
+      applyButtonTheme(state)
 
       // Runway selector
       leftRunwayCombo.removeAllItems()
@@ -522,6 +684,20 @@ class MeteoDesktopFrame(
       val w = state.weather
       localClockLabel.text = state.liveLocalClock
       localClockLabel.foreground = pal.textPrimary
+      val cat = AirportMapProjection.evaluateFlightCategory(w)
+      val catColor = when (cat) {
+        FlightCategory.VFR -> pal.headwindPositive
+        FlightCategory.MVFR -> pal.metarAmber
+        FlightCategory.IFR -> pal.tailwindNegative
+        FlightCategory.UNKNOWN -> pal.textMuted
+      }
+      flightCatBadge.text = cat.code
+      flightCatBadge.background = Color(catColor.red, catColor.green, catColor.blue, 36)
+      flightCatBadge.foreground = catColor
+      flightCatBadge.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(catColor, 1),
+        BorderFactory.createEmptyBorder(2, 8, 2, 8),
+      )
       stationSubtitleLabel.text = "${state.station.icao} · ${state.station.city} (${state.station.timezoneLabel})"
       stationSubtitleLabel.foreground = pal.textSecondary
 
@@ -534,9 +710,9 @@ class MeteoDesktopFrame(
       cloudsField.text = if (w.clouds.isEmpty()) {
         if (w.isCavok) "Нет значимой" else "--"
       } else {
-        w.clouds.joinToString(" ") { "${it.cover}${it.baseMeters}м" }
+        w.clouds.joinToString(" ") { "${it.cover} ${it.baseFeet} ft" }
       }
-      ceilingField.text = w.ceilingMeters?.let { "$it м (${w.ceilingCode ?: ""})" } ?: "--"
+      ceilingField.text = w.ceilingFeet?.let { "$it ft (${w.ceilingCode ?: ""})" } ?: "--"
       weatherField.text = w.weatherPhenomena
       tempField.text = w.temperatureC?.let { "$it °C" } ?: "--"
       dewField.text = w.dewPointC?.let { "$it °C" } ?: "--"
@@ -556,7 +732,10 @@ class MeteoDesktopFrame(
       ).forEach { tf ->
         tf.background = pal.fieldBackground
         tf.foreground = pal.textPrimary
-        tf.border = BorderFactory.createLineBorder(pal.border, 1)
+        tf.border = BorderFactory.createCompoundBorder(
+          BorderFactory.createLineBorder(pal.border, 1),
+          BorderFactory.createEmptyBorder(2, 6, 2, 6),
+        )
       }
       applyLabelTheme(centerPanel, pal)
       applyLabelTheme(boardPanel, pal)
@@ -567,9 +746,45 @@ class MeteoDesktopFrame(
       metarLabel.foreground = pal.textPrimary
       ownerLeftLabel.foreground = pal.textMuted
       ownerRightLabel.foreground = pal.textMuted
+
+      mapPanel.applyState(state)
     } finally {
       suppressingEvents = false
     }
+  }
+
+  private fun applyButtonTheme(state: DesktopUiState) {
+    val pal = state.palette
+    val standardButtons = listOf(
+      titleButton, favoriteButton, refreshButton, nightButton,
+      windUnitButton, pressureUnitButton, mapButton, tableButton,
+      alertsButton, logButton, presetsButton, serverButton,
+      searchClearBtn, alertBannerOpenBtn, alertBannerOkBtn, bannerOkBtn,
+    )
+    standardButtons.forEach { btn ->
+      btn.isFocusPainted = false
+      btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+      btn.background = pal.buttonBackground
+      btn.foreground = pal.textPrimary
+      btn.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.border, 1),
+        BorderFactory.createEmptyBorder(4, 9, 4, 9),
+      )
+    }
+    favoriteButton.foreground = if (state.isCurrentStationFavorite) pal.metarAmber else pal.textMuted
+    alertsButton.foreground = if (state.unreadAlertCount > 0) pal.tailwindNegative else pal.textPrimary
+    if (isMapVisible) {
+      mapButton.background = pal.buttonActiveBackground
+      mapButton.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.metarAmber, 2),
+        BorderFactory.createEmptyBorder(4, 9, 4, 9),
+      )
+    }
+    searchSubmitBtn.isFocusPainted = false
+    searchSubmitBtn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    searchSubmitBtn.background = pal.metarAmber
+    searchSubmitBtn.foreground = Color.WHITE
+    searchSubmitBtn.border = BorderFactory.createEmptyBorder(5, 12, 5, 12)
   }
 
   private fun updateRunwayPanel(
@@ -601,11 +816,16 @@ class MeteoDesktopFrame(
 
   private fun applyLabelTheme(container: java.awt.Container, pal: DesktopPalette) {
     container.components.forEach { comp ->
-      if (comp is JLabel && comp !== localClockLabel && comp !== metarUtcLabel && comp !== bannerLabel) {
-        if (comp !== leftRunwayHeader && comp !== rightRunwayHeader) {
-          comp.foreground = pal.textSecondary
-        }
-      } else if (comp is java.awt.Container) {
+      if (comp is JLabel &&
+        comp !== localClockLabel &&
+        comp !== metarUtcLabel &&
+        comp !== bannerLabel &&
+        comp !== flightCatBadge &&
+        comp !== leftRunwayHeader &&
+        comp !== rightRunwayHeader
+      ) {
+        comp.foreground = pal.textSecondary
+      } else if (comp is java.awt.Container && comp !== mapPanel) {
         applyLabelTheme(comp, pal)
       }
     }

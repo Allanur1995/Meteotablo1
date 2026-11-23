@@ -11,6 +11,7 @@ import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryUnitPreferencesStorage
 import com.example.data.InMemoryWeatherAlertStorage
+import com.example.data.InMemoryWeatherHistoryStorage
 import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.InMemoryWindHistoryStorage
 import com.example.data.ServerConfig
@@ -18,24 +19,28 @@ import com.example.data.ServerConfigStorage
 import com.example.data.UnitPreferences
 import com.example.data.UnitPreferencesStorage
 import com.example.data.WeatherAlertStorage
+import com.example.data.WeatherHistoryStorage
 import com.example.data.WeatherPresetStorage
 import com.example.data.WindHistoryStorage
 import com.example.diagnostics.CrashReporter
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
 import com.example.domain.WeatherChangeDetector
+import com.example.domain.WeatherHistoryAnalyzer
 import com.example.domain.WindTrendAnalyzer
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.FavoriteWeatherSnapshot
 import com.example.model.LogEntry
 import com.example.model.PressureUnit
+import com.example.model.QnhTrendSummary
 import com.example.model.RunwayCalculation
 import com.example.model.RunwayPair
 import com.example.model.SavedWeatherPreset
 import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherChangeAlert
+import com.example.model.WeatherHistoryEntry
 import com.example.model.WindHistoryEntry
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendSummary
@@ -69,6 +74,10 @@ data class MeteoUiState(
   val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
   val latestWeatherAlert: WeatherChangeAlert? = null,
   val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
+  val weatherHistory24h: List<WeatherHistoryEntry> = emptyList(),
+  val qnhTrend24h: QnhTrendSummary = WeatherHistoryAnalyzer.buildQnhTrend("UTAM", emptyList()),
+  val isLoadingHistory: Boolean = false,
+  val historyStatusMessage: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
   val isRefreshingMap: Boolean = false,
@@ -104,6 +113,7 @@ class MeteoViewModel(
   private val unitPreferencesStorage: UnitPreferencesStorage = InMemoryUnitPreferencesStorage(),
   private val weatherNotifier: LocalWeatherNotifier = NoOpWeatherNotifier,
   private val autoFetch: Boolean = true,
+  private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
 ) : ViewModel() {
 
   private val repository = AviationWeatherRepository()
@@ -111,9 +121,12 @@ class MeteoViewModel(
     alertStorage.loadSnapshots().toMutableMap()
   private val windHistoryByIcao: MutableMap<String, List<WindHistoryEntry>> =
     windHistoryStorage.loadAll().toMutableMap()
+  private val weatherHistoryByIcao: MutableMap<String, List<WeatherHistoryEntry>> =
+    weatherHistoryStorage.loadAll().toMutableMap()
   private val resolvedStationsByIcao: MutableMap<String, AirportStation> =
     AirportCatalog.presets.associateBy { it.icao }.toMutableMap()
   private var activeFetchJob: Job? = null
+  private var historyFetchJob: Job? = null
 
   private val _uiState: MutableStateFlow<MeteoUiState>
   val uiState: StateFlow<MeteoUiState>
@@ -134,6 +147,8 @@ class MeteoViewModel(
     val initialAlerts = alertStorage.loadAlerts()
     val initialUnitPrefs = unitPreferencesStorage.loadPreferences()
     val initialTrend = currentTrendFor(defaultStation.icao)
+    val initialHistory24h = currentHistory24hFor(defaultStation.icao)
+    val initialQnhTrend = WeatherHistoryAnalyzer.buildQnhTrend(defaultStation.icao, initialHistory24h)
     _uiState = MutableStateFlow(
       MeteoUiState(
         station = defaultStation,
@@ -149,6 +164,8 @@ class MeteoViewModel(
         alertConfig = initialAlertConfig,
         weatherAlerts = initialAlerts,
         windTrend = initialTrend,
+        weatherHistory24h = initialHistory24h,
+        qnhTrend24h = initialQnhTrend,
         mapStations = buildMapStationList(defaultStation, initialFavorites),
         liveLocalClock = initialWeather.receivedTimeLocal,
         logs = listOf(
@@ -386,6 +403,7 @@ class MeteoViewModel(
     val pair = station.runways[safeRunwayIdx]
     val (pCalc, rCalc) = computeRunwayCalcs(pair, baseWeather)
 
+    val nextHistory = currentHistory24hFor(station.icao)
     _uiState.update { state ->
       state.copy(
         station = station,
@@ -397,6 +415,9 @@ class MeteoViewModel(
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
         windTrend = currentTrendFor(station.icao),
+        weatherHistory24h = nextHistory,
+        qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, nextHistory),
+        historyStatusMessage = null,
         liveLocalClock = if (sameStation) state.liveLocalClock else baseWeather.receivedTimeLocal,
         statusBanner = null,
         logs = appendLog(state.logs, "INFO", "Загружен профиль: ${target.name}"),
@@ -491,6 +512,7 @@ class MeteoViewModel(
     )
     val pair = station.runways.first()
     val (pCalc, rCalc) = computeRunwayCalcs(pair, initialStationWeather)
+    val nextHistory = currentHistory24hFor(station.icao)
     _uiState.update { state ->
       state.copy(
         station = station,
@@ -499,6 +521,9 @@ class MeteoViewModel(
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
         windTrend = currentTrendFor(station.icao),
+        weatherHistory24h = nextHistory,
+        qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, nextHistory),
+        historyStatusMessage = null,
         mapStations = buildMapStationList(station, state.favoriteIcaos),
         liveLocalClock = initialStationWeather.receivedTimeLocal,
         statusBanner = null,
@@ -506,6 +531,7 @@ class MeteoViewModel(
       )
     }
     activeFetchJob?.cancel()
+    historyFetchJob?.cancel()
     syncCrashStationContext()
     if (autoFetch) {
       fetchLiveForStation(station)
@@ -530,12 +556,15 @@ class MeteoViewModel(
     val (pCalc, rCalc) = computeRunwayCalcs(pair, parsed)
     val nowLocal = AviationWeatherParser.currentLocalTimeString(current.station.utcOffsetHours)
     val nextTrend = recordWindObservation(current.station.icao, parsed)
+    val nextHistory = recordWeatherHistory(current.station.icao, parsed)
     _uiState.update { state ->
       state.copy(
         weather = parsed,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
         windTrend = nextTrend,
+        weatherHistory24h = nextHistory,
+        qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(current.station.icao, nextHistory),
         mapWeatherByIcao = state.mapWeatherByIcao + (current.station.icao to parsed),
         liveLocalClock = nowLocal,
         statusBanner = null,
@@ -577,12 +606,15 @@ class MeteoViewModel(
         repository.fetchLiveWeather(station, _uiState.value.serverConfig).onSuccess { fetched ->
           resolvedStationsByIcao[fetched.resolvedStation.icao] = fetched.resolvedStation
           val favTrend = recordWindObservation(fetched.resolvedStation.icao, fetched.weather)
+          val favHist = recordWeatherHistory(fetched.resolvedStation.icao, fetched.weather)
           _uiState.update { state ->
             val updatedCache = state.mapWeatherByIcao + (fetched.resolvedStation.icao to fetched.weather)
             val updatedStations = buildMapStationList(state.station, state.favoriteIcaos)
             if (state.station.icao.equals(fetched.resolvedStation.icao, ignoreCase = true)) {
               state.copy(
                 windTrend = favTrend,
+                weatherHistory24h = favHist,
+                qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(fetched.resolvedStation.icao, favHist),
                 mapWeatherByIcao = updatedCache,
                 mapStations = updatedStations,
               )
@@ -711,6 +743,7 @@ class MeteoViewModel(
         val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
         val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
+        val nextHistory = recordWeatherHistory(resolved.icao, fetched.weather)
         _uiState.update { state ->
           var updatedLogs = state.logs
           fetched.logMessages.forEach { msg ->
@@ -722,6 +755,8 @@ class MeteoViewModel(
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
             windTrend = nextTrend,
+            weatherHistory24h = nextHistory,
+            qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(resolved.icao, nextHistory),
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
@@ -809,6 +844,104 @@ class MeteoViewModel(
     return WindTrendAnalyzer.analyze(clean, updatedEntries)
   }
 
+  private fun currentHistory24hFor(icao: String): List<WeatherHistoryEntry> {
+    val clean = icao.trim().uppercase()
+    val cutoff = System.currentTimeMillis() - WeatherHistoryAnalyzer.WINDOW_24H_MILLIS
+    return synchronized(weatherHistoryByIcao) {
+      weatherHistoryByIcao[clean]
+        .orEmpty()
+        .filter { it.observedAtMillis >= cutoff }
+        .sortedBy { it.observedAtMillis }
+    }
+  }
+
+  private fun recordWeatherHistory(
+    icao: String,
+    weather: DecodedWeather,
+  ): List<WeatherHistoryEntry> {
+    val clean = icao.trim().uppercase()
+    return synchronized(weatherHistoryByIcao) {
+      val currentEntries = weatherHistoryByIcao[clean].orEmpty()
+      val nextEntries = WeatherHistoryAnalyzer.appendObservation(currentEntries, weather)
+      if (nextEntries != currentEntries) {
+        weatherHistoryByIcao[clean] = nextEntries
+        weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
+      }
+      nextEntries
+    }
+  }
+
+  fun mergeExternal24hHistory(
+    icao: String,
+    entries: List<WeatherHistoryEntry>,
+  ) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4 || entries.isEmpty()) return
+    val merged = synchronized(weatherHistoryByIcao) {
+      val currentEntries = weatherHistoryByIcao[clean].orEmpty()
+      val nextEntries = WeatherHistoryAnalyzer.mergeHistory(currentEntries, entries)
+      weatherHistoryByIcao[clean] = nextEntries
+      weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
+      nextEntries
+    }
+    _uiState.update { state ->
+      if (!state.station.icao.equals(clean, ignoreCase = true)) return@update state
+      state.copy(
+        weatherHistory24h = merged,
+        qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(clean, merged),
+      )
+    }
+  }
+
+  fun load24hHistory(force: Boolean = false) {
+    val station = _uiState.value.station
+    if (!autoFetch && !force) return
+    historyFetchJob?.cancel()
+    historyFetchJob = viewModelScope.launch {
+      _uiState.update { it.copy(isLoadingHistory = true, historyStatusMessage = null) }
+      val result = repository.fetch24hHistory(station, _uiState.value.serverConfig)
+      result.onSuccess { fetched ->
+        val merged = synchronized(weatherHistoryByIcao) {
+          val currentEntries = weatherHistoryByIcao[station.icao].orEmpty()
+          val nextEntries = WeatherHistoryAnalyzer.mergeHistory(currentEntries, fetched.entries)
+          weatherHistoryByIcao[station.icao] = nextEntries
+          weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
+          nextEntries
+        }
+        _uiState.update { state ->
+          var updatedLogs = state.logs
+          fetched.logMessages.forEach { msg ->
+            updatedLogs = appendLog(updatedLogs, "HIST", msg)
+          }
+          if (state.station.icao.equals(station.icao, ignoreCase = true)) {
+            state.copy(
+              weatherHistory24h = merged,
+              qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, merged),
+              isLoadingHistory = false,
+              historyStatusMessage = "Загружено записей за 24ч: ${merged.size}",
+              logs = updatedLogs,
+            )
+          } else {
+            state.copy(isLoadingHistory = false, logs = updatedLogs)
+          }
+        }
+      }.onFailure { err ->
+        val localCount = currentHistory24hFor(station.icao).size
+        _uiState.update { state ->
+          state.copy(
+            isLoadingHistory = false,
+            historyStatusMessage = if (localCount > 0) {
+              "Показан локальный кэш ($localCount зап.): ${err.message ?: "сервер недоступен"}"
+            } else {
+              err.message ?: "Нет данных истории за 24ч"
+            },
+            logs = appendLog(state.logs, "HIST", err.message ?: "Ошибка загрузки 24ч истории"),
+          )
+        }
+      }
+    }
+  }
+
   fun fetchStationWeatherForMap(icaoInput: String) {
     val clean = icaoInput.trim().uppercase()
     if (clean.length != 4 || !autoFetch) return
@@ -819,12 +952,15 @@ class MeteoViewModel(
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
+        val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
         _uiState.update { state ->
           val isCurrent = state.station.icao.equals(resolved.icao, ignoreCase = true)
           state.copy(
             station = if (isCurrent) resolved else state.station,
             weather = if (isCurrent) fetched.weather else state.weather,
             windTrend = if (isCurrent) nextTrend else state.windTrend,
+            weatherHistory24h = if (isCurrent) nextHist else state.weatherHistory24h,
+            qnhTrend24h = if (isCurrent) WeatherHistoryAnalyzer.buildQnhTrend(resolved.icao, nextHist) else state.qnhTrend24h,
             mapStations = buildMapStationList(if (isCurrent) resolved else state.station, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             loadingMapIcao = if (state.loadingMapIcao == clean) null else state.loadingMapIcao,
@@ -869,6 +1005,7 @@ class MeteoViewModel(
           resolvedStationsByIcao[icao] = fetched.resolvedStation
           updatedWeather[icao] = fetched.weather
           recordWindObservation(icao, fetched.weather)
+          recordWeatherHistory(icao, fetched.weather)
           evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)
         }
       }

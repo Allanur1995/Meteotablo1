@@ -50,6 +50,9 @@ object WeatherAlertSerializer {
       put("visibilityThresholdMeters", config.visibilityThresholdMeters)
       put("ceilingThresholdMeters", config.ceilingThresholdMeters)
       put("checkIntervalMinutes", config.checkIntervalMinutes)
+      put("tableAlertsEnabled", config.tableAlertsEnabled)
+      put("tableWindAlertKt", config.tableWindAlertKt)
+      put("tableVisibilityAlertMeters", config.tableVisibilityAlertMeters)
     }.toString()
   }
 
@@ -63,6 +66,9 @@ object WeatherAlertSerializer {
         visibilityThresholdMeters = obj.optInt("visibilityThresholdMeters", 3000).coerceIn(500, 9999),
         ceilingThresholdMeters = obj.optInt("ceilingThresholdMeters", 300).coerceIn(60, 1500),
         checkIntervalMinutes = obj.optInt("checkIntervalMinutes", 15).coerceIn(5, 120),
+        tableAlertsEnabled = obj.optBoolean("tableAlertsEnabled", true),
+        tableWindAlertKt = obj.optInt("tableWindAlertKt", 20).coerceIn(5, 80),
+        tableVisibilityAlertMeters = obj.optInt("tableVisibilityAlertMeters", 3000).coerceIn(200, 9999),
       )
     }.getOrDefault(WeatherAlertConfig())
   }

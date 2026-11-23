@@ -57,11 +57,17 @@ class SharedPreferencesServerConfigStorage(
       !fallbackNoaa -> DataSourceMode.IP_ONLY
       else -> DataSourceMode.AUTO_IP_FIRST
     }
+    val loadedUrl = prefs.getString(KEY_SERVER_URL, ServerConfig.DEFAULT_SERVER_URL)
+      ?.trim()
+      ?.ifBlank { ServerConfig.DEFAULT_SERVER_URL }
+      ?: ServerConfig.DEFAULT_SERVER_URL
+    val migratedUrl = if (loadedUrl == ServerConfig.LEGACY_ROOT_URL) {
+      ServerConfig.DEFAULT_SERVER_URL
+    } else {
+      loadedUrl
+    }
     return ServerConfig(
-      url = prefs.getString(KEY_SERVER_URL, ServerConfig.DEFAULT_SERVER_URL)
-        ?.trim()
-        ?.ifBlank { ServerConfig.DEFAULT_SERVER_URL }
-        ?: ServerConfig.DEFAULT_SERVER_URL,
+      url = migratedUrl,
       username = prefs.getString(KEY_USERNAME, ServerConfig.DEFAULT_USERNAME).orEmpty(),
       password = prefs.getString(KEY_PASSWORD, ServerConfig.DEFAULT_PASSWORD).orEmpty(),
       useCustomServer = useCustom,
@@ -213,6 +219,26 @@ class SharedPreferencesUnitPreferencesStorage(
     const val PREFS_NAME = "meteotablo_prefs"
     const val KEY_WIND_UNIT = "preferred_wind_unit"
     const val KEY_PRESSURE_UNIT = "preferred_pressure_unit"
+  }
+}
+
+class SharedPreferencesWeatherHistoryStorage(
+  context: Context,
+) : WeatherHistoryStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadAll(): Map<String, List<com.example.model.WeatherHistoryEntry>> {
+    return WeatherHistorySerializer.fromJson(prefs.getString(KEY_WEATHER_HISTORY_24H, null))
+  }
+
+  override fun saveAll(historyByIcao: Map<String, List<com.example.model.WeatherHistoryEntry>>) {
+    prefs.edit().putString(KEY_WEATHER_HISTORY_24H, WeatherHistorySerializer.toJson(historyByIcao)).apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_WEATHER_HISTORY_24H = "weather_history_24h_by_icao_json"
   }
 }
 

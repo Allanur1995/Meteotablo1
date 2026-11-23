@@ -33,6 +33,7 @@ import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesServerConfigStorage
 import com.example.data.SharedPreferencesUnitPreferencesStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
+import com.example.data.SharedPreferencesWeatherHistoryStorage
 import com.example.data.SharedPreferencesWeatherPresetStorage
 import com.example.data.SharedPreferencesWindHistoryStorage
 import com.example.diagnostics.CrashReporter
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
               windHistoryStorage = SharedPreferencesWindHistoryStorage(applicationContext),
               unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(applicationContext),
               weatherNotifier = AndroidWeatherNotifier(applicationContext),
+              weatherHistoryStorage = SharedPreferencesWeatherHistoryStorage(applicationContext),
             ) as T
           }
         },

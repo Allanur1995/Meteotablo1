@@ -371,7 +371,7 @@ private fun formatSummaryVisibility(weather: DecodedWeather?): String {
     in 0..999 -> "$m м"
     else -> "${m / 1000} км"
   }
-  val cloudStr = weather.ceilingCode ?: weather.clouds.firstOrNull()?.let { "${it.cover} ${it.baseMeters}м" }
+  val cloudStr = weather.clouds.firstOrNull()?.let { "${it.cover} ${it.baseFeet} ft" } ?: weather.ceilingCode
   return if (cloudStr != null) "$visStr · $cloudStr" else visStr
 }
 

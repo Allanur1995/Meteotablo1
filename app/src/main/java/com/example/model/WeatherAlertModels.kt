@@ -12,6 +12,9 @@ data class WeatherAlertConfig(
   val visibilityThresholdMeters: Int = 3000,
   val ceilingThresholdMeters: Int = 300,
   val checkIntervalMinutes: Int = 15,
+  val tableAlertsEnabled: Boolean = true,
+  val tableWindAlertKt: Int = 20,
+  val tableVisibilityAlertMeters: Int = 3000,
 )
 
 data class FavoriteWeatherSnapshot(

@@ -88,14 +88,14 @@ class BasicAuthInterceptor(
 ) : Interceptor {
   override fun intercept(chain: Interceptor.Chain): OkHttpResponse {
     val original = chain.request()
-    if (username.isBlank() || original.header("Authorization") != null) {
-      return chain.proceed(original)
+    val builder = original.newBuilder()
+    if (original.header("User-Agent") == null) {
+      builder.header("User-Agent", "Meteotablo/1.0")
     }
-    val authenticated = original.newBuilder()
-      .header("User-Agent", "MeteotabloAndroid/1.0")
-      .header("Authorization", Credentials.basic(username, password))
-      .build()
-    return chain.proceed(authenticated)
+    if (username.isNotBlank() && original.header("Authorization") == null) {
+      builder.header("Authorization", Credentials.basic(username, password))
+    }
+    return chain.proceed(builder.build())
   }
 }
 
@@ -118,8 +118,9 @@ object MeteoServerRetrofitFactory {
       .addInterceptor(logging)
       .followRedirects(true)
       .followSslRedirects(true)
-      .connectTimeout(10, TimeUnit.SECONDS)
-      .readTimeout(15, TimeUnit.SECONDS)
+      .connectTimeout(15, TimeUnit.SECONDS)
+      .readTimeout(20, TimeUnit.SECONDS)
+      .writeTimeout(15, TimeUnit.SECONDS)
       .build()
   }
 
@@ -128,7 +129,7 @@ object MeteoServerRetrofitFactory {
     cookieJar: CookieJar = SessionCookieJar(),
     moshi: Moshi = createMoshi(),
   ): MeteoServerApi {
-    val baseUrl = ServerConfig.normalizeServerUrl(config.url)
+    val baseUrl = ServerConfig.retrofitBaseUrl(config.url)
     val client = createOkHttpClient(config, cookieJar)
     return Retrofit.Builder()
       .baseUrl(baseUrl)

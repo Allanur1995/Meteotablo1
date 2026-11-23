@@ -57,6 +57,7 @@ class AviationWeatherRepository {
       weatherPhenomena = "Нет данных",
       clouds = emptyList(),
       ceilingMeters = null,
+      ceilingFeet = null,
       ceilingCode = null,
       temperatureC = null,
       dewPointC = null,
@@ -331,5 +332,130 @@ class AviationWeatherRepository {
       logs.add("Ошибка интернет-источников: $msg")
       return null to msg
     }
+  }
+
+  data class HistoryFetchResult(
+    val entries: List<com.example.model.WeatherHistoryEntry>,
+    val logMessages: List<String>,
+  )
+
+  suspend fun fetch24hHistory(
+    station: AirportStation,
+    serverConfig: ServerConfig = ServerConfig(),
+  ): Result<HistoryFetchResult> = withContext(Dispatchers.IO) {
+    val logs = mutableListOf<String>()
+    val icao = station.icao.trim().uppercase()
+    val mode = serverConfig.resolvedMode()
+    logs.add("Загрузка 24ч истории ($icao) · режим ${mode.displayName}")
+
+    val entries = when (mode) {
+      DataSourceMode.IP_ONLY -> fetch24hFromCustomIpServer(icao, serverConfig, station, logs)
+      DataSourceMode.INTERNET_ONLY -> fetch24hFromInternet(icao, serverConfig, station, logs)
+      DataSourceMode.AUTO_IP_FIRST -> {
+        val ipList = fetch24hFromCustomIpServer(icao, serverConfig, station, logs)
+        ipList.ifEmpty { fetch24hFromInternet(icao, serverConfig, station, logs) }
+      }
+      DataSourceMode.AUTO_INTERNET_FIRST -> {
+        val netList = fetch24hFromInternet(icao, serverConfig, station, logs)
+        netList.ifEmpty { fetch24hFromCustomIpServer(icao, serverConfig, station, logs) }
+      }
+    }
+
+    if (entries.isEmpty()) {
+      Result.failure(IllegalStateException("Архив 24ч для $icao пока пуст или сервер не ответил"))
+    } else {
+      val merged = com.example.domain.WeatherHistoryAnalyzer.mergeHistory(emptyList(), entries)
+      Result.success(HistoryFetchResult(merged, logs))
+    }
+  }
+
+  private suspend fun fetch24hFromCustomIpServer(
+    icao: String,
+    serverConfig: ServerConfig,
+    station: AirportStation,
+    logs: MutableList<String>,
+  ): List<com.example.model.WeatherHistoryEntry> {
+    if (serverConfig.url.isBlank()) return emptyList()
+    val outcome = customServerClient.fetchHistory24h(icao, serverConfig)
+    logs.addAll(outcome.logs)
+    return outcome.observations.mapNotNull { obs ->
+      com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+        rawMetar = obs.rawMetar,
+        rawTaf = obs.rawTaf,
+        station = station,
+        sourceLabel = "сервер ${outcome.sourceHost}",
+        explicitTimestampMillis = obs.obsTimeMillis,
+      )
+    }
+  }
+
+  private fun fetch24hFromInternet(
+    icao: String,
+    serverConfig: ServerConfig,
+    station: AirportStation,
+    logs: MutableList<String>,
+  ): List<com.example.model.WeatherHistoryEntry> {
+    if (!serverConfig.useAviationWeatherGov) return emptyList()
+
+    val tafList = mutableListOf<Pair<Long, String>>()
+    runCatching {
+      val tafUrl = "https://aviationweather.gov/api/data/taf?ids=$icao&format=json&hours=24"
+      logs.add("GET $tafUrl")
+      val req = Request.Builder().url(tafUrl).header("User-Agent", "Meteotablo/1.0").build()
+      client.newCall(req).execute().use { resp ->
+        if (resp.isSuccessful) {
+          val body = resp.body?.string().orEmpty().trim()
+          if (body.startsWith("[")) {
+            val arr = JSONArray(body)
+            for (i in 0 until arr.length()) {
+              val obj = arr.optJSONObject(i) ?: continue
+              val rawTaf = obj.optString("rawTAF").takeIf { it.isNotBlank() } ?: continue
+              val issueSec = obj.optLong("issueTime", 0L)
+              val issueMs = if (issueSec > 0L) issueSec * 1000L else System.currentTimeMillis()
+              tafList.add(issueMs to rawTaf)
+            }
+          }
+        }
+      }
+    }
+
+    val metarEntries = mutableListOf<com.example.model.WeatherHistoryEntry>()
+    runCatching {
+      val metarUrl = "https://aviationweather.gov/api/data/metar?ids=$icao&format=json&hours=24"
+      logs.add("GET $metarUrl")
+      val req = Request.Builder().url(metarUrl).header("User-Agent", "Meteotablo/1.0").build()
+      client.newCall(req).execute().use { resp ->
+        logs.add("aviationweather.gov 24h METAR HTTP ${resp.code}")
+        if (resp.isSuccessful) {
+          val body = resp.body?.string().orEmpty().trim()
+          if (body.startsWith("[")) {
+            val arr = JSONArray(body)
+            for (i in 0 until arr.length()) {
+              val obj = arr.optJSONObject(i) ?: continue
+              val rawOb = obj.optString("rawOb").takeIf { it.isNotBlank() } ?: continue
+              val obsSec = obj.optLong("obsTime", 0L)
+              val obsMs = if (obsSec > 0L) obsSec * 1000L else null
+              val matchedTaf = if (obsMs != null && tafList.isNotEmpty()) {
+                tafList.filter { it.first <= obsMs + 3600_000L }
+                  .maxByOrNull { it.first }?.second ?: tafList.firstOrNull()?.second
+              } else {
+                tafList.firstOrNull()?.second
+              }
+              com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+                rawMetar = rawOb,
+                rawTaf = matchedTaf,
+                station = station,
+                sourceLabel = "aviationweather.gov (24ч)",
+                explicitTimestampMillis = obsMs,
+              )?.let(metarEntries::add)
+            }
+          }
+        }
+      }
+    }.onFailure { err ->
+      logs.add("aviationweather.gov 24ч ошибка: ${err.message ?: err::class.simpleName}")
+    }
+
+    return metarEntries
   }
 }

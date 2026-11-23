@@ -203,6 +203,7 @@ object DesktopDialogs {
     // Tab 3: Custom Server & Internet Sites Config
     val serverPanel = JPanel(GridBagLayout()).apply {
       border = BorderFactory.createEmptyBorder(12, 12, 12, 12)
+      background = palette.panelSurface
     }
     val cfg = state.serverConfig
     val modeCombo = JComboBox(DataSourceMode.entries.map { it.displayName }.toTypedArray()).apply {
@@ -211,9 +212,29 @@ object DesktopDialogs {
     val urlField = JTextField(cfg.url, 32)
     val userField = JTextField(cfg.username, 20)
     val passField = JPasswordField(cfg.password, 20)
-    val awcCheck = JCheckBox("aviationweather.gov (JSON API)", cfg.useAviationWeatherGov)
-    val tgftpCheck = JCheckBox("NOAA (tgftp.nws.noaa.gov)", cfg.useNoaaTgftp)
-    val vatsimCheck = JCheckBox("VATSIM (metar.vatsim.net)", cfg.useVatsimMetar)
+    val awcCheck = JCheckBox("aviationweather.gov (JSON API)", cfg.useAviationWeatherGov).apply {
+      isOpaque = false
+    }
+    val tgftpCheck = JCheckBox("NOAA (tgftp.nws.noaa.gov)", cfg.useNoaaTgftp).apply {
+      isOpaque = false
+    }
+    val vatsimCheck = JCheckBox("VATSIM (metar.vatsim.net)", cfg.useVatsimMetar).apply {
+      isOpaque = false
+    }
+    val diagnosticArea = JTextArea(4, 42).apply {
+      isEditable = false
+      lineWrap = true
+      wrapStyleWord = true
+      font = Font("Consolas", Font.PLAIN, 11)
+      background = palette.fieldBackground
+      foreground = palette.textSecondary
+      border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
+      text = "Нажмите «Проверить IP-сервер (${state.station.icao})», чтобы проверить соединение, авторизацию и парсинг METAR."
+    }
+    val diagnosticScroll = JScrollPane(diagnosticArea).apply {
+      preferredSize = Dimension(520, 82)
+      border = BorderFactory.createLineBorder(palette.border, 1)
+    }
 
     val gbc = GridBagConstraints().apply {
       insets = Insets(4, 6, 4, 6)
@@ -249,7 +270,35 @@ object DesktopDialogs {
     gbc.gridx = 1; gbc.gridy = 6
     serverPanel.add(vatsimCheck, gbc)
 
+    gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2; gbc.weightx = 1.0
+    serverPanel.add(diagnosticScroll, gbc)
+
     val serverButtons = JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+      isOpaque = false
+      val testIpBtn = JButton("Проверить IP-сервер (${state.station.icao})")
+      testIpBtn.addActionListener {
+        testIpBtn.isEnabled = false
+        testIpBtn.text = "Проверка (${state.station.icao})…"
+        diagnosticArea.foreground = palette.textSecondary
+        diagnosticArea.text = "Подключение к ${urlField.text}…"
+        val probeCfg = ServerConfig(
+          url = urlField.text,
+          username = userField.text.trim(),
+          password = String(passField.password),
+          sourceMode = DataSourceMode.IP_ONLY,
+          useCustomServer = true,
+          fallbackToNoaa = false,
+        )
+        controller.testIpServerConnection(state.station.icao, probeCfg) { report ->
+          diagnosticArea.foreground = if (report.metarFound) palette.headwindPositive else palette.tailwindNegative
+          diagnosticArea.text = buildString {
+            appendLine(report.summary)
+            report.logs.takeLast(5).forEach { appendLine(it) }
+          }.trim()
+          testIpBtn.isEnabled = true
+          testIpBtn.text = "Проверить IP-сервер (${state.station.icao})"
+        }
+      }
       val resetBtn = JButton("По умолчанию (217.174.229.206)").apply {
         addActionListener {
           modeCombo.selectedIndex = DataSourceMode.AUTO_IP_FIRST.ordinal
@@ -283,10 +332,11 @@ object DesktopDialogs {
           dialog.dispose()
         }
       }
+      add(testIpBtn)
       add(resetBtn)
       add(saveBtn)
     }
-    gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
+    gbc.gridx = 0; gbc.gridy = 8; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
     serverPanel.add(serverButtons, gbc)
 
     tabs.addTab("Сервер", serverPanel)
@@ -525,7 +575,7 @@ object DesktopDialogs {
         else -> 1
       }
     }
-    val visCombo = JComboBox(arrayOf("< 1500 м / ВНГО 150 м", "< 3000 м / ВНГО 300 м", "< 5000 м / ВНГО 450 м")).apply {
+    val visCombo = JComboBox(arrayOf("< 1500 м / ВНГО 500 ft", "< 3000 м / ВНГО 1000 ft", "< 5000 м / ВНГО 1500 ft")).apply {
       selectedIndex = when (cfg.visibilityThresholdMeters) {
         1500 -> 0
         5000 -> 2
@@ -671,7 +721,7 @@ object DesktopDialogs {
     val cloudText = if (weather.clouds.isEmpty()) {
       if (weather.isCavok) "Нет значимой" else "--"
     } else {
-      weather.clouds.joinToString(", ") { "${it.cover} ${it.baseFeet} ft (${it.baseMeters} м)" }
+      weather.clouds.joinToString(", ") { "${it.cover} ${it.baseFeet} ft" }
     }
     val qnhPrimary = when (pressureUnit) {
       PressureUnit.HPA -> weather.qnhHpa?.let { "$it гПа" } ?: "--"
@@ -685,7 +735,7 @@ object DesktopDialogs {
       arrayOf("Время (UTC / Мест.)", "${weather.observationTimeUtc} / ${weather.localObsTime}", station.timezoneLabel, station.icao),
       arrayOf("Ветер", "$dirStr, $spd ${windUnit.label}$gust", if (w.variableFromDeg != null) "${w.variableFromDeg}°..${w.variableToDeg}°" else "", ""),
       arrayOf("Видимость", visText, weather.weatherPhenomena, ""),
-      arrayOf("Облачность / ВНГО", cloudText, weather.ceilingMeters?.let { "ВНГО: $it м" } ?: "ВНГО: --", weather.ceilingCode ?: ""),
+      arrayOf("Облачность / ВНГО", cloudText, weather.ceilingFeet?.let { "ВНГО: $it ft" } ?: "ВНГО: --", weather.ceilingCode ?: ""),
       arrayOf("Температура / Роса", "$tempText / $dewText", "Превышение: ${station.elevationMeters} м", ""),
       arrayOf("QNH / QFE", qnhPrimary, "QFE: $qfeText", weather.qnhHpa?.let { "Q$it" } ?: ""),
       arrayOf("Солнце (Восх. / Зак.)", "${weather.sunriseLocal} / ${weather.sunsetLocal}", weather.specialConditions, weather.sourceLabel),

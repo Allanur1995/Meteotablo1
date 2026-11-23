@@ -2,6 +2,7 @@ package com.example.windows
 
 import com.example.data.AirportCatalog
 import com.example.data.AviationWeatherRepository
+import com.example.data.CustomMeteoServerClient
 import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
 import com.example.data.InMemoryFavoriteStorage
@@ -38,6 +39,9 @@ import javax.swing.SwingUtilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 data class DesktopUiState(
@@ -58,6 +62,10 @@ data class DesktopUiState(
   val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
+  val isRefreshingMap: Boolean = false,
+  val loadingMapIcao: String? = null,
+  val mapStations: List<AirportStation> = AirportCatalog.presets,
+  val mapWeatherByIcao: Map<String, DecodedWeather> = emptyMap(),
   val statusBanner: String? = null,
   val liveLocalClock: String = "--:--",
   val logs: List<LogEntry> = emptyList(),
@@ -100,6 +108,8 @@ class DesktopController(
     alertStorage.loadSnapshots().toMutableMap()
   private val windHistoryByIcao: MutableMap<String, List<WindHistoryEntry>> =
     windHistoryStorage.loadAll().toMutableMap()
+  private val resolvedStationsByIcao: MutableMap<String, AirportStation> =
+    AirportCatalog.presets.associateBy { it.icao }.toMutableMap()
 
   @Volatile
   var state: DesktopUiState
@@ -113,18 +123,20 @@ class DesktopController(
     )
     val pair = defaultStation.runways.first()
     val (pCalc, rCalc) = computeRunwayCalcs(pair, initialWeather)
+    val initialFavorites = favoriteStorage.loadFavorites()
     state = DesktopUiState(
       station = defaultStation,
       selectedRunwayPairIndex = 0,
       weather = initialWeather,
       primaryRunwayCalc = pCalc,
       reciprocalRunwayCalc = rCalc,
-      favoriteIcaos = favoriteStorage.loadFavorites(),
+      favoriteIcaos = initialFavorites,
       savedPresets = presetStorage.loadPresets(),
       serverConfig = serverConfigStorage.loadConfig(),
       alertConfig = alertStorage.loadConfig(),
       weatherAlerts = alertStorage.loadAlerts(),
       windTrend = currentTrendFor(defaultStation.icao),
+      mapStations = buildMapStationList(defaultStation, initialFavorites),
       liveLocalClock = initialWeather.receivedTimeLocal,
       logs = listOf(
         LogEntry(
@@ -243,8 +255,9 @@ class DesktopController(
   fun selectStation(icaoInput: String) {
     val clean = icaoInput.trim().uppercase()
     if (clean.length != 4) return
-    val station = AirportCatalog.findOrDefault(clean)
-    val emptyWeather = repository.createEmptyWeather(
+    val station = resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean)
+    val cachedWeather = state.mapWeatherByIcao[station.icao]
+    val emptyWeather = cachedWeather ?: repository.createEmptyWeather(
       station = station,
       sourceLabel = if (autoFetch) "загрузка с сервера..." else "ожидание обновления",
     )
@@ -258,7 +271,8 @@ class DesktopController(
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
         windTrend = currentTrendFor(station.icao),
-        liveLocalClock = emptyWeather.receivedTimeLocal,
+        mapStations = buildMapStationList(station, cur.favoriteIcaos),
+        liveLocalClock = AviationWeatherParser.currentLocalTimeString(station.utcOffsetHours),
         statusBanner = null,
         logs = appendLog(cur.logs, "INFO", "Выбран аэропорт ${station.icao} (${station.name})", station),
       )
@@ -285,6 +299,7 @@ class DesktopController(
       val msg = if (clean in updated) "Добавлено в избранное: $clean" else "Удалено из избранного: $clean"
       cur.copy(
         favoriteIcaos = updated,
+        mapStations = buildMapStationList(cur.station, updated),
         logs = appendLog(cur.logs, "INFO", msg, cur.station),
       )
     }
@@ -298,6 +313,7 @@ class DesktopController(
       favoriteStorage.saveFavorites(updated)
       cur.copy(
         favoriteIcaos = updated,
+        mapStations = buildMapStationList(cur.station, updated),
         logs = appendLog(cur.logs, "INFO", "Аэропорт $clean сохранён в избранное", cur.station),
       )
     }
@@ -313,6 +329,7 @@ class DesktopController(
       favoriteStorage.saveFavorites(updated)
       cur.copy(
         favoriteIcaos = updated,
+        mapStations = buildMapStationList(cur.station, updated),
         logs = appendLog(cur.logs, "INFO", "Удалено из избранного: $clean", cur.station),
       )
     }
@@ -421,6 +438,8 @@ class DesktopController(
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
         windTrend = nextTrend,
+        mapStations = buildMapStationList(s.station, s.favoriteIcaos),
+        mapWeatherByIcao = s.mapWeatherByIcao + (s.station.icao to parsed),
         liveLocalClock = nowLocal,
         statusBanner = null,
         logs = appendLog(s.logs, "INFO", "Применён ручной METAR для ${cur.station.icao}", cur.station),
@@ -454,15 +473,25 @@ class DesktopController(
       favorites.forEach { icao ->
         val station = AirportCatalog.findOrDefault(icao)
         repository.fetchLiveWeather(station, state.serverConfig).onSuccess { fetched ->
-          val favTrend = recordWindObservation(fetched.resolvedStation.icao, fetched.weather)
+          val resolved = fetched.resolvedStation
+          resolvedStationsByIcao[resolved.icao] = resolved
+          val favTrend = recordWindObservation(resolved.icao, fetched.weather)
           updateState { cur ->
-            if (cur.station.icao.equals(fetched.resolvedStation.icao, ignoreCase = true)) {
-              cur.copy(windTrend = favTrend)
+            val updatedMap = cur.mapWeatherByIcao + (resolved.icao to fetched.weather)
+            if (cur.station.icao.equals(resolved.icao, ignoreCase = true)) {
+              cur.copy(
+                windTrend = favTrend,
+                mapStations = buildMapStationList(cur.station, cur.favoriteIcaos),
+                mapWeatherByIcao = updatedMap,
+              )
             } else {
-              cur
+              cur.copy(
+                mapStations = buildMapStationList(cur.station, cur.favoriteIcaos),
+                mapWeatherByIcao = updatedMap,
+              )
             }
           }
-          if (evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)) {
+          if (evaluateFavoriteObservation(resolved, fetched.weather)) {
             alertsTriggered++
           }
         }
@@ -600,6 +629,7 @@ class DesktopController(
       val result = repository.fetchLiveWeather(station, state.serverConfig)
       result.onSuccess { fetched ->
         val resolved = fetched.resolvedStation
+        resolvedStationsByIcao[resolved.icao] = resolved
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         updateState { cur ->
           val pair = resolved.runways.getOrElse(cur.selectedRunwayPairIndex) { resolved.runways.first() }
@@ -615,6 +645,8 @@ class DesktopController(
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
             windTrend = nextTrend,
+            mapStations = buildMapStationList(resolved, cur.favoriteIcaos),
+            mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
             statusBanner = null,
             liveLocalClock = nowLocal,
@@ -692,6 +724,104 @@ class DesktopController(
       nextEntries
     }
     return WindTrendAnalyzer.analyze(clean, updatedEntries)
+  }
+
+  fun fetchStationWeatherForMap(icaoInput: String) {
+    val clean = icaoInput.trim().uppercase()
+    if (clean.length != 4 || !autoFetch) return
+    val target = resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean)
+    scope.launch {
+      updateState { it.copy(loadingMapIcao = clean) }
+      repository.fetchLiveWeather(target, state.serverConfig).onSuccess { fetched ->
+        val resolved = fetched.resolvedStation
+        resolvedStationsByIcao[resolved.icao] = resolved
+        val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
+        updateState { cur ->
+          val isCurrent = cur.station.icao.equals(resolved.icao, ignoreCase = true)
+          cur.copy(
+            station = if (isCurrent) resolved else cur.station,
+            weather = if (isCurrent) fetched.weather else cur.weather,
+            windTrend = if (isCurrent) nextTrend else cur.windTrend,
+            mapStations = buildMapStationList(if (isCurrent) resolved else cur.station, cur.favoriteIcaos),
+            mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
+            loadingMapIcao = if (cur.loadingMapIcao == clean) null else cur.loadingMapIcao,
+          )
+        }
+        evaluateFavoriteObservation(resolved, fetched.weather)
+      }.onFailure {
+        updateState { cur ->
+          cur.copy(
+            loadingMapIcao = if (cur.loadingMapIcao == clean) null else cur.loadingMapIcao,
+            logs = appendLog(cur.logs, "MAP", "Нет ответа METAR для $clean на карте", cur.station),
+          )
+        }
+      }
+    }
+  }
+
+  fun refreshMapWeather() {
+    if (!autoFetch) return
+    val stations = state.mapStations
+    if (stations.isEmpty()) return
+    scope.launch {
+      updateState { it.copy(isRefreshingMap = true) }
+      val serverCfg = state.serverConfig
+      val results = coroutineScope {
+        stations.map { st ->
+          async {
+            st.icao to repository.fetchLiveWeather(st, serverCfg)
+          }
+        }.awaitAll()
+      }
+      var loadedCount = 0
+      val updatedWeather = state.mapWeatherByIcao.toMutableMap()
+      results.forEach { (icao, res) ->
+        res.onSuccess { fetched ->
+          loadedCount++
+          resolvedStationsByIcao[icao] = fetched.resolvedStation
+          updatedWeather[icao] = fetched.weather
+          recordWindObservation(icao, fetched.weather)
+          evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)
+        }
+      }
+      updateState { cur ->
+        cur.copy(
+          isRefreshingMap = false,
+          mapStations = buildMapStationList(cur.station, cur.favoriteIcaos),
+          mapWeatherByIcao = updatedWeather.toMap(),
+          logs = appendLog(cur.logs, "MAP", "Карта: загружена погода для $loadedCount из ${stations.size} аэродромов", cur.station),
+        )
+      }
+    }
+  }
+
+  fun testIpServerConnection(
+    icao: String,
+    config: ServerConfig,
+    onResult: (CustomMeteoServerClient.ConnectionTestReport) -> Unit,
+  ) {
+    scope.launch {
+      val report = CustomMeteoServerClient().testConnection(icao, config)
+      SwingUtilities.invokeLater { onResult(report) }
+    }
+  }
+
+  private fun buildMapStationList(
+    activeStation: AirportStation,
+    favoriteIcaos: List<String>,
+  ): List<AirportStation> {
+    val combined = LinkedHashMap<String, AirportStation>()
+    AirportCatalog.presets.forEach { preset ->
+      combined[preset.icao] = resolvedStationsByIcao[preset.icao] ?: preset
+    }
+    favoriteIcaos.forEach { raw ->
+      val code = raw.trim().uppercase()
+      if (code.length == 4 && code !in combined) {
+        combined[code] = resolvedStationsByIcao[code] ?: AirportCatalog.findOrDefault(code)
+      }
+    }
+    combined[activeStation.icao] = resolvedStationsByIcao[activeStation.icao] ?: activeStation
+    return combined.values.toList()
   }
 
   private fun appendLog(

@@ -31,9 +31,11 @@ import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -59,6 +61,7 @@ import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.RunwayCalculation
 import com.example.model.UnitSystem
+import com.example.model.WeatherAlertConfig
 import com.example.model.WindSpeedUnit
 import com.example.ui.theme.LocalMeteoPalette
 import kotlin.math.abs
@@ -73,6 +76,7 @@ fun SettingsScreen(
   pressureUnit: PressureUnit,
   isNightMode: Boolean,
   isFullscreen: Boolean,
+  alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   onBack: () -> Unit,
   onSelectUnitSystem: (UnitSystem) -> Unit,
   onSelectWindUnit: (WindSpeedUnit) -> Unit,
@@ -81,6 +85,8 @@ fun SettingsScreen(
   onToggleFullscreen: () -> Unit,
   onOpenServerSettings: () -> Unit,
   onOpenAlertsSettings: () -> Unit,
+  onOpenThresholdConfig: () -> Unit = {},
+  onOpenHistory24h: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -622,6 +628,74 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.size(6.dp))
             Text("Оповещения", fontSize = 12.sp)
           }
+        }
+
+        val thresholdWindDisp = UnitConverter.formatWindSpeedValue(alertConfig.tableWindAlertKt, windUnit)
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("settings_open_thresholds_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.secondaryFieldBackground)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenThresholdConfig)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Tune,
+              contentDescription = "Пороги тревоги в таблице METAR/TAF",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(18.dp),
+            )
+            Column {
+              Text(
+                text = "Пороги тревоги в таблице METAR/TAF",
+                color = palette.textPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = if (alertConfig.tableAlertsEnabled) {
+                  "Ветер ≥ $thresholdWindDisp ${windUnit.label} · Видимость ≤ ${alertConfig.tableVisibilityAlertMeters} м"
+                } else {
+                  "Визуальное выделение порогов отключено"
+                },
+                color = palette.textSecondary,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+              )
+            }
+          }
+          Text(
+            text = "Настроить",
+            color = palette.metarAmber,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        OutlinedButton(
+          onClick = onOpenHistory24h,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("settings_open_history_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.History,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.size(6.dp))
+          Text("История METAR / TAF за 24ч и тренд QNH", fontSize = 12.sp)
         }
       }
 

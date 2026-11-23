@@ -47,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,8 +61,12 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AirportCatalog
+import com.example.data.CustomMeteoServerClient
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.example.diagnostics.CrashReporter
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
@@ -114,6 +119,9 @@ fun StationAndMetarDialog(
   var useTgftp by remember(serverConfig) { mutableStateOf(serverConfig.useNoaaTgftp) }
   var useVatsim by remember(serverConfig) { mutableStateOf(serverConfig.useVatsimMetar) }
   var showPassword by remember { mutableStateOf(false) }
+  var isTestingIp by remember { mutableStateOf(false) }
+  var ipTestReport by remember { mutableStateOf<CustomMeteoServerClient.ConnectionTestReport?>(null) }
+  val dialogScope = rememberCoroutineScope()
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -540,6 +548,69 @@ fun StationAndMetarDialog(
             )
           }
           Spacer(modifier = Modifier.height(8.dp))
+          OutlinedButton(
+            onClick = {
+              isTestingIp = true
+              ipTestReport = null
+              val probeCfg = ServerConfig(
+                url = serverUrlInput,
+                username = serverUserInput.trim(),
+                password = serverPassInput,
+                sourceMode = DataSourceMode.IP_ONLY,
+                useCustomServer = true,
+                fallbackToNoaa = false,
+              )
+              dialogScope.launch {
+                val report = withContext(Dispatchers.IO) {
+                  CustomMeteoServerClient().testConnection(currentStation.icao, probeCfg)
+                }
+                ipTestReport = report
+                isTestingIp = false
+              }
+            },
+            enabled = !isTestingIp,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("server_test_connection_button"),
+          ) {
+            Text(
+              text = if (isTestingIp) "Проверка IP (${currentStation.icao})…" else "Проверить IP-сервер (${currentStation.icao})",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+          ipTestReport?.let { rep ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(
+              verticalArrangement = Arrangement.spacedBy(3.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("server_test_result_card")
+                .clip(RoundedCornerShape(4.dp))
+                .background(palette.secondaryFieldBackground)
+                .border(
+                  1.dp,
+                  if (rep.metarFound) palette.headwindPositive else palette.tailwindNegative,
+                  RoundedCornerShape(4.dp),
+                )
+                .padding(8.dp),
+            ) {
+              Text(
+                text = rep.summary,
+                color = if (rep.metarFound) palette.headwindPositive else palette.tailwindNegative,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = rep.logs.takeLast(5).joinToString("\n"),
+                color = palette.textSecondary,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+              )
+            }
+          }
+          Spacer(modifier = Modifier.height(8.dp))
           Text(
             text = "Интернет-сайты METAR / TAF:",
             color = palette.textSecondary,
@@ -897,9 +968,15 @@ fun WeatherAlertsDialog(
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
           listOf(1500 to 150, 3000 to 300, 5000 to 450).forEach { (visM, ceilM) ->
+            val ceilFt = when (ceilM) {
+              150 -> 500
+              300 -> 1000
+              450 -> 1500
+              else -> (ceilM * 3.28084).toInt()
+            }
             val selected = alertConfig.visibilityThresholdMeters == visM
             Text(
-              text = "< ${visM}м / ${ceilM}м",
+              text = "< ${visM}м / ${ceilFt} ft",
               color = palette.textPrimary,
               fontSize = 11.sp,
               fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
