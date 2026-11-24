@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WarningAmber
@@ -46,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -55,10 +57,12 @@ import com.example.domain.UnitConverter
 import com.example.model.AirportStation
 import com.example.model.PressureUnit
 import com.example.model.QnhTrendSummary
+import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherHistoryEntry
 import com.example.model.WindSpeedUnit
 import com.example.ui.components.QnhHistoryLineChart
+import com.example.ui.components.UnitSystemTableToggle
 import com.example.ui.theme.LocalMeteoPalette
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -88,7 +92,9 @@ fun WeatherHistory24hScreen(
   onRefresh24h: () -> Unit,
   onToggleWindUnit: () -> Unit,
   onTogglePressureUnit: () -> Unit,
+  onSelectUnitSystem: (UnitSystem) -> Unit = {},
   onOpenThresholdConfig: (() -> Unit)? = null,
+  onOpenExportDialog: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -185,6 +191,37 @@ fun WeatherHistory24hScreen(
             testTag = "history_24h_pressure_toggle",
             onClick = onTogglePressureUnit,
           )
+          if (onOpenExportDialog != null) {
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("history_24h_export_button")
+                .clip(RoundedCornerShape(4.dp))
+                .background(palette.buttonBackground)
+                .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+                .clickable(onClick = onOpenExportDialog)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.PictureAsPdf,
+                  contentDescription = "Экспорт отчёта и трендов в PDF или TXT",
+                  tint = palette.metarAmber,
+                  modifier = Modifier.size(14.dp),
+                )
+                Text(
+                  text = "Экспорт",
+                  color = palette.textPrimary,
+                  fontSize = 11.5.sp,
+                  fontWeight = FontWeight.Bold,
+                )
+              }
+            }
+          }
           Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -230,9 +267,20 @@ fun WeatherHistory24hScreen(
         contentPadding = PaddingValues(bottom = 12.dp),
         modifier = Modifier
           .weight(1f)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          .testTag("history_24h_list"),
       ) {
-        // 1. 24h QNH Trend Line Chart
+        // 0. Metric / Imperial Unit Toggle across 24h chart and history cards
+        item(key = "unit_toggle") {
+          UnitSystemTableToggle(
+            activeSystem = UnitConverter.resolveUnitSystem(windUnit, pressureUnit),
+            windUnit = windUnit,
+            pressureUnit = pressureUnit,
+            onSelectSystem = onSelectUnitSystem,
+          )
+        }
+
+        // 1. 24h QNH & Temperature Trend Line Chart
         item(key = "qnh_chart") {
           QnhHistoryLineChart(
             trend = qnhTrend,
@@ -332,6 +380,7 @@ fun WeatherHistory24hScreen(
                 Box(
                   modifier = Modifier
                     .testTag("history_entries_count")
+                    .semantics(mergeDescendants = true) {}
                     .background(palette.secondaryFieldBackground, RoundedCornerShape(4.dp))
                     .border(0.8.dp, palette.border, RoundedCornerShape(4.dp))
                     .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -581,9 +630,9 @@ private fun WeatherHistoryEntryCard(
       Text(
         text = "METAR: ${entry.rawMetar}",
         color = palette.textPrimary,
-        fontSize = 11.5.sp,
+        fontSize = 13.sp,
         fontFamily = FontFamily.Monospace,
-        lineHeight = 16.sp,
+        lineHeight = 18.sp,
         modifier = Modifier
           .fillMaxWidth()
           .background(palette.fieldBackground, RoundedCornerShape(3.dp))
@@ -598,9 +647,9 @@ private fun WeatherHistoryEntryCard(
       Text(
         text = "TAF: ${entry.rawTaf}",
         color = palette.textSecondary,
-        fontSize = 11.sp,
+        fontSize = 12.5.sp,
         fontFamily = FontFamily.Monospace,
-        lineHeight = 15.5.sp,
+        lineHeight = 17.5.sp,
         modifier = Modifier
           .fillMaxWidth()
           .background(palette.secondaryFieldBackground, RoundedCornerShape(3.dp))

@@ -29,12 +29,16 @@ import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -53,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.AutoRefreshInterval
 import com.example.diagnostics.CrashReporter
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
@@ -77,16 +83,24 @@ fun SettingsScreen(
   isNightMode: Boolean,
   isFullscreen: Boolean,
   alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+  autoRefreshEnabled: Boolean = true,
+  autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
   onBack: () -> Unit,
   onSelectUnitSystem: (UnitSystem) -> Unit,
   onSelectWindUnit: (WindSpeedUnit) -> Unit,
   onSelectPressureUnit: (PressureUnit) -> Unit,
   onToggleNight: () -> Unit,
+  onSetNightMode: (Boolean) -> Unit = { desired -> if (desired != isNightMode) onToggleNight() },
   onToggleFullscreen: () -> Unit,
+  onToggleAutoRefresh: (Boolean) -> Unit = {},
+  onSelectAutoRefreshInterval: (Int) -> Unit = {},
   onOpenServerSettings: () -> Unit,
   onOpenAlertsSettings: () -> Unit,
   onOpenThresholdConfig: () -> Unit = {},
   onOpenHistory24h: () -> Unit = {},
+  onOpenExportDialog: () -> Unit = {},
+  onOpenDecoder: () -> Unit = {},
+  onOpenPressureUtility: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -520,7 +534,197 @@ fun SettingsScreen(
         }
       }
 
-      // Section 4: Display & Operational Preferences
+      // Section 3.5: Automatic Weather Refresh (5, 15, 30 min)
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("settings_auto_refresh_card")
+          .background(palette.panelSurface)
+          .border(1.dp, palette.border)
+          .padding(12.dp),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Sync,
+              contentDescription = "Автоматическое обновление данных",
+              tint = if (autoRefreshEnabled) palette.metarAmber else palette.textMuted,
+              modifier = Modifier.size(20.dp),
+            )
+            Column {
+              Text(
+                text = "Автообновление метеоданных",
+                color = palette.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = if (autoRefreshEnabled) {
+                  "Активно: загрузка METAR/TAF каждые $autoRefreshIntervalMinutes мин"
+                } else {
+                  "Отключено — обновляйте кнопкой «Обновить» на верхней панели"
+                },
+                color = palette.textSecondary,
+                fontSize = 11.5.sp,
+                modifier = Modifier.testTag("settings_auto_refresh_status"),
+              )
+            }
+          }
+
+          Switch(
+            checked = autoRefreshEnabled,
+            onCheckedChange = onToggleAutoRefresh,
+            modifier = Modifier.testTag("settings_auto_refresh_switch"),
+          )
+        }
+
+        Text(
+          text = "Интервал автоматического обновления:",
+          color = palette.textSecondary,
+          fontSize = 12.sp,
+        )
+
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          AutoRefreshInterval.entries.forEach { interval ->
+            val selected = interval.minutes == autoRefreshIntervalMinutes
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("settings_auto_refresh_interval_${interval.minutes}")
+                .clip(RoundedCornerShape(4.dp))
+                .background(
+                  when {
+                    selected && autoRefreshEnabled -> palette.buttonActiveBackground
+                    selected -> palette.buttonBackground
+                    else -> palette.secondaryFieldBackground
+                  },
+                )
+                .border(
+                  width = if (selected) 1.5.dp else 1.dp,
+                  color = when {
+                    selected && autoRefreshEnabled -> palette.metarAmber
+                    selected -> palette.borderStrong
+                    else -> palette.border
+                  },
+                  shape = RoundedCornerShape(4.dp),
+                )
+                .clickable { onSelectAutoRefreshInterval(interval.minutes) }
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            ) {
+              Text(
+                text = interval.label,
+                color = when {
+                  selected && autoRefreshEnabled -> palette.metarAmber
+                  selected -> palette.textPrimary
+                  else -> palette.textSecondary
+                },
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                textAlign = TextAlign.Center,
+              )
+            }
+          }
+        }
+      }
+
+      // Section 4: Cockpit UI Theme (Light / Dark)
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("settings_theme_card")
+          .background(palette.panelSurface)
+          .border(1.dp, palette.border)
+          .padding(12.dp),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = if (isNightMode) Icons.Filled.DarkMode else Icons.Filled.LightMode,
+              contentDescription = "Тема интерфейса кокпита",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(20.dp),
+            )
+            Column {
+              Text(
+                text = "Тема интерфейса (Кокпит)",
+                color = palette.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = if (isNightMode) {
+                  "Активен ночной кокпит (Dark Cockpit · низкая яркость)"
+                } else {
+                  "Активен дневной кокпит (Light Cockpit · высокий контраст)"
+                },
+                color = palette.textSecondary,
+                fontSize = 11.5.sp,
+                modifier = Modifier.testTag("settings_theme_status"),
+              )
+            }
+          }
+
+          Switch(
+            checked = isNightMode,
+            onCheckedChange = { onSetNightMode(it) },
+            modifier = Modifier.testTag("settings_night_mode_switch"),
+          )
+        }
+
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          CockpitThemeOptionCard(
+            title = "Дневной (Light)",
+            subtitle = "Светлая панель",
+            bgSwatch = Color(0xFFF3F5F8),
+            accentSwatch = Color(0xFFC85A00),
+            textSwatch = Color(0xFF0D1117),
+            selected = !isNightMode,
+            testTag = "settings_theme_light",
+            onClick = { onSetNightMode(false) },
+            modifier = Modifier.weight(1f),
+          )
+          CockpitThemeOptionCard(
+            title = "Ночной (Dark)",
+            subtitle = "Тёмный кокпит",
+            bgSwatch = Color(0xFF111A27),
+            accentSwatch = Color(0xFFFF981A),
+            textSwatch = Color(0xFFEBF2FA),
+            selected = isNightMode,
+            testTag = "settings_theme_dark",
+            onClick = { onSetNightMode(true) },
+            modifier = Modifier.weight(1f),
+          )
+        }
+      }
+
+      // Section 5: Display & Operational Preferences
       Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
@@ -535,35 +739,6 @@ fun SettingsScreen(
           fontSize = 13.5.sp,
           fontWeight = FontWeight.Bold,
         )
-
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.weight(1f),
-          ) {
-            Icon(
-              imageVector = Icons.Filled.DarkMode,
-              contentDescription = null,
-              tint = palette.textSecondary,
-              modifier = Modifier.size(18.dp),
-            )
-            Text(
-              text = "Ночной режим индикации",
-              color = palette.textPrimary,
-              fontSize = 13.sp,
-            )
-          }
-          Switch(
-            checked = isNightMode,
-            onCheckedChange = { onToggleNight() },
-            modifier = Modifier.testTag("settings_night_mode_switch"),
-          )
-        }
 
         Row(
           verticalAlignment = Alignment.CenterVertically,
@@ -697,6 +872,58 @@ fun SettingsScreen(
           Spacer(modifier = Modifier.size(6.dp))
           Text("История METAR / TAF за 24ч и тренд QNH", fontSize = 12.sp)
         }
+
+        OutlinedButton(
+          onClick = onOpenExportDialog,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("settings_export_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.PictureAsPdf,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.size(6.dp))
+          Text("Экспорт сводки и трендов (PDF / TXT)", fontSize = 12.sp)
+        }
+
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          OutlinedButton(
+            onClick = onOpenPressureUtility,
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 48.dp)
+              .testTag("settings_pressure_utility_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Compress,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text("QNH / QFE", fontSize = 12.sp)
+          }
+          OutlinedButton(
+            onClick = onOpenDecoder,
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 48.dp)
+              .testTag("settings_decoder_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Description,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.size(6.dp))
+            Text("Декодер METAR", fontSize = 12.sp)
+          }
+        }
       }
 
       // Section 5: Discreet App Owner & Crashlytics Diagnostics Card
@@ -811,6 +1038,88 @@ private fun UnitSystemOptionCard(
       color = palette.textSecondary,
       fontSize = 11.5.sp,
       lineHeight = 15.sp,
+    )
+  }
+}
+
+@Composable
+private fun CockpitThemeOptionCard(
+  title: String,
+  subtitle: String,
+  bgSwatch: Color,
+  accentSwatch: Color,
+  textSwatch: Color,
+  selected: Boolean,
+  testTag: String,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalMeteoPalette.current
+
+  Column(
+    verticalArrangement = Arrangement.spacedBy(6.dp),
+    modifier = modifier
+      .heightIn(min = 72.dp)
+      .testTag(testTag)
+      .clip(RoundedCornerShape(6.dp))
+      .background(if (selected) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+      .border(
+        width = if (selected) 1.5.dp else 1.dp,
+        color = if (selected) palette.metarAmber else palette.border,
+        shape = RoundedCornerShape(6.dp),
+      )
+      .clickable(onClick = onClick)
+      .padding(10.dp),
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        Icon(
+          imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+          contentDescription = null,
+          tint = if (selected) palette.metarAmber else palette.textMuted,
+          modifier = Modifier.size(16.dp),
+        )
+        Text(
+          text = title,
+          color = palette.textPrimary,
+          fontSize = 12.5.sp,
+          fontWeight = FontWeight.Bold,
+        )
+      }
+
+      // Cockpit palette swatch preview
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+          .background(bgSwatch, RoundedCornerShape(3.dp))
+          .border(1.dp, palette.border, RoundedCornerShape(3.dp))
+          .padding(horizontal = 6.dp, vertical = 3.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .size(8.dp)
+            .background(accentSwatch, RoundedCornerShape(2.dp)),
+        )
+        Box(
+          modifier = Modifier
+            .size(8.dp)
+            .background(textSwatch, RoundedCornerShape(2.dp)),
+        )
+      }
+    }
+
+    Text(
+      text = subtitle,
+      color = palette.textSecondary,
+      fontSize = 11.sp,
     )
   }
 }

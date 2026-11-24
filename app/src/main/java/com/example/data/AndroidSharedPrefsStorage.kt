@@ -205,13 +205,30 @@ class SharedPreferencesUnitPreferencesStorage(
       ?: com.example.model.WindSpeedUnit.KT
     val pressure = com.example.model.PressureUnit.entries.firstOrNull { it.name == rawPressure }
       ?: com.example.model.PressureUnit.HPA
-    return UnitPreferences(windUnit = wind, pressureUnit = pressure)
+    val autoRefreshEnabled = prefs.getBoolean(KEY_AUTO_REFRESH_ENABLED, true)
+    val rawInterval = prefs.getInt(
+      KEY_AUTO_REFRESH_INTERVAL_MINUTES,
+      AutoRefreshInterval.FIFTEEN_MIN.minutes,
+    )
+    val autoRefreshInterval = AutoRefreshInterval.fromMinutes(rawInterval).minutes
+    val isNightMode = prefs.getBoolean(KEY_IS_NIGHT_MODE, false)
+    return UnitPreferences(
+      windUnit = wind,
+      pressureUnit = pressure,
+      autoRefreshEnabled = autoRefreshEnabled,
+      autoRefreshIntervalMinutes = autoRefreshInterval,
+      isNightMode = isNightMode,
+    )
   }
 
   override fun savePreferences(preferences: UnitPreferences) {
+    val validInterval = AutoRefreshInterval.fromMinutes(preferences.autoRefreshIntervalMinutes).minutes
     prefs.edit()
       .putString(KEY_WIND_UNIT, preferences.windUnit.name)
       .putString(KEY_PRESSURE_UNIT, preferences.pressureUnit.name)
+      .putBoolean(KEY_AUTO_REFRESH_ENABLED, preferences.autoRefreshEnabled)
+      .putInt(KEY_AUTO_REFRESH_INTERVAL_MINUTES, validInterval)
+      .putBoolean(KEY_IS_NIGHT_MODE, preferences.isNightMode)
       .apply()
   }
 
@@ -219,6 +236,9 @@ class SharedPreferencesUnitPreferencesStorage(
     const val PREFS_NAME = "meteotablo_prefs"
     const val KEY_WIND_UNIT = "preferred_wind_unit"
     const val KEY_PRESSURE_UNIT = "preferred_pressure_unit"
+    const val KEY_AUTO_REFRESH_ENABLED = "auto_refresh_enabled"
+    const val KEY_AUTO_REFRESH_INTERVAL_MINUTES = "auto_refresh_interval_minutes"
+    const val KEY_IS_NIGHT_MODE = "is_night_mode"
   }
 }
 

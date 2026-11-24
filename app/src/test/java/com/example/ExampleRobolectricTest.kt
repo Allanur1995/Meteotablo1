@@ -11,10 +11,13 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -220,7 +223,12 @@ class ExampleRobolectricTest {
 
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("demo_button").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("toolbar_source_selector").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_menu").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_source_selector").assertIsDisplayed()
     composeTestRule.onNodeWithTag("toolbar_source_selector").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("source_mode_item_INTERNET_ONLY").performClick()
@@ -235,12 +243,16 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("taf_footer_row").assertExists()
     composeTestRule.onNodeWithTag("metar_footer_row").assertExists()
 
-    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("гПа")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().performClick()
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("дм")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().performClick()
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("гПа")
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").assertTextContains("kt", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("дм", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_close").performClick()
+    composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("metar_table_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
@@ -348,7 +360,9 @@ class ExampleRobolectricTest {
     }
 
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_save_current").performClick()
     composeTestRule.waitForIdle()
@@ -369,8 +383,10 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     assertEquals("UTAN", vm.uiState.value.station.icao)
 
-    // Recall saved UTAA 12R/30L setup via toolbar presets menu
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    // Recall saved UTAA 12R/30L setup via consolidated quick-controls presets menu
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_item_$savedId").performClick()
     composeTestRule.waitForIdle()
@@ -383,7 +399,9 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("wind_center_box_12R").assertExists()
 
     // Delete via dialog management
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_manage").performClick()
     composeTestRule.waitForIdle()
@@ -449,9 +467,12 @@ class ExampleRobolectricTest {
     val title = posted.first().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
     assertTrue(title.contains("UTAA"))
 
-    // Verify banner & toolbar unread alert counter
+    // Verify banner & consolidated quick controls unread alert counter
     composeTestRule.onNodeWithTag("weather_alert_banner").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("toolbar_alerts_button").performScrollTo().assertTextContains("Тревога (1)")
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("(1)", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_alerts_button").assertTextContains("Тревога (1)")
 
     // Open alerts dialog, verify alert item rendered, then mark all read
     composeTestRule.onNodeWithTag("toolbar_alerts_button").performClick()
@@ -689,11 +710,11 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("settings_preview_wind").performScrollTo().assertTextContains("16 kt", substring = true)
     composeTestRule.onNodeWithTag("settings_preview_pressure").performScrollTo().assertTextContains("30,21 дм", substring = true)
 
-    // Return to main weather display and confirm toolbar reflects Imperial units
+    // Return to main weather display and confirm consolidated quick controls reflect Imperial units
     composeTestRule.onNodeWithTag("settings_back_button").performClick()
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt")
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("дм")
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("kt", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("дм", substring = true)
 
     // Verify persistence across ViewModel recreation
     val vmReloaded = MeteoViewModel(unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(context), autoFetch = false)
@@ -938,5 +959,698 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("map_layer_OSM").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("map_canvas_container").assertIsDisplayed()
+  }
+
+  @Test
+  fun `weather history analyzer builds 24h qnh and temperature trends with pruning and month rollover`() {
+    val utam = AirportCatalog.findOrDefault("UTAM")
+    val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+      set(2026, java.util.Calendar.MAY, 1, 2, 0, 0)
+      set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val refNowMillis = cal.timeInMillis
+
+    // 301800Z refers to April 30 18:00Z relative to May 1 02:00Z (month boundary rollover)
+    val prevMonthObs = com.example.domain.WeatherHistoryAnalyzer.resolveObservationMillis(
+      rawMetar = "METAR UTAM 301800Z 09008KT 8000 SCT030 14/06 Q1016",
+      referenceNowMillis = refNowMillis,
+    )
+    assertTrue(prevMonthObs < refNowMillis)
+    assertTrue(refNowMillis - prevMonthObs in (7L * 3600_000L)..(9L * 3600_000L))
+
+    val staleObs = refNowMillis - (25L * 3600_000L)
+    val eOld = com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+      rawMetar = "METAR UTAM 292200Z 09005KT 9999 FEW040 10/04 Q1010",
+      rawTaf = null,
+      station = utam,
+      sourceLabel = "stale",
+      explicitTimestampMillis = staleObs,
+      referenceNowMillis = refNowMillis,
+    )!!
+    val e1 = com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+      rawMetar = "METAR UTAM 301800Z 11012KT 9999 SCT035 16/07 Q1014",
+      rawTaf = "TAF UTAM 301700Z 3018/0118 11012KT 9999 SCT035",
+      station = utam,
+      sourceLabel = "test",
+      explicitTimestampMillis = prevMonthObs,
+      referenceNowMillis = refNowMillis,
+    )!!
+    val e2 = com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+      rawMetar = "METAR UTAM 010100Z 14018G26KT 2500 BR BKN012 11/09 Q1019",
+      rawTaf = "TAF UTAM 302300Z 0100/0200 14015KT 3000 BR BKN012",
+      station = utam,
+      sourceLabel = "test",
+      explicitTimestampMillis = refNowMillis - 3600_000L,
+      referenceNowMillis = refNowMillis,
+    )!!
+
+    val merged = com.example.domain.WeatherHistoryAnalyzer.mergeHistory(
+      existing = listOf(eOld, e1),
+      incoming = listOf(e2),
+      referenceNowMillis = refNowMillis,
+    )
+    assertEquals(2, merged.size) // stale 25h entry pruned
+    val trend = com.example.domain.WeatherHistoryAnalyzer.buildQnhTrend(
+      icao = "UTAM",
+      entries = merged,
+      referenceNowMillis = refNowMillis,
+    )
+    assertEquals(2, trend.points.size)
+    assertEquals(1014, trend.minHpa)
+    assertEquals(1019, trend.maxHpa)
+    assertEquals(5, trend.delta24hHpa)
+    assertEquals(2, trend.temperaturePoints.size)
+    assertEquals(11, trend.minTempC)
+    assertEquals(16, trend.maxTempC)
+    assertEquals(-5, trend.delta24hTempC)
+  }
+
+  @Test
+  fun `threshold config screen updates wind and visibility limits and triggers visual alerts in metar taf table`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val alertStorage = SharedPreferencesWeatherAlertStorage(context)
+    alertStorage.saveConfig(com.example.model.WeatherAlertConfig())
+    val vm = MeteoViewModel(alertStorage = alertStorage, autoFetch = false)
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAM 241000Z 28016G24KT 2200 BR BKN010 08/06 Q1012 NOSIG",
+      rawTaf = "TAF UTAM 240900Z 2412/2512 27018G26KT 1800 BR BKN012",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open METAR Table -> open Thresholds configuration screen
+    composeTestRule.onNodeWithTag("metar_table_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("metar_table_thresholds_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("threshold_config_screen").assertIsDisplayed()
+    // Select 15 kt wind threshold chip and 2500 m visibility chip
+    composeTestRule.onNodeWithTag("threshold_wind_chip_15").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("threshold_vis_chip_3000").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    val persisted = SharedPreferencesWeatherAlertStorage(context).loadConfig()
+    assertEquals(15, persisted.tableWindAlertKt)
+    assertEquals(3000, persisted.tableVisibilityAlertMeters)
+    assertTrue(persisted.tableAlertsEnabled)
+
+    composeTestRule.onNodeWithTag("thresholds_done_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    // Verify visual alert banner and METAR + TAF row alert badges appear
+    composeTestRule.onNodeWithTag("table_active_alerts_banner").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("metar_wind_alert_badge").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("metar_vis_alert_badge").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("taf_wind_alert_badge_0").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("taf_vis_alert_badge_0").performScrollTo().assertIsDisplayed()
+
+    // Verify Metric <-> Imperial toggle component switches table displays throughout
+    composeTestRule.onNodeWithTag("aviation_table_unit_system_toggle").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("table_unit_metric").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(WindSpeedUnit.MPS, vm.uiState.value.windUnit)
+    assertEquals(PressureUnit.HPA, vm.uiState.value.pressureUnit)
+    composeTestRule.onNodeWithText("8 °C / 6 °C").performScrollTo().assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("table_unit_imperial").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(WindSpeedUnit.KT, vm.uiState.value.windUnit)
+    assertEquals(PressureUnit.INHG, vm.uiState.value.pressureUnit)
+    composeTestRule.onNodeWithText("46 °F / 43 °F").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `24h history screen displays qnh and temperature line chart and filters metar and taf entries`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    val now = System.currentTimeMillis()
+    val utam = AirportCatalog.findOrDefault("UTAM")
+    val entries = listOf(
+      com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+        rawMetar = "METAR UTAM 240400Z 09008KT 9999 FEW040 09/03 Q1011",
+        rawTaf = "TAF UTAM 240300Z 2406/2506 09010KT 9999 FEW040",
+        station = utam,
+        sourceLabel = "test-ip",
+        explicitTimestampMillis = now - 6L * 3600_000L,
+        referenceNowMillis = now,
+      )!!,
+      com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+        rawMetar = "METAR UTAM 240800Z 12014KT 5000 BR SCT025 14/07 Q1015",
+        rawTaf = "TAF UTAM — нет данных",
+        station = utam,
+        sourceLabel = "test-ip",
+        explicitTimestampMillis = now - 2L * 3600_000L,
+        referenceNowMillis = now,
+      )!!,
+      com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+        rawMetar = "METAR UTAM 241000Z 24022G30KT 2000 BR BKN012 17/09 Q1018",
+        rawTaf = "TAF UTAM 240900Z 2412/2512 24020KT 3000 BR BKN012",
+        station = utam,
+        sourceLabel = "test-ip",
+        explicitTimestampMillis = now - 30L * 60_000L,
+        referenceNowMillis = now,
+      )!!,
+    )
+    vm.mergeExternal24hHistory("UTAM", entries)
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open 24h History Screen from top toolbar
+    composeTestRule.onNodeWithTag("toolbar_history_24h_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("history_24h_screen").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("qnh_line_chart_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("qnh_line_chart_canvas").assertIsDisplayed()
+    composeTestRule.onNodeWithText("1011 гПа").assertIsDisplayed()
+    composeTestRule.onAllNodesWithText("1018 гПа").onFirst().assertIsDisplayed()
+
+    // Switch chart dynamically from Pressure (QNH) to Temperature (T / DP)
+    composeTestRule.onNodeWithTag("chart_metric_TEMPERATURE").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("chart_legend_row").assertIsDisplayed()
+    composeTestRule.onNodeWithText("9 °C").assertIsDisplayed()
+    composeTestRule.onAllNodesWithText("17 °C").onFirst().assertIsDisplayed()
+
+    // Switch back to Pressure QNH and verify filtering ALL (3) -> TAF (2) -> METAR (3)
+    composeTestRule.onNodeWithTag("chart_metric_PRESSURE").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("history_24h_list").performScrollToKey("filter_bar")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("history_entries_count").assertTextContains("3 зап.")
+    composeTestRule.onNodeWithTag("history_filter_TAF").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("history_entries_count").assertTextContains("2 зап.")
+    composeTestRule.onNodeWithTag("history_filter_METAR").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("history_entries_count").assertTextContains("3 зап.")
+  }
+
+  @Test
+  fun `qnh and temperature line chart handles zero-size bounds safely`() {
+    val trend = com.example.model.QnhTrendSummary(
+      icao = "UTAM",
+      points = listOf(
+        com.example.model.QnhHistoryPoint("240800Z", 1000L, 1013, 29.91),
+        com.example.model.QnhHistoryPoint("240900Z", 4600L, 1016, 30.00),
+      ),
+      minHpa = 1013,
+      maxHpa = 1016,
+      latestHpa = 1016,
+      delta24hHpa = 3,
+      temperaturePoints = listOf(
+        com.example.model.TemperatureHistoryPoint("240800Z", 1000L, 12, 6),
+        com.example.model.TemperatureHistoryPoint("240900Z", 4600L, 15, 8),
+      ),
+      minTempC = 12,
+      maxTempC = 15,
+      latestTempC = 15,
+      delta24hTempC = 3,
+    )
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        Box(modifier = Modifier.size(0.dp)) {
+          com.example.ui.components.QnhHistoryLineChart(
+            trend = trend,
+            pressureUnit = PressureUnit.HPA,
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+  }
+
+  @Test
+  fun `settings auto refresh toggles on off selects 5 15 30 min persists and top bar has manual refresh`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val unitStorage = SharedPreferencesUnitPreferencesStorage(context)
+    unitStorage.savePreferences(
+      com.example.data.UnitPreferences(
+        windUnit = WindSpeedUnit.KT,
+        pressureUnit = PressureUnit.HPA,
+        autoRefreshEnabled = true,
+        autoRefreshIntervalMinutes = 15,
+      ),
+    )
+
+    val vm = MeteoViewModel(unitPreferencesStorage = unitStorage, autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Manual refresh button & auto badge present in top app bar
+    composeTestRule.onNodeWithTag("refresh_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_auto_refresh_badge").performScrollTo().assertTextContains("АВТО 15м")
+
+    // Open Settings and test 5 / 15 / 30 min intervals + enable/disable toggle
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("settings_auto_refresh_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("settings_auto_refresh_interval_5").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(5, vm.uiState.value.autoRefreshIntervalMinutes)
+
+    composeTestRule.onNodeWithTag("settings_auto_refresh_interval_30").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(30, vm.uiState.value.autoRefreshIntervalMinutes)
+
+    composeTestRule.onNodeWithTag("settings_auto_refresh_switch").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertFalse(vm.uiState.value.autoRefreshEnabled)
+    composeTestRule.onNodeWithTag("settings_auto_refresh_status").assertTextContains("Отключено", substring = true)
+
+    // Return to main board and verify top bar reflects manual-only mode
+    composeTestRule.onNodeWithTag("settings_back_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_auto_refresh_badge").performScrollTo().assertTextContains("РУЧН.")
+
+    // Re-enable in Settings at 5 min and verify persistence across ViewModel recreation
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("settings_auto_refresh_switch").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("settings_auto_refresh_interval_5").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    val vmReloaded = MeteoViewModel(unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(context), autoFetch = false)
+    assertTrue(vmReloaded.uiState.value.autoRefreshEnabled)
+    assertEquals(5, vmReloaded.uiState.value.autoRefreshIntervalMinutes)
+  }
+
+  @Test
+  fun `my airports bar on main screen saves switches removes and persists custom ICAO codes`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val favStorage = SharedPreferencesFavoriteStorage(context)
+    favStorage.saveFavorites(listOf("UTAM", "UTAA"))
+
+    val vm = MeteoViewModel(favoriteStorage = favStorage, autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("my_airports_bar").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("my_airport_chip_UTAM").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("my_airport_chip_UTAA").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("UTAA", vm.uiState.value.station.icao)
+
+    // Add a custom ICAO (KJFK) via "+ ICAO" button
+    composeTestRule.onNodeWithTag("my_airports_add_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_icao_input").performTextInput("kjfk")
+    composeTestRule.onNodeWithTag("my_airports_confirm_add").performClick()
+    composeTestRule.waitForIdle()
+
+    assertTrue("KJFK" in vm.uiState.value.favoriteIcaos)
+    assertEquals("KJFK", vm.uiState.value.station.icao)
+    composeTestRule.onNodeWithTag("my_airport_chip_KJFK").performScrollTo().assertIsDisplayed()
+
+    // Remove KJFK from My Airports and verify toggle-current adds it back
+    composeTestRule.onNodeWithTag("my_airport_remove_KJFK").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertFalse("KJFK" in vm.uiState.value.favoriteIcaos)
+
+    composeTestRule.onNodeWithTag("my_airports_toggle_current").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertTrue("KJFK" in vm.uiState.value.favoriteIcaos)
+
+    // Verify persistence
+    val vmReloaded = MeteoViewModel(favoriteStorage = SharedPreferencesFavoriteStorage(context), autoFetch = false)
+    assertTrue("KJFK" in vmReloaded.uiState.value.favoriteIcaos)
+  }
+
+  @Test
+  fun `my airports search autocomplete finds local ICAO database stations and adds them`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val favStorage = SharedPreferencesFavoriteStorage(context)
+    favStorage.saveFavorites(listOf("UTAM"))
+
+    val vm = MeteoViewModel(favoriteStorage = favStorage, autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Search local ICAO database by city/prefix ("EG") and select EGLL from autocomplete list
+    composeTestRule.onNodeWithTag("my_airports_search_input").performScrollTo().performTextInput("EG")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_autocomplete_list").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("my_airports_autocomplete_item_EGLL").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    assertTrue("EGLL" in vm.uiState.value.favoriteIcaos)
+    assertEquals("EGLL", vm.uiState.value.station.icao)
+    composeTestRule.onNodeWithTag("my_airport_chip_EGLL").performScrollTo().assertIsDisplayed()
+
+    // Search by Russian city name ("Ташкент") -> finds UTTT in local ICAO database
+    composeTestRule.onNodeWithTag("my_airports_search_input").performScrollTo().performTextInput("Ташкент")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_autocomplete_item_UTTT").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertTrue("UTTT" in vm.uiState.value.favoriteIcaos)
+    assertEquals("UTTT", vm.uiState.value.station.icao)
+  }
+
+  @Test
+  fun `settings theme selector switches between light and dark cockpit modes and persists`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val unitStorage = SharedPreferencesUnitPreferencesStorage(context)
+    unitStorage.savePreferences(com.example.data.UnitPreferences(isNightMode = false))
+
+    val vm = MeteoViewModel(unitPreferencesStorage = unitStorage, autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = vm.uiState.value.isNightMode) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("settings_theme_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("settings_theme_dark").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(vm.uiState.value.isNightMode)
+    composeTestRule.onNodeWithTag("settings_theme_status").assertTextContains("ночной кокпит", substring = true)
+
+    // Verify persistence across ViewModel recreation
+    val vmReloaded = MeteoViewModel(unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(context), autoFetch = false)
+    assertTrue(vmReloaded.uiState.value.isNightMode)
+
+    // Switch back to Light Cockpit mode via Light card
+    composeTestRule.onNodeWithTag("settings_theme_light").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertFalse(vm.uiState.value.isNightMode)
+    composeTestRule.onNodeWithTag("settings_theme_status").assertTextContains("дневной кокпит", substring = true)
+  }
+
+  @Test
+  fun `weather report formatter and android exporter generate valid pdf and text summary with trends`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 240900Z 12012KT 9999 FEW030 18/06 Q1018 NOSIG",
+      rawTaf = "TAF UTAA 240800Z 2409/2509 12010KT CAVOK",
+    )
+    vm.mergeExternal24hHistory(
+      icao = "UTAA",
+      entries = listOf(
+        com.example.model.WeatherHistoryEntry(
+          icao = "UTAA",
+          observationTimeUtc = "240600Z",
+          observedAtMillis = System.currentTimeMillis() - 10_800_000L,
+          windSpeedKt = 6,
+          windDirectionDeg = 110,
+          visibilityMeters = 9999,
+          isCavok = true,
+          temperatureC = 14,
+          dewPointC = 5,
+          qnhHpa = 1015,
+          qnhInHg = 29.97,
+          flightCategoryCode = "VFR",
+          rawMetar = "METAR UTAA 240600Z 11006KT CAVOK 14/05 Q1015",
+          rawTaf = "TAF UTAA 240500Z 2406/2506 11008KT CAVOK",
+        ),
+        com.example.model.WeatherHistoryEntry(
+          icao = "UTAA",
+          observationTimeUtc = "240900Z",
+          observedAtMillis = System.currentTimeMillis(),
+          windSpeedKt = 12,
+          windDirectionDeg = 120,
+          visibilityMeters = 9999,
+          isCavok = false,
+          temperatureC = 18,
+          dewPointC = 6,
+          qnhHpa = 1018,
+          qnhInHg = 30.06,
+          flightCategoryCode = "VFR",
+          rawMetar = "METAR UTAA 240900Z 12012KT 9999 FEW030 18/06 Q1018 NOSIG",
+          rawTaf = "TAF UTAA 240800Z 2409/2509 12010KT CAVOK",
+        ),
+      ),
+    )
+
+    val state = vm.uiState.value
+    val payload = com.example.domain.WeatherExportPayload(
+      station = state.station,
+      weather = state.weather,
+      primaryRunwayCalc = state.primaryRunwayCalc,
+      reciprocalRunwayCalc = state.reciprocalRunwayCalc,
+      windUnit = state.windUnit,
+      pressureUnit = state.pressureUnit,
+      windTrend = state.windTrend,
+      qnhTrend24h = state.qnhTrend24h,
+      weatherHistory24h = state.weatherHistory24h,
+    )
+
+    val fileName = com.example.domain.WeatherReportFormatter.suggestedFileBaseName(state.station, state.weather)
+    assertTrue(fileName.startsWith("Meteotablo_UTAA_"))
+
+    val txtOut = java.io.ByteArrayOutputStream()
+    com.example.export.AndroidWeatherReportExporter.writeTextSummary(txtOut, payload)
+    val summary = txtOut.toString("UTF-8")
+    assertTrue(summary.contains("UTAA"))
+    assertTrue(summary.contains("Ashgabat"))
+    assertTrue(summary.contains("Q1018"))
+    assertTrue(summary.contains("Тренд QNH 24ч"))
+    assertTrue(summary.contains("TAF UTAA 240800Z"))
+
+    val pdfOut = java.io.ByteArrayOutputStream()
+    com.example.export.AndroidWeatherReportExporter.writePdfSummary(pdfOut, payload)
+    val pdfBytes = pdfOut.toByteArray()
+    assertTrue(pdfBytes.size > 500)
+    assertEquals("%PDF-", String(pdfBytes, 0, 5, java.nio.charset.StandardCharsets.US_ASCII))
+  }
+
+  @Test
+  fun `export dialog opens from quick controls menu and copies report summary`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAM")
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_export_button").performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("export_report_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("export_save_pdf_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("export_save_txt_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("export_summary_preview").performScrollTo().assertTextContains("UTAM", substring = true)
+
+    composeTestRule.onNodeWithTag("export_copy_summary_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("export_status_message").performScrollTo().assertTextContains("скопирована", substring = true)
+
+    composeTestRule.onNodeWithTag("export_close_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("export_report_dialog").assertDoesNotExist()
+  }
+
+  @Test
+  fun `my airports coordinate plot displays saved airport pins and switches station on tap`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val favStorage = SharedPreferencesFavoriteStorage(context)
+    favStorage.saveFavorites(listOf("UTAM", "UTAA", "EGLL"))
+
+    val utam = AirportCatalog.findKnown("UTAM")!!
+    val egll = AirportCatalog.findKnown("EGLL")!!
+    val bounds = AirportMapProjection.computeCoordinatePlotBounds(listOf(utam, egll))
+    assertTrue(bounds.minLat < utam.latitude && bounds.maxLat > egll.latitude)
+    assertTrue(AirportMapProjection.haversineKm(utam.latitude, utam.longitude, egll.latitude, egll.longitude) > 4500)
+
+    val vm = MeteoViewModel(favoriteStorage = favStorage, autoFetch = false)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("my_airports_plot_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("my_airports_coordinate_plot").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("my_airports_plot_canvas").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("coordinate_plot_pin_UTAM").assertExists()
+    composeTestRule.onNodeWithTag("coordinate_plot_pin_UTAA").assertExists()
+    composeTestRule.onNodeWithTag("coordinate_plot_pin_EGLL").assertExists()
+
+    composeTestRule.onNodeWithTag("coordinate_plot_pin_EGLL").performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("EGLL", vm.uiState.value.station.icao)
+    composeTestRule.onNodeWithTag("coordinate_plot_selected_info").assertTextContains("EGLL", substring = true)
+  }
+
+  @Test
+  fun `qnh qfe pressure conversion utility toggles hPa and inHg and computes accurate aviation metrics`() {
+    // Domain math verification
+    val qfeAt138m = com.example.domain.UnitConverter.computeQfeFromQnhHpa(1013.25, 138)
+    assertTrue(qfeAt138m in 995.5..998.0)
+    val qnhRestored = com.example.domain.UnitConverter.computeQnhFromQfeHpa(qfeAt138m, 138)
+    assertEquals(1013.25, qnhRestored, 0.05)
+    assertEquals(1013.2, com.example.domain.UnitConverter.convertInHgToHpa(29.92), 0.3)
+
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 241000Z 12010KT CAVOK 22/08 Q1018 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open QNH/QFE conversion utility from Quick Controls menu
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("pressure_utility_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("pressure_utility_qnh_result").assertTextContains("1018 гПа", substring = true)
+    composeTestRule.onNodeWithTag("pressure_utility_qfe_result").assertTextContains("гПа", substring = true)
+
+    // Toggle converter unit hPa -> inHg
+    composeTestRule.onNodeWithTag("pressure_utility_unit_INHG").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_qnh_result").assertTextContains("30.06 inHg", substring = true)
+    composeTestRule.onNodeWithTag("pressure_utility_qfe_result").assertTextContains("inHg", substring = true)
+
+    // Switch direction to QFE -> QNH
+    composeTestRule.onNodeWithTag("pressure_utility_mode_QFE_TO_QNH").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_planning_metrics").performScrollTo().assertIsDisplayed()
+
+    // Toggle back to hPa & close
+    composeTestRule.onNodeWithTag("pressure_utility_unit_HPA").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_qnh_result").performScrollTo().assertTextContains("гПа", substring = true)
+    composeTestRule.onNodeWithTag("pressure_utility_close_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_dialog").assertDoesNotExist()
+  }
+
+  @Test
+  fun `dual runway wind rose visualization displays headwind crosswind for both ends and switches runways`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 241000Z 15018G26KT 9999 FEW040 24/06 Q1016 NOSIG",
+      rawTaf = "TAF UTAA",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Toggle dual runway wind rose on main board
+    composeTestRule.onNodeWithTag("toolbar_dual_wind_rose_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("dual_runway_wind_rose_panel").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dual_rwy_compass_canvas").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dual_rwy_recommendation").performScrollTo().assertTextContains("12L", substring = true)
+    composeTestRule.onNodeWithTag("dual_rwy_card_12L").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dual_rwy_card_30R").performScrollTo().assertIsDisplayed()
+
+    // Switch selected runway pair 12L/30R -> 12R/30L right from dual wind rose selector
+    composeTestRule.onNodeWithTag("dual_rwy_pair_chip_1").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(1, vm.uiState.value.selectedRunwayPairIndex)
+    composeTestRule.onNodeWithTag("dual_rwy_card_12R").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dual_rwy_card_30L").performScrollTo().assertIsDisplayed()
+
+    // Toggle unit inside dual wind rose kt -> м/с
+    composeTestRule.onNodeWithTag("dual_rwy_unit_toggle").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(WindSpeedUnit.MPS, vm.uiState.value.windUnit)
+  }
+
+  @Test
+  fun `metar taf decoder translates all aviation codes into plain open explanations`() {
+    val station = AirportCatalog.findKnown("UTAA")!!
+    val metarRes = com.example.domain.MetarTafDecoder.decodeMetar(
+      rawMetarInput = "METAR UTAA 241430Z 29018G28KT 240V330 1200 R12L/0800U +TSRA FEW008 BKN015CB 19/18 Q1009 NOSIG",
+      stationHint = station,
+    )
+    assertTrue(metarRes.plainSummaryParagraph.contains("Ashgabat"))
+    assertTrue(metarRes.items.any { it.rawCode == "+TSRA" && it.fullExplanation.contains("гроза", ignoreCase = true) })
+    assertTrue(metarRes.items.any { it.rawCode == "Q1009" && it.fullExplanation.contains("1009 гПа") })
+    assertTrue(metarRes.items.any { it.rawCode == "NOSIG" && it.fullExplanation.contains("изменений", ignoreCase = true) })
+
+    val tafRes = com.example.domain.MetarTafDecoder.decodeTaf(
+      rawTafInput = "TAF AMD UTAA 241400Z 2415/2515 28016KT CAVOK TX26/2510Z TEMPO 2416/2420 0800 +TSGRRA BKN008CB PROB30 BECMG 2504/2506 NSW",
+      stationHint = station,
+    )
+    assertTrue(tafRes.items.any { it.rawCode == "AMD" })
+    assertTrue(tafRes.items.any { it.rawCode == "TX26/2510Z" && it.fullExplanation.contains("Максимальная", ignoreCase = true) })
+    assertTrue(tafRes.items.any { it.rawCode == "PROB30" && it.fullExplanation.contains("30%") })
+
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open full METAR/TAF Decoder screen from toolbar
+    composeTestRule.onNodeWithTag("toolbar_decoder_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("metar_taf_decoder_screen").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("decoder_metar_plain_summary").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("decoder_taf_plain_summary").performScrollTo().assertIsDisplayed()
+
+    // Load sample severe-weather METAR/TAF with all aviation code groups and verify plain decoding
+    composeTestRule.onNodeWithTag("decoder_load_sample_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("decoder_metar_plain_summary").performScrollTo().assertTextContains("Ветер:", substring = true)
+    composeTestRule.onNodeWithTag("decoder_metar_token_0").assertExists()
+    composeTestRule.onNodeWithTag("decoder_taf_token_0").assertExists()
+
+    // Switch tabs METAR -> TAF -> ALL
+    composeTestRule.onNodeWithTag("decoder_tab_TAF").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("decoder_metar_plain_summary").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("decoder_taf_plain_summary").performScrollTo().assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("decoder_back_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("metar_taf_decoder_screen").assertDoesNotExist()
   }
 }

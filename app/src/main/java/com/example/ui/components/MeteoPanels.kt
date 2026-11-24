@@ -21,7 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.History
@@ -29,6 +32,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -80,6 +84,8 @@ fun MeteoTopToolbar(
   pressureUnit: PressureUnit,
   isFavorite: Boolean,
   serverConfig: ServerConfig,
+  autoRefreshEnabled: Boolean = true,
+  autoRefreshIntervalMinutes: Int = 15,
   onRefresh: () -> Unit,
   onToggleNight: () -> Unit,
   onOpenLog: () -> Unit,
@@ -103,13 +109,19 @@ fun MeteoTopToolbar(
   onOpenSettings: () -> Unit = {},
   onOpenMap: () -> Unit = {},
   onOpenHistory24h: () -> Unit = {},
+  onOpenExportDialog: () -> Unit = {},
+  onOpenDecoder: () -> Unit = {},
+  onOpenPressureUtility: () -> Unit = {},
+  showDualWindRose: Boolean = false,
+  onToggleDualWindRose: () -> Unit = {},
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   var stationMenuExpanded by remember { mutableStateOf(false) }
-  var sourceMenuExpanded by remember { mutableStateOf(false) }
-  var presetsMenuExpanded by remember { mutableStateOf(false) }
+  var quickControlsExpanded by remember { mutableStateOf(false) }
+  var sourceSectionExpanded by remember { mutableStateOf(false) }
+  var presetsSectionExpanded by remember { mutableStateOf(false) }
 
   Row(
     verticalAlignment = Alignment.CenterVertically,
@@ -225,7 +237,7 @@ fun MeteoTopToolbar(
       Spacer(modifier = Modifier.width(4.dp))
       Icon(
         imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
-        contentDescription = if (isFavorite) "Убрать из избранного" else "Добавить в избранное",
+        contentDescription = if (isFavorite) "Убрать из Моих аэропортов" else "Добавить в Мои аэропорты",
         tint = if (isFavorite) palette.metarAmber else palette.textMuted,
         modifier = Modifier
           .size(22.dp)
@@ -244,276 +256,551 @@ fun MeteoTopToolbar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.horizontalScroll(rememberScrollState()),
       ) {
-      Text(
-        text = "METAR $metarObsUtc",
-        color = palette.metarAmber,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier
-          .testTag("metar_timestamp_badge")
-          .clickable(onClick = onOpenStationDialog)
-          .padding(horizontal = 4.dp, vertical = 6.dp),
-      )
-
-      val activeMode = serverConfig.resolvedMode()
-      Box {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
+        Text(
+          text = "METAR $metarObsUtc",
+          color = palette.metarAmber,
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Bold,
           modifier = Modifier
-            .testTag("toolbar_source_selector")
-            .heightIn(min = 36.dp)
-            .clip(RoundedCornerShape(3.dp))
-            .background(palette.buttonActiveBackground)
-            .border(1.dp, palette.borderStrong, RoundedCornerShape(3.dp))
-            .clickable { sourceMenuExpanded = true }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        ) {
-          Text(
-            text = activeMode.shortLabel,
-            color = palette.textPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-          )
-          Icon(
-            imageVector = Icons.Filled.ArrowDropDown,
-            contentDescription = "Выбрать источник данных",
-            tint = palette.textSecondary,
-            modifier = Modifier.size(16.dp),
-          )
-        }
-        DropdownMenu(
-          expanded = sourceMenuExpanded,
-          onDismissRequest = { sourceMenuExpanded = false },
-        ) {
-          DataSourceMode.entries.forEach { mode ->
-            DropdownMenuItem(
-              text = {
-                Text(
-                  text = mode.displayName,
-                  fontWeight = if (mode == activeMode) FontWeight.Bold else FontWeight.Normal,
-                )
-              },
-              onClick = {
-                sourceMenuExpanded = false
-                onSelectSourceMode(mode)
-              },
-              modifier = Modifier.testTag("source_mode_item_${mode.name}"),
-            )
-          }
-          HorizontalDivider()
-          DropdownMenuItem(
-            text = { Text("Настройки IP и сайтов…") },
-            onClick = {
-              sourceMenuExpanded = false
-              onOpenServerDialog()
-            },
-            modifier = Modifier.testTag("source_mode_open_settings"),
-          )
-          DropdownMenuItem(
-            text = { Text("Настройки единиц (Metric / Imperial)…") },
-            onClick = {
-              sourceMenuExpanded = false
-              onOpenSettings()
-            },
-            modifier = Modifier.testTag("source_mode_open_unit_settings"),
-          )
-          DropdownMenuItem(
-            text = { Text("О программе / Автор…") },
-            onClick = {
-              sourceMenuExpanded = false
-              onOpenAboutDialog()
-            },
-            modifier = Modifier.testTag("source_mode_open_about"),
-          )
-        }
-      }
+            .testTag("metar_timestamp_badge")
+            .clickable(onClick = onOpenStationDialog)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        )
 
-      Box {
+        Text(
+          text = if (autoRefreshEnabled) "АВТО ${autoRefreshIntervalMinutes}м" else "РУЧН.",
+          color = if (autoRefreshEnabled) palette.headwindPositive else palette.textMuted,
+          fontSize = 10.5.sp,
+          fontFamily = FontFamily.Monospace,
+          fontWeight = FontWeight.Bold,
+          modifier = Modifier
+            .testTag("toolbar_auto_refresh_badge")
+            .clip(RoundedCornerShape(3.dp))
+            .background(palette.secondaryFieldBackground)
+            .border(
+              0.8.dp,
+              if (autoRefreshEnabled) palette.borderStrong else palette.border,
+              RoundedCornerShape(3.dp),
+            )
+            .clickable(onClick = onOpenSettings)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        )
+
         ToolbarButton(
-          label = if (savedPresets.isEmpty()) "Профили" else "Профили (${savedPresets.size})",
-          isActive = savedPresets.isNotEmpty(),
+          label = "Обновить",
+          isLoading = isLoading,
           icon = {
             Icon(
-              imageVector = Icons.Filled.Bookmark,
-              contentDescription = "Сохранённые профили погоды",
-              tint = if (savedPresets.isNotEmpty()) palette.metarAmber else palette.textPrimary,
+              imageVector = Icons.Filled.Refresh,
+              contentDescription = "Обновить метеоданные вручную",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(15.dp),
+            )
+          },
+          testTag = "refresh_button",
+          onClick = onRefresh,
+        )
+
+        ToolbarButton(
+          label = "Таблица",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.TableChart,
+              contentDescription = "Таблица METAR",
+              tint = palette.textPrimary,
               modifier = Modifier.size(14.dp),
             )
           },
-          testTag = "toolbar_presets_button",
-          onClick = { presetsMenuExpanded = true },
+          testTag = "metar_table_button",
+          onClick = onOpenMetarTable,
         )
-        DropdownMenu(
-          expanded = presetsMenuExpanded,
-          onDismissRequest = { presetsMenuExpanded = false },
-        ) {
-          DropdownMenuItem(
-            text = {
-              Text(
-                text = "+ Сохранить текущую ВПП (${station.icao})",
-                fontWeight = FontWeight.Bold,
+
+        ToolbarButton(
+          label = "Декодер",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.Description,
+              contentDescription = "Открытый декодер METAR и TAF",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_decoder_button",
+          onClick = onOpenDecoder,
+        )
+
+        ToolbarButton(
+          label = "2× ВПП",
+          isActive = showDualWindRose,
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.FlightLand,
+              contentDescription = "Двойная роза ветров ВПП",
+              tint = if (showDualWindRose) palette.metarAmber else palette.textPrimary,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_dual_wind_rose_button",
+          onClick = onToggleDualWindRose,
+        )
+
+        ToolbarButton(
+          label = "Карта",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.Map,
+              contentDescription = "Карта аэропортов",
+              tint = palette.textPrimary,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_map_button",
+          onClick = onOpenMap,
+        )
+
+        ToolbarButton(
+          label = "24ч",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.History,
+              contentDescription = "История 24ч и график QNH",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_history_24h_button",
+          onClick = onOpenHistory24h,
+        )
+
+        // Single consolidated control panel for changeable settings/toggles (units, source, presets, alerts, theme, fullscreen, log)
+        val activeMode = serverConfig.resolvedMode()
+        Box {
+          val quickLabel = buildString {
+            append("${windUnit.label} · ${pressureUnit.label}")
+            if (unreadAlertCount > 0) {
+              append(" ($unreadAlertCount)")
+            }
+          }
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+              .testTag("toolbar_quick_controls_button")
+              .heightIn(min = 36.dp)
+              .clip(RoundedCornerShape(3.dp))
+              .background(if (unreadAlertCount > 0 || quickControlsExpanded) palette.buttonActiveBackground else palette.buttonBackground)
+              .border(
+                1.dp,
+                if (unreadAlertCount > 0) palette.tailwindNegative else palette.borderStrong,
+                RoundedCornerShape(3.dp),
               )
+              .clickable { quickControlsExpanded = true }
+              .padding(horizontal = 9.dp, vertical = 6.dp),
+          ) {
+            Text(
+              text = quickLabel,
+              color = if (unreadAlertCount > 0) palette.tailwindNegative else palette.metarAmber,
+              fontSize = 11.5.sp,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+            )
+            Icon(
+              imageVector = Icons.Filled.ArrowDropDown,
+              contentDescription = "Быстрые параметры и инструменты",
+              tint = palette.textSecondary,
+              modifier = Modifier.size(16.dp),
+            )
+          }
+
+          DropdownMenu(
+            expanded = quickControlsExpanded,
+            onDismissRequest = {
+              quickControlsExpanded = false
+              sourceSectionExpanded = false
+              presetsSectionExpanded = false
             },
-            onClick = {
-              presetsMenuExpanded = false
-              onSaveCurrentSetup()
-            },
-            modifier = Modifier.testTag("preset_menu_save_current"),
-          )
-          if (savedPresets.isNotEmpty()) {
-            HorizontalDivider()
-            savedPresets.forEach { preset ->
-              DropdownMenuItem(
-                text = { Text(preset.name) },
-                onClick = {
-                  presetsMenuExpanded = false
-                  onApplySavedPreset(preset.id)
+          ) {
+            Column(
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+              modifier = Modifier
+                .width(292.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .testTag("toolbar_quick_controls_menu"),
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Text(
+                  text = "БЫСТРЫЕ ПАРАМЕТРЫ ТАБЛО",
+                  color = palette.textSecondary,
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.ExtraBold,
+                  letterSpacing = 0.5.sp,
+                )
+                Text(
+                  text = "✕",
+                  color = palette.textSecondary,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold,
+                  modifier = Modifier
+                    .testTag("toolbar_quick_controls_close")
+                    .clip(RoundedCornerShape(3.dp))
+                    .clickable {
+                      quickControlsExpanded = false
+                      sourceSectionExpanded = false
+                      presetsSectionExpanded = false
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+              }
+
+              // Consolidated Wind & Pressure Unit Toggles
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = "Ветер: ${windUnit.label}",
+                    isActive = windUnit != WindSpeedUnit.KT,
+                    testTag = "toolbar_wind_unit_toggle",
+                    onClick = onToggleWindUnit,
+                  )
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = "Давл.: ${pressureUnit.label}",
+                    isActive = pressureUnit != PressureUnit.HPA,
+                    testTag = "toolbar_pressure_unit_toggle",
+                    onClick = onTogglePressureUnit,
+                  )
+                }
+              }
+
+              // Consolidated Data Source Selector
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("toolbar_source_selector")
+                  .heightIn(min = 38.dp)
+                  .clip(RoundedCornerShape(3.dp))
+                  .background(palette.secondaryFieldBackground)
+                  .border(1.dp, palette.borderStrong, RoundedCornerShape(3.dp))
+                  .clickable { sourceSectionExpanded = !sourceSectionExpanded }
+                  .padding(horizontal = 10.dp, vertical = 6.dp),
+              ) {
+                Text(
+                  text = "Источник: ${activeMode.shortLabel}",
+                  color = palette.textPrimary,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold,
+                )
+                Icon(
+                  imageVector = Icons.Filled.ArrowDropDown,
+                  contentDescription = "Выбрать источник данных",
+                  tint = palette.textSecondary,
+                  modifier = Modifier.size(16.dp),
+                )
+              }
+
+              if (sourceSectionExpanded) {
+                Column(
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(palette.fieldBackground, RoundedCornerShape(4.dp))
+                    .border(0.8.dp, palette.border, RoundedCornerShape(4.dp))
+                    .padding(6.dp),
+                ) {
+                  DataSourceMode.entries.forEach { mode ->
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("source_mode_item_${mode.name}")
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(if (mode == activeMode) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+                        .clickable {
+                          sourceSectionExpanded = false
+                          quickControlsExpanded = false
+                          onSelectSourceMode(mode)
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                      Text(
+                        text = mode.displayName,
+                        color = palette.textPrimary,
+                        fontSize = 11.5.sp,
+                        fontWeight = if (mode == activeMode) FontWeight.Bold else FontWeight.Normal,
+                      )
+                    }
+                  }
+                  HorizontalDivider()
+                  Text(
+                    text = "Настройки IP и сайтов…",
+                    color = palette.metarAmber,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("source_mode_open_settings")
+                      .clickable {
+                        sourceSectionExpanded = false
+                        quickControlsExpanded = false
+                        onOpenServerDialog()
+                      }
+                      .padding(horizontal = 8.dp, vertical = 5.dp),
+                  )
+                  Text(
+                    text = "О программе / Автор…",
+                    color = palette.textSecondary,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("source_mode_open_about")
+                      .clickable {
+                        sourceSectionExpanded = false
+                        quickControlsExpanded = false
+                        onOpenAboutDialog()
+                      }
+                      .padding(horizontal = 8.dp, vertical = 5.dp),
+                  )
+                }
+              }
+
+              // Consolidated Presets Selector
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("toolbar_presets_button")
+                  .heightIn(min = 38.dp)
+                  .clip(RoundedCornerShape(3.dp))
+                  .background(if (savedPresets.isNotEmpty()) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+                  .border(1.dp, palette.border, RoundedCornerShape(3.dp))
+                  .clickable { presetsSectionExpanded = !presetsSectionExpanded }
+                  .padding(horizontal = 10.dp, vertical = 6.dp),
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Bookmark,
+                    contentDescription = "Сохранённые профили погоды",
+                    tint = if (savedPresets.isNotEmpty()) palette.metarAmber else palette.textPrimary,
+                    modifier = Modifier.size(14.dp),
+                  )
+                  Text(
+                    text = if (savedPresets.isEmpty()) "Профили ВПП" else "Профили (${savedPresets.size})",
+                    color = palette.textPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                  )
+                }
+                Icon(
+                  imageVector = Icons.Filled.ArrowDropDown,
+                  contentDescription = null,
+                  tint = palette.textSecondary,
+                  modifier = Modifier.size(16.dp),
+                )
+              }
+
+              if (presetsSectionExpanded) {
+                Column(
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(palette.fieldBackground, RoundedCornerShape(4.dp))
+                    .border(0.8.dp, palette.border, RoundedCornerShape(4.dp))
+                    .padding(6.dp),
+                ) {
+                  Text(
+                    text = "+ Сохранить текущую ВПП (${station.icao})",
+                    color = palette.metarAmber,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("preset_menu_save_current")
+                      .clickable {
+                        presetsSectionExpanded = false
+                        quickControlsExpanded = false
+                        onSaveCurrentSetup()
+                      }
+                      .padding(horizontal = 8.dp, vertical = 6.dp),
+                  )
+                  savedPresets.forEach { preset ->
+                    Text(
+                      text = preset.name,
+                      color = palette.textPrimary,
+                      fontSize = 11.5.sp,
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("preset_menu_item_${preset.id}")
+                        .clickable {
+                          presetsSectionExpanded = false
+                          quickControlsExpanded = false
+                          onApplySavedPreset(preset.id)
+                        }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    )
+                  }
+                  HorizontalDivider()
+                  Text(
+                    text = "Управление профилями…",
+                    color = palette.textSecondary,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("preset_menu_manage")
+                      .clickable {
+                        presetsSectionExpanded = false
+                        quickControlsExpanded = false
+                        onOpenStationDialog()
+                      }
+                      .padding(horizontal = 8.dp, vertical = 5.dp),
+                  )
+                }
+              }
+
+              HorizontalDivider()
+
+              // Alerts, Theme (Light/Dark), Fullscreen, and Log
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = if (unreadAlertCount > 0) "Тревога ($unreadAlertCount)" else "Оповещ.",
+                    isActive = unreadAlertCount > 0,
+                    icon = {
+                      Icon(
+                        imageVector = if (unreadAlertCount > 0) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                        contentDescription = "Метеооповещения избранных аэродромов",
+                        tint = when {
+                          unreadAlertCount > 0 -> palette.tailwindNegative
+                          alertsEnabled -> palette.metarAmber
+                          else -> palette.textMuted
+                        },
+                        modifier = Modifier.size(14.dp),
+                      )
+                    },
+                    testTag = "toolbar_alerts_button",
+                    onClick = {
+                      quickControlsExpanded = false
+                      onOpenAlertsDialog()
+                    },
+                  )
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = if (isNightMode) "День" else "Ночь",
+                    icon = {
+                      Icon(
+                        imageVector = if (isNightMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                        contentDescription = if (isNightMode) "Дневной режим" else "Ночной режим",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(14.dp),
+                      )
+                    },
+                    testTag = "night_mode_button",
+                    onClick = onToggleNight,
+                  )
+                }
+              }
+
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = if (isFullscreen) "Окно" else "Весь экран",
+                    icon = {
+                      Icon(
+                        imageVector = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                        contentDescription = "Полноэкранный режим",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(14.dp),
+                      )
+                    },
+                    testTag = "fullscreen_button",
+                    onClick = {
+                      quickControlsExpanded = false
+                      onToggleFullscreen()
+                    },
+                  )
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                  ToolbarButton(
+                    label = "Лог",
+                    testTag = "log_button",
+                    onClick = {
+                      quickControlsExpanded = false
+                      onOpenLog()
+                    },
+                  )
+                }
+              }
+
+              ToolbarButton(
+                label = "Калькулятор QNH / QFE",
+                icon = {
+                  Icon(
+                    imageVector = Icons.Filled.Compress,
+                    contentDescription = "Калькулятор давления QNH и QFE (hPa / inHg)",
+                    tint = palette.metarAmber,
+                    modifier = Modifier.size(14.dp),
+                  )
                 },
-                modifier = Modifier.testTag("preset_menu_item_${preset.id}"),
+                testTag = "toolbar_pressure_utility_button",
+                onClick = {
+                  quickControlsExpanded = false
+                  onOpenPressureUtility()
+                },
+              )
+
+              ToolbarButton(
+                label = "Экспорт отчёта (PDF / TXT)",
+                icon = {
+                  Icon(
+                    imageVector = Icons.Filled.PictureAsPdf,
+                    contentDescription = "Экспорт погоды и трендов в PDF или текст",
+                    tint = palette.metarAmber,
+                    modifier = Modifier.size(14.dp),
+                  )
+                },
+                testTag = "toolbar_export_button",
+                onClick = {
+                  quickControlsExpanded = false
+                  onOpenExportDialog()
+                },
               )
             }
           }
-          HorizontalDivider()
-          DropdownMenuItem(
-            text = { Text("Управление профилями…") },
-            onClick = {
-              presetsMenuExpanded = false
-              onOpenStationDialog()
-            },
-            modifier = Modifier.testTag("preset_menu_manage"),
-          )
         }
-      }
 
-      ToolbarButton(
-        label = "Обновить",
-        isLoading = isLoading,
-        testTag = "refresh_button",
-        onClick = onRefresh,
-      )
-
-      ToolbarButton(
-        label = if (isNightMode) "День" else "Ночь",
-        icon = {
-          Icon(
-            imageVector = if (isNightMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
-            contentDescription = if (isNightMode) "Дневной режим" else "Ночной режим",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "night_mode_button",
-        onClick = onToggleNight,
-      )
-
-      ToolbarButton(
-        label = windUnit.label,
-        isActive = windUnit != WindSpeedUnit.KT,
-        testTag = "toolbar_wind_unit_toggle",
-        onClick = onToggleWindUnit,
-      )
-
-      ToolbarButton(
-        label = pressureUnit.label,
-        isActive = pressureUnit != PressureUnit.HPA,
-        testTag = "toolbar_pressure_unit_toggle",
-        onClick = onTogglePressureUnit,
-      )
-
-      ToolbarButton(
-        label = "Таблица",
-        icon = {
-          Icon(
-            imageVector = Icons.Filled.TableChart,
-            contentDescription = "Таблица METAR",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "metar_table_button",
-        onClick = onOpenMetarTable,
-      )
-
-      ToolbarButton(
-        label = "Карта",
-        icon = {
-          Icon(
-            imageVector = Icons.Filled.Map,
-            contentDescription = "Карта аэропортов",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "toolbar_map_button",
-        onClick = onOpenMap,
-      )
-
-      ToolbarButton(
-        label = "24ч",
-        icon = {
-          Icon(
-            imageVector = Icons.Filled.History,
-            contentDescription = "История 24ч и график QNH",
-            tint = palette.metarAmber,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "toolbar_history_24h_button",
-        onClick = onOpenHistory24h,
-      )
-
-      ToolbarButton(
-        label = if (unreadAlertCount > 0) "Тревога ($unreadAlertCount)" else "Оповещ.",
-        isActive = unreadAlertCount > 0,
-        icon = {
-          Icon(
-            imageVector = if (unreadAlertCount > 0) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
-            contentDescription = "Метеооповещения избранных аэродромов",
-            tint = when {
-              unreadAlertCount > 0 -> palette.tailwindNegative
-              alertsEnabled -> palette.metarAmber
-              else -> palette.textMuted
-            },
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "toolbar_alerts_button",
-        onClick = onOpenAlertsDialog,
-      )
-
-      ToolbarButton(
-        label = "Лог",
-        testTag = "log_button",
-        onClick = onOpenLog,
-      )
-
-      ToolbarButton(
-        label = "Настройки",
-        icon = {
-          Icon(
-            imageVector = Icons.Filled.Settings,
-            contentDescription = "Настройки единиц и экрана",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "toolbar_settings_button",
-        onClick = onOpenSettings,
-      )
-
-      ToolbarButton(
-        label = if (isFullscreen) "Окно" else "Весь экран",
-        icon = {
-          Icon(
-            imageVector = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-            contentDescription = "Полноэкранный режим",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(14.dp),
-          )
-        },
-        testTag = "fullscreen_button",
-        onClick = onToggleFullscreen,
-      )
+        ToolbarButton(
+          label = "Настройки",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.Settings,
+              contentDescription = "Настройки единиц, темы и обновления",
+              tint = palette.textPrimary,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_settings_button",
+          onClick = onOpenSettings,
+        )
       }
     }
   }
@@ -1309,10 +1596,10 @@ fun MetarTafFooter(
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
-  val labelWidth = if (compactMode) 44.dp else 56.dp
-  val textFontSize = if (compactMode) 10.sp else 11.5.sp
-  val textLineHeight = if (compactMode) 12.5.sp else 15.sp
-  val boxPadV = if (compactMode) 3.dp else 5.dp
+  val labelWidth = if (compactMode) 48.dp else 62.dp
+  val textFontSize = if (compactMode) 12.sp else 13.5.sp
+  val textLineHeight = if (compactMode) 15.sp else 17.5.sp
+  val boxPadV = if (compactMode) 3.dp else 6.dp
 
   Column(
     verticalArrangement = Arrangement.spacedBy(if (compactMode) 3.dp else 5.dp),
@@ -1328,7 +1615,7 @@ fun MetarTafFooter(
       Text(
         text = "TAF",
         color = palette.textPrimary,
-        fontSize = if (compactMode) 11.sp else 12.sp,
+        fontSize = if (compactMode) 12.sp else 13.5.sp,
         fontWeight = FontWeight.Medium,
         textAlign = TextAlign.End,
         modifier = Modifier
@@ -1348,7 +1635,7 @@ fun MetarTafFooter(
           fontSize = textFontSize,
           fontFamily = FontFamily.Monospace,
           lineHeight = textLineHeight,
-          maxLines = if (compactMode) 2 else 4,
+          maxLines = if (compactMode) 3 else 5,
           overflow = TextOverflow.Ellipsis,
         )
       }
@@ -1365,7 +1652,7 @@ fun MetarTafFooter(
       Text(
         text = "METAR",
         color = palette.metarAmber,
-        fontSize = if (compactMode) 11.sp else 12.sp,
+        fontSize = if (compactMode) 12.sp else 13.5.sp,
         fontWeight = FontWeight.Bold,
         textAlign = TextAlign.End,
         modifier = Modifier
@@ -1385,7 +1672,7 @@ fun MetarTafFooter(
           fontSize = textFontSize,
           fontFamily = FontFamily.Monospace,
           lineHeight = textLineHeight,
-          maxLines = if (compactMode) 2 else 3,
+          maxLines = if (compactMode) 3 else 4,
           overflow = TextOverflow.Ellipsis,
         )
       }

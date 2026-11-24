@@ -255,8 +255,9 @@ fun AirportMapSummaryCard(
       Text(
         text = weather?.rawMetar ?: "METAR ${station.icao} — ожидание данных",
         color = palette.metarAmber,
-        fontSize = 11.sp,
+        fontSize = 12.5.sp,
         fontFamily = FontFamily.Monospace,
+        lineHeight = 16.5.sp,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.testTag("map_summary_raw_metar"),

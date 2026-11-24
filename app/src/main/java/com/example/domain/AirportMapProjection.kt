@@ -4,6 +4,7 @@ import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import kotlin.math.PI
 import kotlin.math.atan
+import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
@@ -11,7 +12,10 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sinh
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 enum class MapRegionPreset(
@@ -346,6 +350,66 @@ object AirportMapProjection {
     val finalY = cy + (baseY - cy) * zoom + panY
 
     return ProjectedPoint(finalX, finalY)
+  }
+
+  fun computeCoordinatePlotBounds(stations: List<AirportStation>): MapBounds {
+    if (stations.isEmpty()) {
+      return MapBounds(minLat = 34.0, maxLat = 44.0, minLon = 50.0, maxLon = 68.0)
+    }
+    val rawMinLat = stations.minOf { it.latitude }
+    val rawMaxLat = stations.maxOf { it.latitude }
+    val rawMinLon = stations.minOf { it.longitude }
+    val rawMaxLon = stations.maxOf { it.longitude }
+
+    val latSpan = max(6.0, rawMaxLat - rawMinLat)
+    val lonSpan = max(9.0, rawMaxLon - rawMinLon)
+    val latPad = latSpan * 0.22
+    val lonPad = lonSpan * 0.20
+
+    val centerLat = (rawMinLat + rawMaxLat) / 2.0
+    val centerLon = (rawMinLon + rawMaxLon) / 2.0
+
+    val finalMinLat = min(rawMinLat - latPad, centerLat - 3.5).coerceAtLeast(-75.0)
+    val finalMaxLat = max(rawMaxLat + latPad, centerLat + 3.5).coerceAtMost(75.0)
+    val finalMinLon = min(rawMinLon - lonPad, centerLon - 5.0).coerceAtLeast(-179.0)
+    val finalMaxLon = max(rawMaxLon + lonPad, centerLon + 5.0).coerceAtMost(179.0)
+
+    return MapBounds(
+      minLat = finalMinLat,
+      maxLat = finalMaxLat,
+      minLon = finalMinLon,
+      maxLon = finalMaxLon,
+    )
+  }
+
+  fun haversineKm(
+    lat1: Double,
+    lon1: Double,
+    lat2: Double,
+    lon2: Double,
+  ): Int {
+    val rKm = 6371.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = sin(dLat / 2.0).pow(2) +
+      cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2.0).pow(2)
+    val c = 2.0 * atan2(sqrt(a), sqrt((1.0 - a).coerceAtLeast(0.0)))
+    return (rKm * c).roundToInt()
+  }
+
+  fun bearingDeg(
+    lat1: Double,
+    lon1: Double,
+    lat2: Double,
+    lon2: Double,
+  ): Int {
+    val phi1 = Math.toRadians(lat1)
+    val phi2 = Math.toRadians(lat2)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val y = sin(dLon) * cos(phi2)
+    val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
+    val deg = (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    return deg.roundToInt().let { if (it == 0) 360 else it }
   }
 
   /**

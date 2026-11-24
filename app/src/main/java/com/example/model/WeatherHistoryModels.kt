@@ -28,6 +28,14 @@ data class QnhHistoryPoint(
   val rawMetar: String = "",
 )
 
+data class TemperatureHistoryPoint(
+  val observationTimeUtc: String,
+  val observedAtMillis: Long,
+  val temperatureC: Int,
+  val dewPointC: Int? = null,
+  val rawMetar: String = "",
+)
+
 data class QnhTrendSummary(
   val icao: String,
   val points: List<QnhHistoryPoint>,
@@ -35,4 +43,9 @@ data class QnhTrendSummary(
   val maxHpa: Int?,
   val latestHpa: Int?,
   val delta24hHpa: Int?,
+  val temperaturePoints: List<TemperatureHistoryPoint> = emptyList(),
+  val minTempC: Int? = null,
+  val maxTempC: Int? = null,
+  val latestTempC: Int? = null,
+  val delta24hTempC: Int? = null,
 )

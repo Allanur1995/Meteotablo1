@@ -4,6 +4,7 @@ import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.QnhHistoryPoint
 import com.example.model.QnhTrendSummary
+import com.example.model.TemperatureHistoryPoint
 import com.example.model.WeatherHistoryEntry
 import java.util.Calendar
 import java.util.TimeZone
@@ -162,43 +163,63 @@ object WeatherHistoryAnalyzer {
   ): QnhTrendSummary {
     val cleanIcao = icao.trim().uppercase()
     val cutoff = referenceNowMillis - WINDOW_24H_MILLIS
-    val points = entries
-      .filter { it.qnhHpa != null && it.observedAtMillis >= cutoff }
+    val recentSorted = entries
+      .filter { it.observedAtMillis >= cutoff }
       .sortedBy { it.observedAtMillis }
-      .mapNotNull { entry ->
-        val hpa = entry.qnhHpa ?: return@mapNotNull null
-        val inHg = entry.qnhInHg ?: (hpa * 0.029530)
-        QnhHistoryPoint(
-          observationTimeUtc = entry.observationTimeUtc,
-          observedAtMillis = entry.observedAtMillis,
-          qnhHpa = hpa,
-          qnhInHg = inHg,
-          rawMetar = entry.rawMetar,
-        )
-      }
 
-    if (points.isEmpty()) {
-      return QnhTrendSummary(
-        icao = cleanIcao,
-        points = emptyList(),
-        minHpa = null,
-        maxHpa = null,
-        latestHpa = null,
-        delta24hHpa = null,
+    val points = recentSorted.mapNotNull { entry ->
+      val hpa = entry.qnhHpa ?: return@mapNotNull null
+      val inHg = entry.qnhInHg ?: (hpa * 0.029530)
+      QnhHistoryPoint(
+        observationTimeUtc = entry.observationTimeUtc,
+        observedAtMillis = entry.observedAtMillis,
+        qnhHpa = hpa,
+        qnhInHg = inHg,
+        rawMetar = entry.rawMetar,
       )
     }
 
-    val minHpa = points.minOf { it.qnhHpa }
-    val maxHpa = points.maxOf { it.qnhHpa }
-    val latestHpa = points.last().qnhHpa
-    val delta = if (points.size >= 2) latestHpa - points.first().qnhHpa else 0
+    val tempPoints = recentSorted.mapNotNull { entry ->
+      val temp = entry.temperatureC ?: return@mapNotNull null
+      TemperatureHistoryPoint(
+        observationTimeUtc = entry.observationTimeUtc,
+        observedAtMillis = entry.observedAtMillis,
+        temperatureC = temp,
+        dewPointC = entry.dewPointC,
+        rawMetar = entry.rawMetar,
+      )
+    }
+
+    val minHpa = points.minOfOrNull { it.qnhHpa }
+    val maxHpa = points.maxOfOrNull { it.qnhHpa }
+    val latestHpa = points.lastOrNull()?.qnhHpa
+    val deltaHpa = when {
+      points.size >= 2 -> points.last().qnhHpa - points.first().qnhHpa
+      points.size == 1 -> 0
+      else -> null
+    }
+
+    val minTempC = tempPoints.minOfOrNull { it.temperatureC }
+    val maxTempC = tempPoints.maxOfOrNull { it.temperatureC }
+    val latestTempC = tempPoints.lastOrNull()?.temperatureC
+    val deltaTempC = when {
+      tempPoints.size >= 2 -> tempPoints.last().temperatureC - tempPoints.first().temperatureC
+      tempPoints.size == 1 -> 0
+      else -> null
+    }
+
     return QnhTrendSummary(
       icao = cleanIcao,
       points = points,
       minHpa = minHpa,
       maxHpa = maxHpa,
       latestHpa = latestHpa,
-      delta24hHpa = delta,
+      delta24hHpa = deltaHpa,
+      temperaturePoints = tempPoints,
+      minTempC = minTempC,
+      maxTempC = maxTempC,
+      latestTempC = latestTempC,
+      delta24hTempC = deltaTempC,
     )
   }
 }

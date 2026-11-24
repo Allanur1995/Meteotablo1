@@ -15,7 +15,21 @@ data class WeatherAlertConfig(
   val tableAlertsEnabled: Boolean = true,
   val tableWindAlertKt: Int = 20,
   val tableVisibilityAlertMeters: Int = 3000,
-)
+  val vfrAlertsEnabled: Boolean = true,
+  val vfrMinVisibilityMeters: Int = 5000,
+  val vfrMinCeilingFeet: Int = 1500,
+  val vfrMaxWindKt: Int = 25,
+  val vfrMonitorAllFavorites: Boolean = true,
+  val vfrMonitoredIcaos: List<String> = emptyList(),
+) {
+  fun resolvedVfrMonitoredIcaos(favoriteIcaos: List<String>): List<String> {
+    val source = if (vfrMonitorAllFavorites) favoriteIcaos else vfrMonitoredIcaos
+    return source
+      .map { it.trim().uppercase() }
+      .filter { it.length == 4 && it.all(Char::isLetter) }
+      .distinct()
+  }
+}
 
 data class FavoriteWeatherSnapshot(
   val icao: String,

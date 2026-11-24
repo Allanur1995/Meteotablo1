@@ -275,6 +275,12 @@ class CustomMeteoServerClientTest {
       val outcome = runBlocking { client.fetchMetarAndTaf("UTAM", config) }
       assertEquals("METAR UTAM 231200Z 08004KT 6000 BKN230 11/07 Q1023 NOSIG", outcome.rawMetar)
       assertEquals("TAF UTAM 231100Z 2312/2412 08005MPS 6000 BKN030 TEMPO 2318/2322 3000 BR", outcome.rawTaf)
+
+      val history24h = runBlocking { client.fetchHistory24h("UTAM", config, maxBulletins = 8) }
+      assertTrue(history24h.observations.size >= 2)
+      assertTrue(history24h.observations.any { it.rawMetar.contains("231200Z") })
+      assertTrue(history24h.observations.any { it.rawMetar.contains("230400Z") })
+      assertTrue(history24h.tafs.any { it.contains("231100Z") })
     } finally {
       server.stop(0)
     }

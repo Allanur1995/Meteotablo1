@@ -169,7 +169,7 @@ fun StationAndMetarDialog(
         if (selectedTab == 0) {
           if (favoriteIcaos.isNotEmpty()) {
             Text(
-              text = "Избранные аэропорты:",
+              text = "Мои аэропорты (быстрый доступ):",
               color = palette.textSecondary,
               fontSize = 12.sp,
             )

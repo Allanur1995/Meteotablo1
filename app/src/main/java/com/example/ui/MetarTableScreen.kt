@@ -29,9 +29,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.StarBorder
@@ -63,11 +66,13 @@ import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.QnhTrendSummary
 import com.example.model.RunwayCalculation
+import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendSummary
 import com.example.ui.components.AviationTableTab
 import com.example.ui.components.AviationWeatherTable
+import com.example.ui.components.DualRunwayWindRosePanel
 import com.example.ui.components.QnhHistoryLineChart
 import com.example.ui.components.WindRoseCard
 import com.example.ui.theme.LocalMeteoPalette
@@ -84,18 +89,25 @@ fun MetarTableScreen(
   isFullscreen: Boolean,
   windTrend: WindTrendSummary? = null,
   activeRunway: RunwayCalculation? = null,
+  reciprocalRunway: RunwayCalculation? = null,
+  selectedRunwayPairIndex: Int = 0,
   alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   qnhTrend24h: QnhTrendSummary? = null,
   onBack: () -> Unit,
   onEditRawMetar: () -> Unit,
   onToggleWindUnit: () -> Unit,
   onTogglePressureUnit: () -> Unit,
+  onSelectUnitSystem: (UnitSystem) -> Unit = {},
+  onSelectRunwayPair: (Int) -> Unit = {},
   onToggleFavorite: () -> Unit,
   onSelectFavoriteStation: (String) -> Unit,
   onAddFavorite: (String) -> Unit,
   onRemoveFavorite: (String) -> Unit,
   onOpenThresholdConfig: () -> Unit = {},
   onOpenHistory24h: () -> Unit = {},
+  onOpenExportDialog: () -> Unit = {},
+  onOpenDecoder: () -> Unit = {},
+  onOpenPressureUtility: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -427,6 +439,81 @@ fun MetarTableScreen(
             fontWeight = FontWeight.Bold,
           )
         }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .testTag("metar_table_export_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.panelSurface)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenExportDialog)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.PictureAsPdf,
+            contentDescription = "Экспорт погоды в PDF или TXT",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = "Экспорт (PDF/TXT)",
+            color = palette.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .testTag("metar_table_decoder_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.panelSurface)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenDecoder)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Description,
+            contentDescription = "Открытый декодер METAR и TAF",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = "Декодер METAR/TAF",
+            color = palette.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .testTag("metar_table_pressure_utility_button")
+            .clip(RoundedCornerShape(4.dp))
+            .background(palette.panelSurface)
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenPressureUtility)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Compress,
+            contentDescription = "Конвертер QNH/QFE",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = "QNH / QFE",
+            color = palette.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
       }
 
       // Raw METAR Banner & Token Strip
@@ -490,10 +577,10 @@ fun MetarTableScreen(
           Text(
             text = weather.rawMetar,
             color = palette.textPrimary,
-            fontSize = 13.sp,
+            fontSize = 14.5.sp,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.SemiBold,
-            lineHeight = 18.sp,
+            lineHeight = 20.sp,
           )
         }
 
@@ -535,16 +622,26 @@ fun MetarTableScreen(
         }
       }
 
-      val resolvedRunway = remember(activeRunway, station, weather) {
-        activeRunway ?: station.runways.firstOrNull()?.let { rwy ->
-          AviationWeatherParser.calculateRunwayComponents(
-            designator = rwy.primaryDesignator,
-            runwayHeadingDeg = rwy.primaryHeadingDeg,
-            wind = weather.wind,
-            frictionCoeff = weather.frictionCoeff,
-            rvrMeters = weather.rvrPrimaryMeters,
-          )
-        }
+      val selectedPair = remember(station, selectedRunwayPairIndex) {
+        station.runways.getOrElse(selectedRunwayPairIndex) { station.runways.first() }
+      }
+      val resolvedPrimaryRunway = remember(activeRunway, selectedPair, weather) {
+        activeRunway ?: AviationWeatherParser.calculateRunwayComponents(
+          designator = selectedPair.primaryDesignator,
+          runwayHeadingDeg = selectedPair.primaryHeadingDeg,
+          wind = weather.wind,
+          frictionCoeff = weather.frictionCoeff,
+          rvrMeters = weather.rvrPrimaryMeters,
+        )
+      }
+      val resolvedReciprocalRunway = remember(reciprocalRunway, selectedPair, weather) {
+        reciprocalRunway ?: AviationWeatherParser.calculateRunwayComponents(
+          designator = selectedPair.reciprocalDesignator,
+          runwayHeadingDeg = selectedPair.reciprocalHeadingDeg,
+          wind = weather.wind,
+          frictionCoeff = weather.frictionCoeff,
+          rvrMeters = weather.rvrReciprocalMeters,
+        )
       }
 
       // Graphical Wind Rose Card (Canvas) with Runway Wind Overlay
@@ -553,7 +650,19 @@ fun MetarTableScreen(
         windUnit = windUnit,
         onToggleUnit = onToggleWindUnit,
         windTrend = windTrend,
-        activeRunway = resolvedRunway,
+        activeRunway = resolvedPrimaryRunway,
+      )
+
+      // Dual Runway Wind Rose Visualization for Real-Time Headwind/Crosswind Analysis
+      DualRunwayWindRosePanel(
+        station = station,
+        selectedRunwayPairIndex = selectedRunwayPairIndex,
+        primaryCalc = resolvedPrimaryRunway,
+        reciprocalCalc = resolvedReciprocalRunway,
+        wind = weather.wind,
+        windUnit = windUnit,
+        onSelectRunwayPair = onSelectRunwayPair,
+        onToggleUnit = onToggleWindUnit,
       )
 
       // Compact 24h QNH Trend Chart when available
@@ -577,6 +686,7 @@ fun MetarTableScreen(
         alertConfig = alertConfig,
         onToggleWindUnit = onToggleWindUnit,
         onTogglePressureUnit = onTogglePressureUnit,
+        onSelectUnitSystem = onSelectUnitSystem,
         onOpenThresholdConfig = onOpenThresholdConfig,
       )
 

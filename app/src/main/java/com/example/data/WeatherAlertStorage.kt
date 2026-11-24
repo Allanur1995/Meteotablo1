@@ -53,6 +53,12 @@ object WeatherAlertSerializer {
       put("tableAlertsEnabled", config.tableAlertsEnabled)
       put("tableWindAlertKt", config.tableWindAlertKt)
       put("tableVisibilityAlertMeters", config.tableVisibilityAlertMeters)
+      put("vfrAlertsEnabled", config.vfrAlertsEnabled)
+      put("vfrMinVisibilityMeters", config.vfrMinVisibilityMeters)
+      put("vfrMinCeilingFeet", config.vfrMinCeilingFeet)
+      put("vfrMaxWindKt", config.vfrMaxWindKt)
+      put("vfrMonitorAllFavorites", config.vfrMonitorAllFavorites)
+      put("vfrMonitoredIcaos", JSONArray(config.vfrMonitoredIcaos))
     }.toString()
   }
 
@@ -60,6 +66,15 @@ object WeatherAlertSerializer {
     if (raw.isNullOrBlank()) return WeatherAlertConfig()
     return runCatching {
       val obj = JSONObject(raw)
+      val vfrArr = obj.optJSONArray("vfrMonitoredIcaos")
+      val vfrIcaos = buildList {
+        if (vfrArr != null) {
+          for (i in 0 until vfrArr.length()) {
+            val code = vfrArr.optString(i).trim().uppercase()
+            if (code.length == 4 && code.all(Char::isLetter)) add(code)
+          }
+        }
+      }.distinct()
       WeatherAlertConfig(
         enabled = obj.optBoolean("enabled", true),
         windChangeThresholdKt = obj.optInt("windChangeThresholdKt", 8).coerceIn(3, 30),
@@ -69,6 +84,12 @@ object WeatherAlertSerializer {
         tableAlertsEnabled = obj.optBoolean("tableAlertsEnabled", true),
         tableWindAlertKt = obj.optInt("tableWindAlertKt", 20).coerceIn(5, 80),
         tableVisibilityAlertMeters = obj.optInt("tableVisibilityAlertMeters", 3000).coerceIn(200, 9999),
+        vfrAlertsEnabled = obj.optBoolean("vfrAlertsEnabled", true),
+        vfrMinVisibilityMeters = obj.optInt("vfrMinVisibilityMeters", 5000).coerceIn(800, 9999),
+        vfrMinCeilingFeet = obj.optInt("vfrMinCeilingFeet", 1500).coerceIn(300, 5000),
+        vfrMaxWindKt = obj.optInt("vfrMaxWindKt", 25).coerceIn(10, 60),
+        vfrMonitorAllFavorites = obj.optBoolean("vfrMonitorAllFavorites", true),
+        vfrMonitoredIcaos = vfrIcaos,
       )
     }.getOrDefault(WeatherAlertConfig())
   }

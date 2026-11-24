@@ -4,6 +4,7 @@ import com.example.model.PressureUnit
 import com.example.model.UnitSystem
 import com.example.model.WindSpeedUnit
 import java.util.Locale
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 object UnitConverter {
@@ -12,6 +13,9 @@ object UnitConverter {
   private const val KT_TO_KPH = 1.852
   private const val HPA_TO_INHG = 0.029530
   private const val HPA_TO_MMHG = 0.750062
+  private const val ISA_LAPSE_FACTOR = 2.25577e-5
+  private const val ISA_EXPONENT = 5.25588
+  private const val METERS_TO_FEET = 3.28084
 
   fun resolveUnitSystem(windUnit: WindSpeedUnit, pressureUnit: PressureUnit): UnitSystem? {
     return when {
@@ -54,7 +58,30 @@ object UnitConverter {
 
   fun convertHpaToInHg(hpa: Int): Double = hpa * HPA_TO_INHG
 
+  fun convertHpaToInHg(hpa: Double): Double = hpa * HPA_TO_INHG
+
+  fun convertInHgToHpa(inHg: Double): Double = inHg / HPA_TO_INHG
+
   fun convertHpaToMmHg(hpa: Int): Int = (hpa * HPA_TO_MMHG).roundToInt()
+
+  fun convertHpaToMmHgDouble(hpa: Double): Double = hpa * HPA_TO_MMHG
+
+  fun computeQfeFromQnhHpa(qnhHpa: Double, elevationMeters: Int): Double {
+    val ratio = (1.0 - ISA_LAPSE_FACTOR * elevationMeters).coerceIn(0.2, 1.5)
+    return qnhHpa * ratio.pow(ISA_EXPONENT)
+  }
+
+  fun computeQnhFromQfeHpa(qfeHpa: Double, elevationMeters: Int): Double {
+    val ratio = (1.0 - ISA_LAPSE_FACTOR * elevationMeters).coerceIn(0.2, 1.5)
+    return qfeHpa / ratio.pow(ISA_EXPONENT)
+  }
+
+  fun computePressureAltitudeFeet(qnhHpa: Double, elevationMeters: Int): Int {
+    val elevationFt = elevationMeters * METERS_TO_FEET
+    val qnhRatio = (qnhHpa / 1013.25).coerceIn(0.5, 1.3)
+    val deltaFt = 145366.45 * (1.0 - qnhRatio.pow(0.190284))
+    return (elevationFt + deltaFt).roundToInt()
+  }
 
   fun formatPressurePrimary(
     hpa: Int?,

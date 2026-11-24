@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Star
@@ -82,6 +83,7 @@ import com.example.model.PressureUnit
 import com.example.model.WindSpeedUnit
 import com.example.ui.components.AirportMapSummaryCard
 import com.example.ui.components.AndroidMapTileLoader
+import com.example.ui.components.MyAirportsCoordinatePlot
 import com.example.ui.components.flightCategoryColor
 import com.example.ui.components.rememberMapTileSnapshot
 import com.example.ui.theme.LocalMeteoPalette
@@ -126,6 +128,7 @@ fun AirportMapScreen(
   var layerStyle by remember(isNightMode) {
     mutableStateOf(if (isNightMode) MapLayerStyle.CARTO_DARK else MapLayerStyle.OSM)
   }
+  var showMyAirportsPlot by remember { mutableStateOf(false) }
   var camera by remember {
     mutableStateOf(
       AirportMapProjection.cameraForRegion(regionPreset, stations, 900f, 520f),
@@ -281,6 +284,36 @@ fun AirportMapScreen(
         .fillMaxWidth()
         .horizontalScroll(rememberScrollState()),
     ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+          .heightIn(min = 48.dp)
+          .testTag("map_my_airports_plot_toggle")
+          .clip(RoundedCornerShape(4.dp))
+          .background(if (showMyAirportsPlot) palette.buttonActiveBackground else palette.panelSurface)
+          .border(
+            1.dp,
+            if (showMyAirportsPlot) palette.metarAmber else palette.border,
+            RoundedCornerShape(4.dp),
+          )
+          .clickable { showMyAirportsPlot = !showMyAirportsPlot }
+          .padding(horizontal = 10.dp, vertical = 6.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.MyLocation,
+          contentDescription = "Координатная сетка Моих аэропортов",
+          tint = if (showMyAirportsPlot) palette.metarAmber else palette.textSecondary,
+          modifier = Modifier.size(14.dp),
+        )
+        Text(
+          text = "Мои (${favoriteIcaos.size})",
+          color = if (showMyAirportsPlot) palette.metarAmber else palette.textPrimary,
+          fontSize = 12.sp,
+          fontWeight = if (showMyAirportsPlot) FontWeight.Bold else FontWeight.Medium,
+        )
+      }
+
       MapLayerStyle.entries.forEach { style ->
         val active = style == layerStyle
         Row(
@@ -387,43 +420,62 @@ fun AirportMapScreen(
           horizontalArrangement = Arrangement.spacedBy(10.dp),
           modifier = Modifier.fillMaxSize(),
         ) {
-          AviationTileMapViewport(
-            stations = stations,
-            weatherByIcao = weatherByIcao,
-            selectedIcao = selectedStation.icao,
-            favoriteIcaos = favoriteIcaos,
-            camera = camera,
-            layerStyle = layerStyle,
-            windUnit = windUnit,
-            isNightMode = isNightMode,
-            onViewportMeasured = { size ->
-              if (viewportPx == IntSize.Zero && size.width > 0 && size.height > 0) {
-                camera = AirportMapProjection.cameraForRegion(
-                  regionPreset,
-                  stations,
-                  size.width.toFloat(),
-                  size.height.toFloat(),
-                )
-              }
-              viewportPx = size
-            },
-            onTransform = { zoomDelta, panDelta ->
-              val nextZoom = (camera.zoom + ln(zoomDelta.toDouble()) / ln(2.0)).coerceIn(2.0, 13.0)
-              val panned = AirportMapProjection.panCamera(
-                camera.copy(zoom = nextZoom),
-                panDelta.x,
-                panDelta.y,
+          if (showMyAirportsPlot) {
+            Box(
+              modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
+            ) {
+              MyAirportsCoordinatePlot(
+                myAirports = favoriteIcaos,
+                currentIcao = selectedStation.icao,
+                weatherByIcao = weatherByIcao,
+                windUnit = windUnit,
+                pressureUnit = pressureUnit,
+                isNightMode = isNightMode,
+                onSelectStation = { icao -> selectPin(icao) },
               )
-              camera = panned
-            },
-            onZoomIn = { camera = camera.copy(zoom = (camera.zoom + 0.8).coerceIn(2.0, 13.0)) },
-            onZoomOut = { camera = camera.copy(zoom = (camera.zoom - 0.8).coerceIn(2.0, 13.0)) },
-            onResetView = { focusRegion(regionPreset) },
-            onSelectPin = { icao -> selectPin(icao) },
-            modifier = Modifier
-              .weight(1f)
-              .fillMaxHeight(),
-          )
+            }
+          } else {
+            AviationTileMapViewport(
+              stations = stations,
+              weatherByIcao = weatherByIcao,
+              selectedIcao = selectedStation.icao,
+              favoriteIcaos = favoriteIcaos,
+              camera = camera,
+              layerStyle = layerStyle,
+              windUnit = windUnit,
+              isNightMode = isNightMode,
+              onViewportMeasured = { size ->
+                if (viewportPx == IntSize.Zero && size.width > 0 && size.height > 0) {
+                  camera = AirportMapProjection.cameraForRegion(
+                    regionPreset,
+                    stations,
+                    size.width.toFloat(),
+                    size.height.toFloat(),
+                  )
+                }
+                viewportPx = size
+              },
+              onTransform = { zoomDelta, panDelta ->
+                val nextZoom = (camera.zoom + ln(zoomDelta.toDouble()) / ln(2.0)).coerceIn(2.0, 13.0)
+                val panned = AirportMapProjection.panCamera(
+                  camera.copy(zoom = nextZoom),
+                  panDelta.x,
+                  panDelta.y,
+                )
+                camera = panned
+              },
+              onZoomIn = { camera = camera.copy(zoom = (camera.zoom + 0.8).coerceIn(2.0, 13.0)) },
+              onZoomOut = { camera = camera.copy(zoom = (camera.zoom - 0.8).coerceIn(2.0, 13.0)) },
+              onResetView = { focusRegion(regionPreset) },
+              onSelectPin = { icao -> selectPin(icao) },
+              modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            )
+          }
           Box(
             modifier = Modifier
               .width(360.dp)
@@ -449,42 +501,61 @@ fun AirportMapScreen(
           verticalArrangement = Arrangement.spacedBy(8.dp),
           modifier = Modifier.fillMaxSize(),
         ) {
-          AviationTileMapViewport(
-            stations = stations,
-            weatherByIcao = weatherByIcao,
-            selectedIcao = selectedStation.icao,
-            favoriteIcaos = favoriteIcaos,
-            camera = camera,
-            layerStyle = layerStyle,
-            windUnit = windUnit,
-            isNightMode = isNightMode,
-            onViewportMeasured = { size ->
-              if (viewportPx == IntSize.Zero && size.width > 0 && size.height > 0) {
-                camera = AirportMapProjection.cameraForRegion(
-                  regionPreset,
-                  stations,
-                  size.width.toFloat(),
-                  size.height.toFloat(),
-                )
-              }
-              viewportPx = size
-            },
-            onTransform = { zoomDelta, panDelta ->
-              val nextZoom = (camera.zoom + ln(zoomDelta.toDouble()) / ln(2.0)).coerceIn(2.0, 13.0)
-              camera = AirportMapProjection.panCamera(
-                camera.copy(zoom = nextZoom),
-                panDelta.x,
-                panDelta.y,
+          if (showMyAirportsPlot) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.54f)
+                .verticalScroll(rememberScrollState()),
+            ) {
+              MyAirportsCoordinatePlot(
+                myAirports = favoriteIcaos,
+                currentIcao = selectedStation.icao,
+                weatherByIcao = weatherByIcao,
+                windUnit = windUnit,
+                pressureUnit = pressureUnit,
+                isNightMode = isNightMode,
+                onSelectStation = { icao -> selectPin(icao) },
               )
-            },
-            onZoomIn = { camera = camera.copy(zoom = (camera.zoom + 0.8).coerceIn(2.0, 13.0)) },
-            onZoomOut = { camera = camera.copy(zoom = (camera.zoom - 0.8).coerceIn(2.0, 13.0)) },
-            onResetView = { focusRegion(regionPreset) },
-            onSelectPin = { icao -> selectPin(icao) },
-            modifier = Modifier
-              .fillMaxWidth()
-              .weight(0.54f),
-          )
+            }
+          } else {
+            AviationTileMapViewport(
+              stations = stations,
+              weatherByIcao = weatherByIcao,
+              selectedIcao = selectedStation.icao,
+              favoriteIcaos = favoriteIcaos,
+              camera = camera,
+              layerStyle = layerStyle,
+              windUnit = windUnit,
+              isNightMode = isNightMode,
+              onViewportMeasured = { size ->
+                if (viewportPx == IntSize.Zero && size.width > 0 && size.height > 0) {
+                  camera = AirportMapProjection.cameraForRegion(
+                    regionPreset,
+                    stations,
+                    size.width.toFloat(),
+                    size.height.toFloat(),
+                  )
+                }
+                viewportPx = size
+              },
+              onTransform = { zoomDelta, panDelta ->
+                val nextZoom = (camera.zoom + ln(zoomDelta.toDouble()) / ln(2.0)).coerceIn(2.0, 13.0)
+                camera = AirportMapProjection.panCamera(
+                  camera.copy(zoom = nextZoom),
+                  panDelta.x,
+                  panDelta.y,
+                )
+              },
+              onZoomIn = { camera = camera.copy(zoom = (camera.zoom + 0.8).coerceIn(2.0, 13.0)) },
+              onZoomOut = { camera = camera.copy(zoom = (camera.zoom - 0.8).coerceIn(2.0, 13.0)) },
+              onResetView = { focusRegion(regionPreset) },
+              onSelectPin = { icao -> selectPin(icao) },
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.54f),
+            )
+          }
           Box(
             modifier = Modifier
               .fillMaxWidth()

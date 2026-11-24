@@ -185,8 +185,10 @@ class FavoriteWeatherJobService : JobService() {
         val alertStorage = SharedPreferencesWeatherAlertStorage(applicationContext)
         val config = alertStorage.loadConfig()
         val favorites = favStorage.loadFavorites()
+        val vfrSelected = config.resolvedVfrMonitoredIcaos(favorites)
+        val monitoredIcaos = (favorites + vfrSelected).distinct()
 
-        if (!config.enabled || favorites.isEmpty()) {
+        if (!config.enabled || monitoredIcaos.isEmpty()) {
           runCatching { jobFinished(params, false) }
           return@launch
         }
@@ -197,7 +199,7 @@ class FavoriteWeatherJobService : JobService() {
         val snapshots = alertStorage.loadSnapshots().toMutableMap()
         val alerts = alertStorage.loadAlerts().toMutableList()
 
-        favorites.forEach { icao ->
+        monitoredIcaos.forEach { icao ->
           val station = AirportCatalog.findOrDefault(icao)
           repository.fetchLiveWeather(station, serverConfig).onSuccess { fetched ->
             val result = WeatherChangeDetector.evaluate(
@@ -205,6 +207,7 @@ class FavoriteWeatherJobService : JobService() {
               previous = snapshots[icao],
               current = fetched.weather,
               config = config,
+              isVfrMonitored = icao in vfrSelected,
             )
             result.snapshot?.let { snapshots[icao] = it }
             result.alert?.let { alert ->

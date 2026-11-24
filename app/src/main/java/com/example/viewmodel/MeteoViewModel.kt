@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AirportCatalog
+import com.example.data.AutoRefreshInterval
 import com.example.data.AviationWeatherRepository
 import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
@@ -67,6 +68,8 @@ data class MeteoUiState(
   val isFullscreen: Boolean = false,
   val windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   val pressureUnit: PressureUnit = PressureUnit.HPA,
+  val autoRefreshEnabled: Boolean = true,
+  val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
   val favoriteIcaos: List<String> = emptyList(),
   val savedPresets: List<SavedWeatherPreset> = emptyList(),
   val serverConfig: ServerConfig = ServerConfig(),
@@ -75,8 +78,11 @@ data class MeteoUiState(
   val latestWeatherAlert: WeatherChangeAlert? = null,
   val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
   val weatherHistory24h: List<WeatherHistoryEntry> = emptyList(),
+  val weatherHistoryByIcaoMap: Map<String, List<WeatherHistoryEntry>> = emptyMap(),
+  val selectedD3TrendIcao: String = "UTAA",
   val qnhTrend24h: QnhTrendSummary = WeatherHistoryAnalyzer.buildQnhTrend("UTAM", emptyList()),
   val isLoadingHistory: Boolean = false,
+  val loadingHistoryIcao: String? = null,
   val historyStatusMessage: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
@@ -127,6 +133,7 @@ class MeteoViewModel(
     AirportCatalog.presets.associateBy { it.icao }.toMutableMap()
   private var activeFetchJob: Job? = null
   private var historyFetchJob: Job? = null
+  private var autoRefreshJob: Job? = null
 
   private val _uiState: MutableStateFlow<MeteoUiState>
   val uiState: StateFlow<MeteoUiState>
@@ -148,7 +155,10 @@ class MeteoViewModel(
     val initialUnitPrefs = unitPreferencesStorage.loadPreferences()
     val initialTrend = currentTrendFor(defaultStation.icao)
     val initialHistory24h = currentHistory24hFor(defaultStation.icao)
+    val initialHistorySnapshot = snapshotAllHistory24h()
     val initialQnhTrend = WeatherHistoryAnalyzer.buildQnhTrend(defaultStation.icao, initialHistory24h)
+    val initialD3Icao = initialFavorites.firstOrNull() ?: defaultStation.icao
+    val initialVfrMonitored = initialAlertConfig.resolvedVfrMonitoredIcaos(initialFavorites)
     _uiState = MutableStateFlow(
       MeteoUiState(
         station = defaultStation,
@@ -156,8 +166,11 @@ class MeteoViewModel(
         weather = initialWeather,
         primaryRunwayCalc = primaryCalc,
         reciprocalRunwayCalc = reciprocalCalc,
+        isNightMode = initialUnitPrefs.isNightMode,
         windUnit = initialUnitPrefs.windUnit,
         pressureUnit = initialUnitPrefs.pressureUnit,
+        autoRefreshEnabled = initialUnitPrefs.autoRefreshEnabled,
+        autoRefreshIntervalMinutes = AutoRefreshInterval.fromMinutes(initialUnitPrefs.autoRefreshIntervalMinutes).minutes,
         favoriteIcaos = initialFavorites,
         savedPresets = initialPresets,
         serverConfig = initialServerConfig,
@@ -165,6 +178,8 @@ class MeteoViewModel(
         weatherAlerts = initialAlerts,
         windTrend = initialTrend,
         weatherHistory24h = initialHistory24h,
+        weatherHistoryByIcaoMap = initialHistorySnapshot,
+        selectedD3TrendIcao = initialD3Icao,
         qnhTrend24h = initialQnhTrend,
         mapStations = buildMapStationList(defaultStation, initialFavorites),
         liveLocalClock = initialWeather.receivedTimeLocal,
@@ -182,13 +197,14 @@ class MeteoViewModel(
     weatherNotifier.syncBackgroundSchedule(
       enabled = initialAlertConfig.enabled,
       intervalMinutes = initialAlertConfig.checkIntervalMinutes,
-      hasFavorites = initialFavorites.isNotEmpty(),
+      hasFavorites = initialFavorites.isNotEmpty() || initialVfrMonitored.isNotEmpty(),
     )
     syncCrashStationContext()
 
     startClockTicker()
     if (autoFetch) {
       fetchLiveForStation(defaultStation)
+      scheduleAutoRefreshLoop()
       startFavoriteMonitorLoop()
     }
   }
@@ -200,6 +216,20 @@ class MeteoViewModel(
         val current = _uiState.value
         val nowLocal = AviationWeatherParser.currentLocalTimeString(current.station.utcOffsetHours)
         _uiState.update { it.copy(liveLocalClock = nowLocal) }
+      }
+    }
+  }
+
+  private fun scheduleAutoRefreshLoop() {
+    autoRefreshJob?.cancel()
+    if (!autoFetch || !_uiState.value.autoRefreshEnabled) return
+    autoRefreshJob = viewModelScope.launch {
+      while (true) {
+        val intervalMin = AutoRefreshInterval.fromMinutes(_uiState.value.autoRefreshIntervalMinutes).minutes
+        delay(intervalMin * 60_000L)
+        if (_uiState.value.autoRefreshEnabled) {
+          fetchLiveForStation(_uiState.value.station)
+        }
       }
     }
   }
@@ -219,9 +249,41 @@ class MeteoViewModel(
   fun toggleNightMode() {
     _uiState.update { state ->
       val next = !state.isNightMode
+      persistPreferences(
+        state.windUnit,
+        state.pressureUnit,
+        state.autoRefreshEnabled,
+        state.autoRefreshIntervalMinutes,
+        next,
+      )
       state.copy(
         isNightMode = next,
-        logs = appendLog(state.logs, "UI", if (next) "Включен ночной режим" else "Включен дневной режим"),
+        logs = appendLog(
+          state.logs,
+          "UI",
+          if (next) "Включен ночной кокпит (Dark)" else "Включен дневной кокпит (Light)",
+        ),
+      )
+    }
+  }
+
+  fun setNightMode(nightMode: Boolean) {
+    _uiState.update { state ->
+      if (state.isNightMode == nightMode) return@update state
+      persistPreferences(
+        state.windUnit,
+        state.pressureUnit,
+        state.autoRefreshEnabled,
+        state.autoRefreshIntervalMinutes,
+        nightMode,
+      )
+      state.copy(
+        isNightMode = nightMode,
+        logs = appendLog(
+          state.logs,
+          "UI",
+          if (nightMode) "Включен ночной кокпит (Dark)" else "Включен дневной кокпит (Light)",
+        ),
       )
     }
   }
@@ -232,10 +294,28 @@ class MeteoViewModel(
     }
   }
 
+  private fun persistPreferences(
+    windUnit: WindSpeedUnit,
+    pressureUnit: PressureUnit,
+    autoRefreshEnabled: Boolean,
+    autoRefreshIntervalMinutes: Int,
+    isNightMode: Boolean = _uiState.value.isNightMode,
+  ) {
+    unitPreferencesStorage.savePreferences(
+      UnitPreferences(
+        windUnit = windUnit,
+        pressureUnit = pressureUnit,
+        autoRefreshEnabled = autoRefreshEnabled,
+        autoRefreshIntervalMinutes = AutoRefreshInterval.fromMinutes(autoRefreshIntervalMinutes).minutes,
+        isNightMode = isNightMode,
+      ),
+    )
+  }
+
   fun toggleWindUnit() {
     _uiState.update { state ->
       val next = UnitConverter.cycleWindUnit(state.windUnit)
-      unitPreferencesStorage.savePreferences(UnitPreferences(next, state.pressureUnit))
+      persistPreferences(next, state.pressureUnit, state.autoRefreshEnabled, state.autoRefreshIntervalMinutes)
       state.copy(
         windUnit = next,
         logs = appendLog(state.logs, "UI", "Единицы ветра: ${next.label}"),
@@ -246,7 +326,7 @@ class MeteoViewModel(
   fun setWindUnit(unit: WindSpeedUnit) {
     _uiState.update { state ->
       if (state.windUnit == unit) return@update state
-      unitPreferencesStorage.savePreferences(UnitPreferences(unit, state.pressureUnit))
+      persistPreferences(unit, state.pressureUnit, state.autoRefreshEnabled, state.autoRefreshIntervalMinutes)
       state.copy(
         windUnit = unit,
         logs = appendLog(state.logs, "UI", "Единицы ветра: ${unit.label}"),
@@ -257,7 +337,7 @@ class MeteoViewModel(
   fun togglePressureUnit() {
     _uiState.update { state ->
       val next = UnitConverter.cyclePressureUnit(state.pressureUnit)
-      unitPreferencesStorage.savePreferences(UnitPreferences(state.windUnit, next))
+      persistPreferences(state.windUnit, next, state.autoRefreshEnabled, state.autoRefreshIntervalMinutes)
       state.copy(
         pressureUnit = next,
         logs = appendLog(state.logs, "UI", "Единицы давления: ${next.label}"),
@@ -270,11 +350,11 @@ class MeteoViewModel(
       if (state.windUnit == system.windUnit && state.pressureUnit == system.pressureUnit) {
         return@update state
       }
-      unitPreferencesStorage.savePreferences(
-        UnitPreferences(
-          windUnit = system.windUnit,
-          pressureUnit = system.pressureUnit,
-        ),
+      persistPreferences(
+        system.windUnit,
+        system.pressureUnit,
+        state.autoRefreshEnabled,
+        state.autoRefreshIntervalMinutes,
       )
       CrashReporter.log("UnitSystem changed to ${system.name}")
       state.copy(
@@ -283,6 +363,46 @@ class MeteoViewModel(
         logs = appendLog(state.logs, "UI", "Система единиц: ${system.displayName}"),
       )
     }
+  }
+
+  fun setAutoRefreshEnabled(enabled: Boolean) {
+    _uiState.update { state ->
+      if (state.autoRefreshEnabled == enabled) return@update state
+      persistPreferences(
+        state.windUnit,
+        state.pressureUnit,
+        enabled,
+        state.autoRefreshIntervalMinutes,
+      )
+      val msg = if (enabled) {
+        "Автообновление включено (${state.autoRefreshIntervalMinutes} мин)"
+      } else {
+        "Автообновление отключено"
+      }
+      state.copy(
+        autoRefreshEnabled = enabled,
+        logs = appendLog(state.logs, "NET", msg),
+      )
+    }
+    scheduleAutoRefreshLoop()
+  }
+
+  fun setAutoRefreshInterval(minutes: Int) {
+    val valid = AutoRefreshInterval.fromMinutes(minutes).minutes
+    _uiState.update { state ->
+      if (state.autoRefreshIntervalMinutes == valid) return@update state
+      persistPreferences(
+        state.windUnit,
+        state.pressureUnit,
+        state.autoRefreshEnabled,
+        valid,
+      )
+      state.copy(
+        autoRefreshIntervalMinutes = valid,
+        logs = appendLog(state.logs, "NET", "Интервал автообновления: $valid мин"),
+      )
+    }
+    scheduleAutoRefreshLoop()
   }
 
   fun toggleFavorite(icao: String = _uiState.value.station.icao) {
@@ -447,7 +567,7 @@ class MeteoViewModel(
   fun setPressureUnit(unit: PressureUnit) {
     _uiState.update { state ->
       if (state.pressureUnit == unit) return@update state
-      unitPreferencesStorage.savePreferences(UnitPreferences(state.windUnit, unit))
+      persistPreferences(state.windUnit, unit, state.autoRefreshEnabled, state.autoRefreshIntervalMinutes)
       state.copy(
         pressureUnit = unit,
         logs = appendLog(state.logs, "UI", "Единицы давления: ${unit.label}"),
@@ -540,6 +660,7 @@ class MeteoViewModel(
 
   fun refresh() {
     fetchLiveForStation(_uiState.value.station)
+    scheduleAutoRefreshLoop()
   }
 
   fun applyCustomMetar(rawMetar: String, rawTaf: String) {
@@ -564,6 +685,7 @@ class MeteoViewModel(
         reciprocalRunwayCalc = rCalc,
         windTrend = nextTrend,
         weatherHistory24h = nextHistory,
+        weatherHistoryByIcaoMap = snapshotAllHistory24h(),
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(current.station.icao, nextHistory),
         mapWeatherByIcao = state.mapWeatherByIcao + (current.station.icao to parsed),
         liveLocalClock = nowLocal,
@@ -575,38 +697,123 @@ class MeteoViewModel(
   }
 
   fun updateAlertConfig(config: WeatherAlertConfig) {
+    val previousConfig = _uiState.value.alertConfig
     alertStorage.saveConfig(config)
+    val vfrConfigChanged = config.vfrAlertsEnabled != previousConfig.vfrAlertsEnabled ||
+      config.vfrMinVisibilityMeters != previousConfig.vfrMinVisibilityMeters ||
+      config.vfrMinCeilingFeet != previousConfig.vfrMinCeilingFeet ||
+      config.vfrMaxWindKt != previousConfig.vfrMaxWindKt ||
+      config.vfrMonitorAllFavorites != previousConfig.vfrMonitorAllFavorites ||
+      config.vfrMonitoredIcaos != previousConfig.vfrMonitoredIcaos
+
     _uiState.update { state ->
+      val vfrAirports = config.resolvedVfrMonitoredIcaos(state.favoriteIcaos)
       weatherNotifier.syncBackgroundSchedule(
         enabled = config.enabled,
         intervalMinutes = config.checkIntervalMinutes,
-        hasFavorites = state.favoriteIcaos.isNotEmpty(),
+        hasFavorites = state.favoriteIcaos.isNotEmpty() || vfrAirports.isNotEmpty(),
       )
       state.copy(
         alertConfig = config,
         logs = appendLog(
           state.logs,
           "INFO",
-          if (config.enabled) "Уведомления о погоде избранных аэродромов включены"
-          else "Уведомления о погоде избранных аэродромов отключены",
+          if (config.enabled) "Уведомления о погоде и минимумах ПВП (VFR) обновлены"
+          else "Уведомления о погоде отключены",
         ),
       )
     }
+    if (vfrConfigChanged && config.enabled && config.vfrAlertsEnabled) {
+      evaluateCachedAirportsAgainstVfr(config)
+    }
+  }
+
+  fun toggleVfrMonitoredAirport(icaoInput: String) {
+    val clean = icaoInput.trim().uppercase()
+    if (clean.length != 4 || !clean.all(Char::isLetter)) return
+    val current = _uiState.value
+    val cfg = current.alertConfig
+    val baseSet = cfg.resolvedVfrMonitoredIcaos(current.favoriteIcaos).toMutableSet()
+    if (!baseSet.add(clean)) {
+      baseSet.remove(clean)
+    }
+    updateAlertConfig(
+      cfg.copy(
+        vfrMonitorAllFavorites = false,
+        vfrMonitoredIcaos = baseSet.toList(),
+      ),
+    )
+  }
+
+  fun setVfrMonitorAllFavorites(useAll: Boolean) {
+    val cfg = _uiState.value.alertConfig
+    updateAlertConfig(cfg.copy(vfrMonitorAllFavorites = useAll))
+  }
+
+  fun checkVfrMinimumsNow() {
+    val state = _uiState.value
+    evaluateCachedAirportsAgainstVfr(state.alertConfig)
+    if (autoFetch) {
+      checkFavoritesWeatherNow()
+    }
+  }
+
+  private fun evaluateCachedAirportsAgainstVfr(config: WeatherAlertConfig) {
+    if (!config.enabled || !config.vfrAlertsEnabled) return
+    val stateSnapshot = _uiState.value
+    val selectedAirports = config.resolvedVfrMonitoredIcaos(stateSnapshot.favoriteIcaos)
+    if (selectedAirports.isEmpty()) return
+
+    val newlyFiredAlerts = mutableListOf<WeatherChangeAlert>()
+    selectedAirports.forEach { icao ->
+      val station = resolvedStationsByIcao[icao] ?: AirportCatalog.findOrDefault(icao)
+      val weather = when {
+        stateSnapshot.station.icao.equals(icao, ignoreCase = true) -> stateSnapshot.weather
+        else -> stateSnapshot.mapWeatherByIcao[icao]
+      } ?: return@forEach
+
+      val directAlert = WeatherChangeDetector.evaluateVfrBreachDirect(
+        station = station,
+        current = weather,
+        config = config,
+      ) ?: return@forEach
+
+      var added = false
+      _uiState.update { state ->
+        if (state.weatherAlerts.any { it.id == directAlert.id }) return@update state
+        added = true
+        val updated = (listOf(directAlert) + state.weatherAlerts).take(40)
+        alertStorage.saveAlerts(updated)
+        state.copy(
+          weatherAlerts = updated,
+          latestWeatherAlert = directAlert,
+          logs = appendLog(state.logs, "ALERT", "VFR ${directAlert.icao}: ${directAlert.summary}"),
+        )
+      }
+      if (added) {
+        newlyFiredAlerts.add(directAlert)
+      }
+    }
+    newlyFiredAlerts.forEach { weatherNotifier.notify(it) }
   }
 
   fun checkFavoritesWeatherNow() {
     val stateSnapshot = _uiState.value
-    val favorites = stateSnapshot.favoriteIcaos
-    if (favorites.isEmpty()) return
+    val vfrSelected = stateSnapshot.alertConfig.resolvedVfrMonitoredIcaos(stateSnapshot.favoriteIcaos)
+    val targets = (stateSnapshot.favoriteIcaos + vfrSelected).distinct()
+    if (targets.isEmpty()) return
+    evaluateCachedAirportsAgainstVfr(stateSnapshot.alertConfig)
+    if (!autoFetch) return
     viewModelScope.launch {
       _uiState.update { it.copy(isCheckingFavorites = true) }
       var alertsTriggered = 0
-      favorites.forEach { icao ->
+      targets.forEach { icao ->
         val station = AirportCatalog.findOrDefault(icao)
         repository.fetchLiveWeather(station, _uiState.value.serverConfig).onSuccess { fetched ->
           resolvedStationsByIcao[fetched.resolvedStation.icao] = fetched.resolvedStation
           val favTrend = recordWindObservation(fetched.resolvedStation.icao, fetched.weather)
           val favHist = recordWeatherHistory(fetched.resolvedStation.icao, fetched.weather)
+          val allHistSnapshot = snapshotAllHistory24h()
           _uiState.update { state ->
             val updatedCache = state.mapWeatherByIcao + (fetched.resolvedStation.icao to fetched.weather)
             val updatedStations = buildMapStationList(state.station, state.favoriteIcaos)
@@ -614,12 +821,14 @@ class MeteoViewModel(
               state.copy(
                 windTrend = favTrend,
                 weatherHistory24h = favHist,
+                weatherHistoryByIcaoMap = allHistSnapshot,
                 qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(fetched.resolvedStation.icao, favHist),
                 mapWeatherByIcao = updatedCache,
                 mapStations = updatedStations,
               )
             } else {
               state.copy(
+                weatherHistoryByIcaoMap = allHistSnapshot,
                 mapWeatherByIcao = updatedCache,
                 mapStations = updatedStations,
               )
@@ -637,9 +846,9 @@ class MeteoViewModel(
       }
       _uiState.update { state ->
         val summaryMsg = if (alertsTriggered > 0) {
-          "Проверка избранных (${favorites.size}): обнаружено изменений — $alertsTriggered"
+          "Проверка станций (${targets.size}): обнаружено предупреждений — $alertsTriggered"
         } else {
-          "Проверка избранных (${favorites.size}): значимых изменений не выявлено"
+          "Проверка станций (${targets.size}): условия в норме"
         }
         state.copy(
           isCheckingFavorites = false,
@@ -700,13 +909,17 @@ class MeteoViewModel(
   ): Boolean {
     val cleanIcao = station.icao.trim().uppercase()
     val current = _uiState.value
-    if (cleanIcao !in current.favoriteIcaos) return false
+    val vfrMonitored = current.alertConfig.resolvedVfrMonitoredIcaos(current.favoriteIcaos)
+    val isFav = cleanIcao in current.favoriteIcaos
+    val isVfr = cleanIcao in vfrMonitored
+    if (!isFav && !isVfr) return false
 
     val result = WeatherChangeDetector.evaluate(
       station = station,
       previous = weatherSnapshots[cleanIcao],
       current = weather,
       config = current.alertConfig,
+      isVfrMonitored = isVfr,
     )
     result.snapshot?.let { snap ->
       weatherSnapshots[cleanIcao] = snap
@@ -756,6 +969,7 @@ class MeteoViewModel(
             reciprocalRunwayCalc = rCalc,
             windTrend = nextTrend,
             weatherHistory24h = nextHistory,
+            weatherHistoryByIcaoMap = snapshotAllHistory24h(),
             qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(resolved.icao, nextHistory),
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
@@ -844,6 +1058,15 @@ class MeteoViewModel(
     return WindTrendAnalyzer.analyze(clean, updatedEntries)
   }
 
+  private fun snapshotAllHistory24h(): Map<String, List<WeatherHistoryEntry>> {
+    val cutoff = System.currentTimeMillis() - WeatherHistoryAnalyzer.WINDOW_24H_MILLIS
+    return synchronized(weatherHistoryByIcao) {
+      weatherHistoryByIcao.mapValues { (_, list) ->
+        list.filter { it.observedAtMillis >= cutoff }.sortedBy { it.observedAtMillis }
+      }
+    }
+  }
+
   private fun currentHistory24hFor(icao: String): List<WeatherHistoryEntry> {
     val clean = icao.trim().uppercase()
     val cutoff = System.currentTimeMillis() - WeatherHistoryAnalyzer.WINDOW_24H_MILLIS
@@ -884,12 +1107,62 @@ class MeteoViewModel(
       weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
       nextEntries
     }
+    val allSnapshot = snapshotAllHistory24h()
     _uiState.update { state ->
-      if (!state.station.icao.equals(clean, ignoreCase = true)) return@update state
+      val isActive = state.station.icao.equals(clean, ignoreCase = true)
       state.copy(
-        weatherHistory24h = merged,
-        qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(clean, merged),
+        weatherHistory24h = if (isActive) merged else state.weatherHistory24h,
+        weatherHistoryByIcaoMap = allSnapshot,
+        qnhTrend24h = if (isActive) WeatherHistoryAnalyzer.buildQnhTrend(clean, merged) else state.qnhTrend24h,
       )
+    }
+  }
+
+  fun selectD3TrendAirport(icaoInput: String, fetchIfMissing: Boolean = true) {
+    val clean = icaoInput.trim().uppercase()
+    if (clean.length != 4) return
+    _uiState.update { it.copy(selectedD3TrendIcao = clean) }
+    val existing = currentHistory24hFor(clean)
+    if (fetchIfMissing && existing.size < 2) {
+      load24hHistoryForIcao(clean, force = false)
+    }
+  }
+
+  fun load24hHistoryForIcao(icaoInput: String, force: Boolean = false) {
+    val clean = icaoInput.trim().uppercase()
+    if (clean.length != 4) return
+    if (!autoFetch && !force) return
+    val targetStation = resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean)
+    viewModelScope.launch {
+      _uiState.update { it.copy(loadingHistoryIcao = clean) }
+      val result = repository.fetch24hHistory(targetStation, _uiState.value.serverConfig)
+      result.onSuccess { fetched ->
+        val merged = synchronized(weatherHistoryByIcao) {
+          val currentEntries = weatherHistoryByIcao[clean].orEmpty()
+          val nextEntries = WeatherHistoryAnalyzer.mergeHistory(currentEntries, fetched.entries)
+          weatherHistoryByIcao[clean] = nextEntries
+          weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
+          nextEntries
+        }
+        val allSnapshot = snapshotAllHistory24h()
+        _uiState.update { state ->
+          val isCurrent = state.station.icao.equals(clean, ignoreCase = true)
+          state.copy(
+            weatherHistory24h = if (isCurrent) merged else state.weatherHistory24h,
+            weatherHistoryByIcaoMap = allSnapshot,
+            qnhTrend24h = if (isCurrent) WeatherHistoryAnalyzer.buildQnhTrend(clean, merged) else state.qnhTrend24h,
+            loadingHistoryIcao = if (state.loadingHistoryIcao == clean) null else state.loadingHistoryIcao,
+            logs = appendLog(state.logs, "HIST", "D3 24ч: загружено ${merged.size} зап. для $clean"),
+          )
+        }
+      }.onFailure { err ->
+        _uiState.update { state ->
+          state.copy(
+            loadingHistoryIcao = if (state.loadingHistoryIcao == clean) null else state.loadingHistoryIcao,
+            logs = appendLog(state.logs, "HIST", "D3 24ч ($clean): ${err.message ?: "нет данных"}"),
+          )
+        }
+      }
     }
   }
 
@@ -908,6 +1181,7 @@ class MeteoViewModel(
           weatherHistoryStorage.saveAll(weatherHistoryByIcao.toMap())
           nextEntries
         }
+        val allSnapshot = snapshotAllHistory24h()
         _uiState.update { state ->
           var updatedLogs = state.logs
           fetched.logMessages.forEach { msg ->
@@ -916,13 +1190,18 @@ class MeteoViewModel(
           if (state.station.icao.equals(station.icao, ignoreCase = true)) {
             state.copy(
               weatherHistory24h = merged,
+              weatherHistoryByIcaoMap = allSnapshot,
               qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, merged),
               isLoadingHistory = false,
               historyStatusMessage = "Загружено записей за 24ч: ${merged.size}",
               logs = updatedLogs,
             )
           } else {
-            state.copy(isLoadingHistory = false, logs = updatedLogs)
+            state.copy(
+              weatherHistoryByIcaoMap = allSnapshot,
+              isLoadingHistory = false,
+              logs = updatedLogs,
+            )
           }
         }
       }.onFailure { err ->

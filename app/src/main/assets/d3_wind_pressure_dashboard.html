@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>D3 Wind & Pressure 24h Trends</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #chart-root {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: pan-y;
+    }
+    .grid line {
+      stroke-dasharray: 4 4;
+      shape-rendering: crispEdges;
+    }
+    .axis text {
+      font-size: 10px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+    .tooltip-box {
+      position: absolute;
+      top: 6px;
+      left: 52px;
+      pointer-events: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      line-height: 1.35;
+      border: 1px solid rgba(255,255,255,0.2);
+      opacity: 0;
+      transition: opacity 0.12s ease;
+      max-width: calc(100% - 104px);
+    }
+    .empty-msg {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      font-size: 12px;
+      text-align: center;
+      padding: 16px;
+    }
+  </style>
+  <script src="d3.v7.min.js"></script>
+</head>
+<body>
+  <div id="chart-root">
+    <div id="tooltip" class="tooltip-box"></div>
+  </div>
+
+  <script>
+    (function () {
+      let lastPayload = null;
+
+      function getPalette(isDark) {
+        if (isDark) {
+          return {
+            bg: '#0D1520',
+            text: '#DCE6F2',
+            muted: '#8DA3BD',
+            grid: 'rgba(141, 163, 189, 0.22)',
+            axis: '#475E78',
+            windLine: '#FF981A',
+            windAreaTop: 'rgba(255, 152, 26, 0.34)',
+            windAreaBottom: 'rgba(255, 152, 26, 0.02)',
+            gustLine: '#FF5252',
+            qnhLine: '#38BDF8',
+            isaLine: 'rgba(52, 211, 153, 0.55)',
+            tooltipBg: 'rgba(13, 21, 32, 0.94)',
+            tooltipBorder: '#FF981A',
+            dotBg: '#0D1520'
+          };
+        }
+        return {
+          bg: '#F8FAFC',
+          text: '#0F172A',
+          muted: '#475569',
+          grid: 'rgba(71, 85, 105, 0.18)',
+          axis: '#94A3B8',
+          windLine: '#D97706',
+          windAreaTop: 'rgba(217, 119, 6, 0.26)',
+          windAreaBottom: 'rgba(217, 119, 6, 0.02)',
+          gustLine: '#DC2626',
+          qnhLine: '#0284C7',
+          isaLine: 'rgba(5, 150, 105, 0.55)',
+          tooltipBg: 'rgba(248, 250, 252, 0.95)',
+          tooltipBorder: '#D97706',
+          dotBg: '#F8FAFC'
+        };
+      }
+
+      function formatNum(v, decimals) {
+        if (v === null || v === undefined || Number.isNaN(v)) return '--';
+        return Number(v).toFixed(decimals);
+      }
+
+      window.renderTrendsDashboard = function (rawPayload) {
+        const payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
+        lastPayload = payload;
+        draw(payload);
+      };
+
+      function draw(payload) {
+        const root = d3.select('#chart-root');
+        const tooltip = d3.select('#tooltip');
+        root.selectAll('svg, .empty-msg').remove();
+
+        if (!payload || typeof d3 === 'undefined') {
+          root.append('div')
+            .attr('class', 'empty-msg')
+            .text('Инициализация D3 графика...');
+          return;
+        }
+
+        const pal = getPalette(Boolean(payload.darkTheme));
+        document.body.style.backgroundColor = pal.bg;
+        tooltip
+          .style('background', pal.tooltipBg)
+          .style('color', pal.text)
+          .style('border-color', pal.tooltipBorder);
+
+        const points = (payload.points || [])
+          .map(p => ({
+            date: new Date(p.ts),
+            ts: p.ts,
+            timeUtc: p.timeUtc || '',
+            wind: typeof p.wind === 'number' ? p.wind : null,
+            gust: typeof p.gust === 'number' ? p.gust : null,
+            qnh: typeof p.qnh === 'number' ? p.qnh : null
+          }))
+          .sort((a, b) => a.ts - b.ts);
+
+        if (points.length === 0) {
+          root.append('div')
+            .attr('class', 'empty-msg')
+            .style('color', pal.muted)
+            .text('Нет архивных точек ветра и давления за 24ч для ' + (payload.icao || 'станции'));
+          tooltip.style('opacity', 0);
+          return;
+        }
+
+        const node = root.node();
+        const width = Math.max(260, node.clientWidth || 340);
+        const height = Math.max(170, node.clientHeight || 220);
+        const margin = { top: 14, right: 48, bottom: 26, left: 40 };
+        const innerW = Math.max(80, width - margin.left - margin.right);
+        const innerH = Math.max(60, height - margin.top - margin.bottom);
+
+        const svg = root.append('svg')
+          .attr('viewBox', `0 0 ${width} ${height}`)
+          .attr('preserveAspectRatio', 'none');
+
+        const defs = svg.append('defs');
+        const windGrad = defs.append('linearGradient')
+          .attr('id', 'd3WindAreaGrad')
+          .attr('x1', '0%').attr('y1', '0%')
+          .attr('x2', '0%').attr('y2', '100%');
+        windGrad.append('stop').attr('offset', '0%').attr('stop-color', pal.windAreaTop);
+        windGrad.append('stop').attr('offset', '100%').attr('stop-color', pal.windAreaBottom);
+
+        const g = svg.append('g')
+          .attr('transform', `translate(${margin.left},${margin.top})`);
+
+        // X scale: 24h UTC timestamps (expand slightly if single point)
+        let [tMin, tMax] = d3.extent(points, d => d.date);
+        if (tMin.getTime() === tMax.getTime()) {
+          tMin = new Date(tMin.getTime() - 3600000);
+          tMax = new Date(tMax.getTime() + 3600000);
+        }
+        const xScale = d3.scaleUtc().domain([tMin, tMax]).range([0, innerW]);
+
+        // Left Y scale: Wind Speed & Gusts
+        const windVals = [];
+        points.forEach(p => {
+          if (p.wind !== null) windVals.push(p.wind);
+          if (p.gust !== null) windVals.push(p.gust);
+        });
+        const maxWind = d3.max(windVals) ?? 15;
+        const yWind = d3.scaleLinear()
+          .domain([0, Math.max(10, Math.ceil(maxWind * 1.25))])
+          .nice(4)
+          .range([innerH, 0]);
+
+        // Right Y scale: Barometric Pressure QNH
+        const qnhPoints = points.filter(p => p.qnh !== null);
+        const qnhVals = qnhPoints.map(p => p.qnh);
+        const isInHg = payload.pressureDecimals > 0;
+        let qMin = qnhVals.length ? d3.min(qnhVals) : (isInHg ? 29.70 : 1005);
+        let qMax = qnhVals.length ? d3.max(qnhVals) : (isInHg ? 30.20 : 1022);
+        const qPad = isInHg ? Math.max(0.06, (qMax - qMin) * 0.25) : Math.max(3, (qMax - qMin) * 0.25);
+        if (qMax - qMin < (isInHg ? 0.08 : 3)) {
+          qMin -= qPad;
+          qMax += qPad;
+        } else {
+          qMin -= qPad * 0.6;
+          qMax += qPad * 0.6;
+        }
+        const yQnh = d3.scaleLinear().domain([qMin, qMax]).nice(4).range([innerH, 0]);
+
+        // Horizontal gridlines keyed to wind axis
+        g.append('g')
+          .attr('class', 'grid')
+          .call(
+            d3.axisLeft(yWind)
+              .ticks(4)
+              .tickSize(-innerW)
+              .tickFormat('')
+          )
+          .selectAll('line')
+          .attr('stroke', pal.grid);
+        g.selectAll('.grid .domain').remove();
+
+        // Optional ISA 1013 hPa / 29.92 inHg reference line
+        const isaVal = isInHg ? 29.92 : 1013.25;
+        if (isaVal >= yQnh.domain()[0] && isaVal <= yQnh.domain()[1]) {
+          const isaY = yQnh(isaVal);
+          g.append('line')
+            .attr('x1', 0).attr('x2', innerW)
+            .attr('y1', isaY).attr('y2', isaY)
+            .attr('stroke', pal.isaLine)
+            .attr('stroke-width', 1)
+            .attr('stroke-dasharray', '6 4');
+        }
+
+        // Bottom time axis
+        const xAxis = d3.axisBottom(xScale)
+          .ticks(Math.min(5, Math.max(2, Math.floor(innerW / 70))))
+          .tickFormat(d3.utcFormat('%H:%M'));
+        const xG = g.append('g')
+          .attr('class', 'axis')
+          .attr('transform', `translate(0,${innerH})`)
+          .call(xAxis);
+        xG.selectAll('path, line').attr('stroke', pal.axis);
+        xG.selectAll('text').attr('fill', pal.muted);
+
+        // Left wind axis
+        const yLeftG = g.append('g')
+          .attr('class', 'axis')
+          .call(d3.axisLeft(yWind).ticks(4));
+        yLeftG.selectAll('path, line').attr('stroke', pal.axis);
+        yLeftG.selectAll('text').attr('fill', pal.windLine);
+
+        // Right pressure axis
+        const yRightAxis = d3.axisRight(yQnh)
+          .ticks(4)
+          .tickFormat(d => isInHg ? Number(d).toFixed(2) : Math.round(d));
+        const yRightG = g.append('g')
+          .attr('class', 'axis')
+          .attr('transform', `translate(${innerW},0)`)
+          .call(yRightAxis);
+        yRightG.selectAll('path, line').attr('stroke', pal.axis);
+        yRightG.selectAll('text').attr('fill', pal.qnhLine);
+
+        // Wind Area + Line
+        const windAreaGen = d3.area()
+          .defined(d => d.wind !== null)
+          .x(d => xScale(d.date))
+          .y0(innerH)
+          .y1(d => yWind(d.wind))
+          .curve(d3.curveMonotoneX);
+
+        const windLineGen = d3.line()
+          .defined(d => d.wind !== null)
+          .x(d => xScale(d.date))
+          .y(d => yWind(d.wind))
+          .curve(d3.curveMonotoneX);
+
+        g.append('path')
+          .datum(points)
+          .attr('fill', 'url(#d3WindAreaGrad)')
+          .attr('d', windAreaGen);
+
+        g.append('path')
+          .datum(points)
+          .attr('fill', 'none')
+          .attr('stroke', pal.windLine)
+          .attr('stroke-width', 2.2)
+          .attr('d', windLineGen);
+
+        // Gust dashed line where present
+        const gustPts = points.filter(p => p.gust !== null);
+        if (gustPts.length >= 2) {
+          const gustLineGen = d3.line()
+            .x(d => xScale(d.date))
+            .y(d => yWind(d.gust))
+            .curve(d3.curveMonotoneX);
+          g.append('path')
+            .datum(gustPts)
+            .attr('fill', 'none')
+            .attr('stroke', pal.gustLine)
+            .attr('stroke-width', 1.5)
+            .attr('stroke-dasharray', '4 3')
+            .attr('d', gustLineGen);
+        }
+
+        // Barometric Pressure QNH Line
+        if (qnhPoints.length >= 2) {
+          const qnhLineGen = d3.line()
+            .x(d => xScale(d.date))
+            .y(d => yQnh(d.qnh))
+            .curve(d3.curveMonotoneX);
+          g.append('path')
+            .datum(qnhPoints)
+            .attr('fill', 'none')
+            .attr('stroke', pal.qnhLine)
+            .attr('stroke-width', 2.2)
+            .attr('d', qnhLineGen);
+        }
+
+        // Data point markers
+        g.selectAll('.wind-dot')
+          .data(points.filter(p => p.wind !== null))
+          .enter()
+          .append('circle')
+          .attr('cx', d => xScale(d.date))
+          .attr('cy', d => yWind(d.wind))
+          .attr('r', 2.6)
+          .attr('fill', pal.windLine)
+          .attr('stroke', pal.dotBg)
+          .attr('stroke-width', 1);
+
+        g.selectAll('.qnh-dot')
+          .data(qnhPoints)
+          .enter()
+          .append('circle')
+          .attr('cx', d => xScale(d.date))
+          .attr('cy', d => yQnh(d.qnh))
+          .attr('r', 2.6)
+          .attr('fill', pal.qnhLine)
+          .attr('stroke', pal.dotBg)
+          .attr('stroke-width', 1);
+
+        // Crosshair focus & tap/pointer inspection
+        const focusLine = g.append('line')
+          .attr('y1', 0).attr('y2', innerH)
+          .attr('stroke', pal.muted)
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '3 3')
+          .style('opacity', 0);
+
+        const bisect = d3.bisector(d => d.date).left;
+
+        function showPoint(pt) {
+          if (!pt) return;
+          const xPos = xScale(pt.date);
+          focusLine.attr('x1', xPos).attr('x2', xPos).style('opacity', 1);
+          const wText = pt.wind !== null ? `${Math.round(pt.wind)} ${payload.windUnit}` : '--';
+          const gText = pt.gust !== null ? ` (G${Math.round(pt.gust)})` : '';
+          const qText = pt.qnh !== null ? `${formatNum(pt.qnh, payload.pressureDecimals)} ${payload.pressureUnit}` : '--';
+          tooltip
+            .style('opacity', 1)
+            .html(`<b>${pt.timeUtc}</b> · Ветер ${wText}${gText} · QNH ${qText}`);
+        }
+
+        g.append('rect')
+          .attr('width', innerW)
+          .attr('height', innerH)
+          .attr('fill', 'transparent')
+          .on('pointerdown pointermove', function (event) {
+            const [mx] = d3.pointer(event, this);
+            const targetDate = xScale.invert(mx);
+            const idx = Math.min(points.length - 1, Math.max(0, bisect(points, targetDate)));
+            const prev = points[Math.max(0, idx - 1)];
+            const curr = points[idx];
+            const chosen = (!prev || (targetDate - prev.date) > (curr.date - targetDate)) ? curr : prev;
+            showPoint(chosen);
+          });
+      }
+
+      if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => {
+          if (lastPayload) draw(lastPayload);
+        });
+        ro.observe(document.getElementById('chart-root'));
+      }
+    })();
+  </script>
+</body>
+</html>

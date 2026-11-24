@@ -68,6 +68,7 @@ import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.TafChangeType
 import com.example.model.TafForecastPeriod
+import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendDirection
@@ -114,6 +115,7 @@ fun AviationWeatherTable(
   alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   onToggleWindUnit: (() -> Unit)? = null,
   onTogglePressureUnit: (() -> Unit)? = null,
+  onSelectUnitSystem: ((UnitSystem) -> Unit)? = null,
   onOpenThresholdConfig: (() -> Unit)? = null,
 ) {
   val palette = LocalMeteoPalette.current
@@ -240,6 +242,27 @@ fun AviationWeatherTable(
             )
           }
         }
+      }
+
+      // Metric <-> Imperial Segmented Toggle Component throughout the table displays
+      val activeSystem = UnitConverter.resolveUnitSystem(windUnit, pressureUnit)
+      if (onSelectUnitSystem != null || (onToggleWindUnit != null && onTogglePressureUnit != null)) {
+        UnitSystemTableToggle(
+          activeSystem = activeSystem,
+          windUnit = windUnit,
+          pressureUnit = pressureUnit,
+          onSelectSystem = { targetSystem ->
+            if (onSelectUnitSystem != null) {
+              onSelectUnitSystem(targetSystem)
+            } else {
+              if (targetSystem == UnitSystem.METRIC) {
+                if (pressureUnit != PressureUnit.HPA) onTogglePressureUnit?.invoke()
+              } else {
+                if (pressureUnit != PressureUnit.INHG) onTogglePressureUnit?.invoke()
+              }
+            }
+          },
+        )
       }
 
       // Clean Segmented Selector Tabs
@@ -671,9 +694,9 @@ private fun TafStructuredSection(
         Text(
           text = decodedTaf.rawTaf,
           color = palette.textPrimary,
-          fontSize = 12.sp,
+          fontSize = 13.5.sp,
           fontFamily = FontFamily.Monospace,
-          lineHeight = 17.sp,
+          lineHeight = 19.sp,
         )
       }
       HorizontalDivider(thickness = 0.8.dp, color = palette.border)
@@ -1036,6 +1059,99 @@ private fun tableFlightCategoryColor(category: FlightCategory): Color {
 }
 
 @Composable
+fun UnitSystemTableToggle(
+  activeSystem: UnitSystem?,
+  windUnit: WindSpeedUnit,
+  pressureUnit: PressureUnit,
+  onSelectSystem: (UnitSystem) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalMeteoPalette.current
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    modifier = modifier
+      .fillMaxWidth()
+      .testTag("aviation_table_unit_system_toggle")
+      .background(palette.secondaryFieldBackground, RoundedCornerShape(4.dp))
+      .border(1.dp, palette.border, RoundedCornerShape(4.dp))
+      .padding(horizontal = 6.dp, vertical = 5.dp),
+  ) {
+    Text(
+      text = "СИСТЕМА:",
+      color = palette.textMuted,
+      fontSize = 10.sp,
+      fontWeight = FontWeight.Bold,
+      letterSpacing = 0.5.sp,
+      modifier = Modifier.padding(horizontal = 4.dp),
+    )
+
+    val isMetric = activeSystem == UnitSystem.METRIC
+    val isImperial = activeSystem == UnitSystem.IMPERIAL
+
+    Box(
+      contentAlignment = Alignment.Center,
+      modifier = Modifier
+        .weight(1f)
+        .minimumInteractiveComponentSize()
+        .testTag("table_unit_metric")
+        .clip(RoundedCornerShape(4.dp))
+        .background(if (isMetric) palette.buttonActiveBackground else palette.fieldBackground)
+        .border(
+          width = if (isMetric) 1.5.dp else 1.dp,
+          color = if (isMetric) MaterialTheme.colorScheme.primary else palette.border,
+          shape = RoundedCornerShape(4.dp),
+        )
+        .clickable { onSelectSystem(UnitSystem.METRIC) }
+        .padding(horizontal = 8.dp, vertical = 7.dp),
+    ) {
+      Text(
+        text = "Metric · гПа, м/с, °C",
+        color = if (isMetric) palette.metarAmber else palette.textSecondary,
+        fontSize = 11.sp,
+        fontWeight = if (isMetric) FontWeight.ExtraBold else FontWeight.Medium,
+        textAlign = TextAlign.Center,
+      )
+    }
+
+    Box(
+      contentAlignment = Alignment.Center,
+      modifier = Modifier
+        .weight(1f)
+        .minimumInteractiveComponentSize()
+        .testTag("table_unit_imperial")
+        .clip(RoundedCornerShape(4.dp))
+        .background(if (isImperial) palette.buttonActiveBackground else palette.fieldBackground)
+        .border(
+          width = if (isImperial) 1.5.dp else 1.dp,
+          color = if (isImperial) MaterialTheme.colorScheme.primary else palette.border,
+          shape = RoundedCornerShape(4.dp),
+        )
+        .clickable { onSelectSystem(UnitSystem.IMPERIAL) }
+        .padding(horizontal = 8.dp, vertical = 7.dp),
+    ) {
+      Text(
+        text = "Imperial · inHg, kt, °F",
+        color = if (isImperial) palette.metarAmber else palette.textSecondary,
+        fontSize = 11.sp,
+        fontWeight = if (isImperial) FontWeight.ExtraBold else FontWeight.Medium,
+        textAlign = TextAlign.Center,
+      )
+    }
+
+    if (activeSystem == null) {
+      Text(
+        text = "${windUnit.label}/${pressureUnit.label}",
+        color = palette.textMuted,
+        fontSize = 10.sp,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier.padding(horizontal = 4.dp),
+      )
+    }
+  }
+}
+
+@Composable
 private fun UnitPillButton(
   text: String,
   onClick: () -> Unit,
@@ -1121,16 +1237,29 @@ private fun buildAviationMetarRows(
     null
   }
 
+  val isImperialDisplay = pressureUnit == PressureUnit.INHG
   val visPrimary = when {
-    weather.isCavok -> "≥ 10 км (CAVOK)"
-    weather.visibilityMeters != null && weather.visibilityMeters >= 9999 -> "≥ 10 км (9999 м)"
-    weather.visibilityMeters != null -> "${weather.visibilityMeters} м"
+    weather.isCavok -> if (isImperialDisplay) "≥ 10 SM (CAVOK)" else "≥ 10 км (CAVOK)"
+    weather.visibilityMeters != null && weather.visibilityMeters >= 9999 -> if (isImperialDisplay) "≥ 6 SM (9999 м)" else "≥ 10 км (9999 м)"
+    weather.visibilityMeters != null -> {
+      if (isImperialDisplay) {
+        val miles = weather.visibilityMeters / 1609.34
+        String.format(Locale.US, "%.1f SM (%d м)", miles, weather.visibilityMeters)
+      } else {
+        "${weather.visibilityMeters} м"
+      }
+    }
     else -> "Нет данных"
   }
   val rvrDetail = buildString {
     append("Явления: ${weather.weatherPhenomena}")
     if (weather.rvrPrimaryMeters != null) {
-      append(" · RVR ${weather.rvrPrimaryMeters} м")
+      if (isImperialDisplay) {
+        val rvrFt = (weather.rvrPrimaryMeters * 3.28084).roundToInt()
+        append(" · RVR $rvrFt ft (${weather.rvrPrimaryMeters} м)")
+      } else {
+        append(" · RVR ${weather.rvrPrimaryMeters} м")
+      }
     }
   }
   val visThresholdExceeded = alertConfig.tableAlertsEnabled &&
@@ -1183,7 +1312,13 @@ private fun buildAviationMetarRows(
   }
 
   val tempPrimary = if (weather.temperatureC != null && weather.dewPointC != null) {
-    "${weather.temperatureC} °C / ${weather.dewPointC} °C"
+    if (isImperialDisplay) {
+      val tF = (weather.temperatureC * 9.0 / 5.0 + 32.0).roundToInt()
+      val dpF = (weather.dewPointC * 9.0 / 5.0 + 32.0).roundToInt()
+      "$tF °F / $dpF °F"
+    } else {
+      "${weather.temperatureC} °C / ${weather.dewPointC} °C"
+    }
   } else {
     "-- / --"
   }
@@ -1192,7 +1327,12 @@ private fun buildAviationMetarRows(
   } else {
     null
   }
-  val spreadDetail = spread?.let { "Дефицит точки росы: $it °C" }.orEmpty()
+  val spreadDetail = buildString {
+    if (isImperialDisplay && weather.temperatureC != null && weather.dewPointC != null) {
+      append("${weather.temperatureC} °C / ${weather.dewPointC} °C · ")
+    }
+    spread?.let { append("Дефицит точки росы: $it °C") }
+  }
   val tempSeverity = if (spread != null && spread <= 2) RowSeverity.CAUTION else RowSeverity.NORMAL
 
   val runwaySeverity = if (weather.frictionCoeff != null && weather.frictionCoeff < 0.35) {
