@@ -312,6 +312,13 @@ fun DualRunwayWindRosePanel(
         }
       }
     }
+
+    InteractiveRunwayHeadingWindCard(
+      wind = wind,
+      defaultHeadingDeg = bestCalc.headingDeg,
+      windUnit = windUnit,
+      onToggleUnit = onToggleUnit,
+    )
   }
 }
 

@@ -69,7 +69,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.model.AuthorBrand
 import com.example.ui.theme.SplashColors
 import kotlin.math.cos
 import kotlin.math.min
@@ -252,17 +251,6 @@ fun MeteotabloSplashScreen(
           fontSize = if (isCompactHeight) 13.sp else 15.sp,
           fontWeight = FontWeight.Medium,
           letterSpacing = 1.4.sp,
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Text(
-          text = AuthorBrand.COPYRIGHT_LINE,
-          color = SplashColors.telemetryMuted,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Medium,
-          letterSpacing = 0.4.sp,
-          modifier = Modifier.testTag("splash_author_credit"),
         )
 
         Spacer(modifier = Modifier.weight(1f))

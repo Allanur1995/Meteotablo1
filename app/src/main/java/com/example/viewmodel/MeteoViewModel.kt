@@ -45,6 +45,8 @@ import com.example.model.WeatherHistoryEntry
 import com.example.model.WindHistoryEntry
 import com.example.model.WindSpeedUnit
 import com.example.model.WindTrendSummary
+import com.example.location.LocationService
+import com.example.location.NoOpLocationService
 import com.example.notifications.LocalWeatherNotifier
 import com.example.notifications.NoOpWeatherNotifier
 import kotlinx.coroutines.Job
@@ -86,6 +88,8 @@ data class MeteoUiState(
   val historyStatusMessage: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
+  val isDetectingLocation: Boolean = false,
+  val detectedLocationSummary: String? = null,
   val isRefreshingMap: Boolean = false,
   val loadingMapIcao: String? = null,
   val mapStations: List<AirportStation> = AirportCatalog.presets,
@@ -120,6 +124,7 @@ class MeteoViewModel(
   private val weatherNotifier: LocalWeatherNotifier = NoOpWeatherNotifier,
   private val autoFetch: Boolean = true,
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
+  private val locationService: LocationService = NoOpLocationService,
 ) : ViewModel() {
 
   private val repository = AviationWeatherRepository()
@@ -661,6 +666,133 @@ class MeteoViewModel(
   fun refresh() {
     fetchLiveForStation(_uiState.value.station)
     scheduleAutoRefreshLoop()
+  }
+
+  fun fetchWeatherByCoordinates(
+    latitude: Double,
+    longitude: Double,
+    locationLabel: String? = null,
+  ) {
+    if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) {
+      _uiState.update { state ->
+        state.copy(
+          statusBanner = "Некорректные координаты (широта -90..90, долгота -180..180)",
+          logs = appendLog(state.logs, "ERR", "Некорректные координаты: $latitude, $longitude"),
+        )
+      }
+      return
+    }
+    activeFetchJob?.cancel()
+    historyFetchJob?.cancel()
+    activeFetchJob = viewModelScope.launch {
+      val coordStr = String.format(java.util.Locale.US, "%.4f, %.4f", latitude, longitude)
+      val displaySummary = locationLabel?.takeIf { it.isNotBlank() }?.let { "$it ($coordStr)" } ?: coordStr
+      _uiState.update {
+        it.copy(
+          isLoading = true,
+          statusBanner = null,
+          detectedLocationSummary = displaySummary,
+        )
+      }
+      val result = repository.fetchWeatherByCoordinates(
+        latitude = latitude,
+        longitude = longitude,
+        locationLabel = locationLabel,
+        serverConfig = _uiState.value.serverConfig,
+      )
+      result.onSuccess { fetched ->
+        val resolved = fetched.resolvedStation
+        resolvedStationsByIcao[resolved.icao] = resolved
+        val pair = resolved.runways.first()
+        val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
+        val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
+        val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
+        val nextHistory = recordWeatherHistory(resolved.icao, fetched.weather)
+        val allHistorySnapshot = snapshotAllHistory24h()
+        _uiState.update { state ->
+          var updatedLogs = state.logs
+          fetched.logMessages.forEach { msg ->
+            updatedLogs = appendLog(updatedLogs, "GEO", msg)
+          }
+          state.copy(
+            station = resolved,
+            selectedRunwayPairIndex = 0,
+            weather = fetched.weather,
+            primaryRunwayCalc = pCalc,
+            reciprocalRunwayCalc = rCalc,
+            windTrend = nextTrend,
+            weatherHistory24h = nextHistory,
+            weatherHistoryByIcaoMap = allHistorySnapshot,
+            selectedD3TrendIcao = resolved.icao,
+            qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(resolved.icao, nextHistory),
+            mapStations = buildMapStationList(resolved, state.favoriteIcaos),
+            mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
+            isLoading = false,
+            isDetectingLocation = false,
+            statusBanner = null,
+            liveLocalClock = nowLocal,
+            logs = updatedLogs,
+          )
+        }
+        syncCrashStationContext()
+        evaluateFavoriteObservation(resolved, fetched.weather)
+      }.onFailure { err ->
+        val msg = err.message ?: "Ошибка загрузки погоды по координатам"
+        _uiState.update { state ->
+          state.copy(
+            isLoading = false,
+            isDetectingLocation = false,
+            statusBanner = msg,
+            logs = appendLog(state.logs, "ERR", msg),
+          )
+        }
+      }
+    }
+  }
+
+  fun detectLocationAndUpdateWeather() {
+    if (_uiState.value.isDetectingLocation) return
+    viewModelScope.launch {
+      _uiState.update {
+        it.copy(
+          isDetectingLocation = true,
+          statusBanner = null,
+          logs = appendLog(it.logs, "GEO", "Определение местоположения GPS / Сеть…"),
+        )
+      }
+      locationService.detectNearestAirport().onSuccess { nearest ->
+        val loc = nearest.location
+        val coordText = String.format(java.util.Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)
+        val distStr = String.format(java.util.Locale.US, "%.0f км", nearest.distanceKm)
+        val label = listOfNotNull(loc.cityName, "бл. ${nearest.airport.icao} ($distStr)", loc.providerLabel)
+          .joinToString(" · ")
+        _uiState.update {
+          it.copy(
+            isDetectingLocation = false,
+            detectedLocationSummary = "$label ($coordText)",
+            logs = appendLog(
+              it.logs,
+              "GEO",
+              "GPS (${loc.providerLabel}): $coordText -> ближайший аэродром ${nearest.airport.icao} ($distStr)",
+            ),
+          )
+        }
+        fetchWeatherByCoordinates(
+          latitude = loc.latitude,
+          longitude = loc.longitude,
+          locationLabel = loc.cityName,
+        )
+      }.onFailure { err ->
+        val msg = err.message ?: "Не удалось определить местоположение"
+        _uiState.update {
+          it.copy(
+            isDetectingLocation = false,
+            statusBanner = msg,
+            logs = appendLog(it.logs, "ERR", msg),
+          )
+        }
+      }
+    }
   }
 
   fun applyCustomMetar(rawMetar: String, rawTaf: String) {
@@ -1232,6 +1364,7 @@ class MeteoViewModel(
         resolvedStationsByIcao[resolved.icao] = resolved
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
+        val allHistSnapshot = snapshotAllHistory24h()
         _uiState.update { state ->
           val isCurrent = state.station.icao.equals(resolved.icao, ignoreCase = true)
           state.copy(
@@ -1239,6 +1372,7 @@ class MeteoViewModel(
             weather = if (isCurrent) fetched.weather else state.weather,
             windTrend = if (isCurrent) nextTrend else state.windTrend,
             weatherHistory24h = if (isCurrent) nextHist else state.weatherHistory24h,
+            weatherHistoryByIcaoMap = allHistSnapshot,
             qnhTrend24h = if (isCurrent) WeatherHistoryAnalyzer.buildQnhTrend(resolved.icao, nextHist) else state.qnhTrend24h,
             mapStations = buildMapStationList(if (isCurrent) resolved else state.station, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
@@ -1288,9 +1422,11 @@ class MeteoViewModel(
           evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)
         }
       }
+      val allHistSnapshot = snapshotAllHistory24h()
       _uiState.update { state ->
         state.copy(
           isRefreshingMap = false,
+          weatherHistoryByIcaoMap = allHistSnapshot,
           mapStations = buildMapStationList(state.station, state.favoriteIcaos),
           mapWeatherByIcao = updatedWeather.toMap(),
           logs = appendLog(state.logs, "MAP", "Карта: загружена погода для $loadedCount из ${stations.size} аэродромов"),

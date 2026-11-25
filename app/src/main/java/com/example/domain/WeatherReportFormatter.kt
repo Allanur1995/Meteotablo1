@@ -106,6 +106,11 @@ object WeatherReportFormatter {
 
     val tempStr = weather.temperatureC?.let { "$it °C" } ?: "Н/Д"
     val dewStr = weather.dewPointC?.let { "$it °C" } ?: "Н/Д"
+    val perf = AviationPerformanceCalculator.calculate(station, weather)
+    val paStr = perf.pressureAltitudeFeet?.let { "$it ft" } ?: "Н/Д"
+    val daStr = perf.densityAltitudeFeet?.let { "$it ft" } ?: "Н/Д"
+    val isaStr = perf.isaDeviationC?.let { if (it >= 0) "МСА +$it°C" else "МСА $it°C" } ?: "Н/Д"
+    val rhStr = perf.relativeHumidityPercent?.let { "$it%" } ?: "Н/Д"
 
     val windTrendLine = formatWindTrend(payload.windTrend, windUnit)
     val qnhTrendLine = formatQnhTrend(payload.qnhTrend24h, pressureUnit)
@@ -128,9 +133,11 @@ object WeatherReportFormatter {
       appendLine("Видимость     : $visStr")
       appendLine("Облачность    : $cloudsStr")
       appendLine("Явления       : ${weather.weatherPhenomena}")
-      appendLine("Темп. / Роса  : $tempStr / $dewStr")
+      appendLine("Темп. / Роса  : $tempStr / $dewStr (RH $rhStr)")
       appendLine("Давление QNH  : $qnhPrimary $qnhPrimaryUnit ($qnhSecondary)")
       appendLine("Давление QFE  : $qfePrimary $qfePrimaryUnit")
+      appendLine("Выс.давл / DA : PA $paStr · DA $daStr ($isaStr)")
+      appendLine("Статус ВПХ    : ${perf.advisorySummary()}")
       appendLine("Особые усл.   : ${weather.specialConditions}")
       appendLine()
       appendLine("--- РАСЧЁТ ВЕТРА НА ВПП (${windUnit.label}) ---")
@@ -177,7 +184,7 @@ object WeatherReportFormatter {
       appendLine("METAR: ${weather.rawMetar}")
       appendLine("TAF  : ${weather.rawTaf}")
       appendLine()
-      appendLine("${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · ${AuthorBrand.COPYRIGHT_LINE}")
+      appendLine("${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION}")
     }
   }
 
@@ -275,5 +282,47 @@ object WeatherReportFormatter {
       timeZone = TimeZone.getTimeZone("UTC")
     }
     return fmt.format(Date(millis))
+  }
+
+  fun buildPrintableHtml(
+    payload: WeatherExportPayload,
+    generatedAtMillis: Long = System.currentTimeMillis(),
+  ): String {
+    val summary = buildTextSummary(payload, generatedAtMillis)
+    val escapedSummary = summary
+      .replace("&", "&amp;")
+      .replace("<", "&lt;")
+      .replace(">", "&gt;")
+    val title = "${AuthorBrand.APP_TITLE} — ${payload.station.icao} (${payload.station.city})"
+      .replace("&", "&amp;")
+      .replace("<", "&lt;")
+      .replace(">", "&gt;")
+    return """
+      <!DOCTYPE html>
+      <html lang="ru">
+      <head>
+        <meta charset="UTF-8" />
+        <title>$title</title>
+        <style>
+          body { font-family: 'Segoe UI', Arial, sans-serif; margin: 24px; background: #0f172a; color: #e2e8f0; }
+          .card { max-width: 860px; margin: 0 auto; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 20px; }
+          h1 { margin-top: 0; font-size: 18px; color: #f59e0b; }
+          pre { white-space: pre-wrap; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; line-height: 1.45; color: #f8fafc; background: #0b1220; padding: 14px; border-radius: 6px; border: 1px solid #334155; }
+          @media print {
+            body { background: #ffffff; color: #0f172a; margin: 12px; }
+            .card { background: #ffffff; border: none; padding: 0; }
+            h1 { color: #1e293b; }
+            pre { background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>$title</h1>
+          <pre>$escapedSummary</pre>
+        </div>
+      </body>
+      </html>
+    """.trimIndent()
   }
 }

@@ -471,7 +471,7 @@ object AndroidWeatherReportExporter {
       textSize = 8.5f
     }
     canvas.drawText(
-      "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · ${AuthorBrand.COPYRIGHT_LINE}",
+      "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION}",
       MARGIN_X,
       PAGE_HEIGHT - 16f,
       footerPaint,

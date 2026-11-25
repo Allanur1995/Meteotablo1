@@ -45,6 +45,7 @@ import com.example.model.WeatherAlertSeverity
 import com.example.model.WindSpeedUnit
 import com.example.ui.components.AirportSearchBar
 import com.example.ui.components.CenterWeatherPanel
+import com.example.ui.components.D3SavedAirportTrendsDashboard
 import com.example.ui.components.DualRunwayWindRosePanel
 import com.example.ui.components.ExportWeatherDialog
 import com.example.ui.components.LogViewerDialog
@@ -105,6 +106,13 @@ fun MeteoTabloScreen(
     onRefreshMapWeather = viewModel::refreshMapWeather,
     onRefreshMapStation = viewModel::fetchStationWeatherForMap,
     onLoad24hHistory = viewModel::load24hHistory,
+    onSelectD3TrendAirport = { icao -> viewModel.selectD3TrendAirport(icao) },
+    onLoad24hHistoryForIcao = { icao -> viewModel.load24hHistoryForIcao(icao, force = true) },
+    onDetectGpsLocation = viewModel::detectLocationAndUpdateWeather,
+    onFetchByCoordinates = { lat, lon -> viewModel.fetchWeatherByCoordinates(lat, lon) },
+    onToggleVfrMonitoredAirport = viewModel::toggleVfrMonitoredAirport,
+    onSetVfrMonitorAllFavorites = viewModel::setVfrMonitorAllFavorites,
+    onCheckVfrNow = viewModel::checkVfrMinimumsNow,
     modifier = modifier,
   )
 }
@@ -144,6 +152,13 @@ fun MeteoTabloContent(
   onRefreshMapWeather: () -> Unit = {},
   onRefreshMapStation: (String) -> Unit = {},
   onLoad24hHistory: (Boolean) -> Unit = {},
+  onSelectD3TrendAirport: (String) -> Unit = {},
+  onLoad24hHistoryForIcao: (String) -> Unit = {},
+  onDetectGpsLocation: () -> Unit = {},
+  onFetchByCoordinates: (Double, Double) -> Unit = { _, _ -> },
+  onToggleVfrMonitoredAirport: (String) -> Unit = {},
+  onSetVfrMonitorAllFavorites: (Boolean) -> Unit = {},
+  onCheckVfrNow: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -272,6 +287,9 @@ fun MeteoTabloContent(
         onMarkAllRead = onMarkAllAlertsRead,
         onClearAlerts = onClearAlerts,
         onDismiss = { showAlertsDialog = false },
+        onToggleVfrMonitoredAirport = onToggleVfrMonitoredAirport,
+        onSetVfrMonitorAllFavorites = onSetVfrMonitorAllFavorites,
+        onCheckVfrNow = onCheckVfrNow,
       )
     }
   } else if (showMetarTable) {
@@ -448,6 +466,10 @@ fun MeteoTabloContent(
           isLoading = uiState.isLoading,
           onSelectStation = onSelectStation,
           compactMode = isCompactHeight,
+          isDetectingLocation = uiState.isDetectingLocation,
+          detectedLocationSummary = uiState.detectedLocationSummary,
+          onDetectGpsLocation = onDetectGpsLocation,
+          onFetchByCoordinates = onFetchByCoordinates,
         )
 
         MyAirportsBar(
@@ -582,6 +604,7 @@ fun MeteoTabloContent(
                 localClock = uiState.liveLocalClock,
                 pressureUnit = uiState.pressureUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                station = uiState.station,
                 windTrend = uiState.windTrend,
                 windUnit = uiState.windUnit,
                 compactMode = isCompactHeight,
@@ -642,6 +665,7 @@ fun MeteoTabloContent(
               localClock = uiState.liveLocalClock,
               pressureUnit = uiState.pressureUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              station = uiState.station,
               windTrend = uiState.windTrend,
               windUnit = uiState.windUnit,
             )
@@ -676,6 +700,23 @@ fun MeteoTabloContent(
             compactMode = isCompactHeight,
           )
         }
+
+        // D3.js 24h Wind Speed & Barometric Pressure Dashboard for Saved Airports
+        D3SavedAirportTrendsDashboard(
+          currentStation = uiState.station,
+          currentWeather = uiState.weather,
+          favoriteIcaos = uiState.favoriteIcaos,
+          selectedD3Icao = uiState.selectedD3TrendIcao,
+          weatherHistoryByIcao = uiState.weatherHistoryByIcaoMap,
+          mapWeatherByIcao = uiState.mapWeatherByIcao,
+          windUnit = uiState.windUnit,
+          pressureUnit = uiState.pressureUnit,
+          isNightMode = uiState.isNightMode,
+          loadingHistoryIcao = uiState.loadingHistoryIcao,
+          onSelectD3Airport = onSelectD3TrendAirport,
+          onRefreshD3AirportHistory = onLoad24hHistoryForIcao,
+          compactMode = isCompactHeight,
+        )
       }
     }
   }
@@ -724,6 +765,9 @@ fun MeteoTabloContent(
       onMarkAllRead = onMarkAllAlertsRead,
       onClearAlerts = onClearAlerts,
       onDismiss = { showAlertsDialog = false },
+      onToggleVfrMonitoredAirport = onToggleVfrMonitoredAirport,
+      onSetVfrMonitorAllFavorites = onSetVfrMonitorAllFavorites,
+      onCheckVfrNow = onCheckVfrNow,
     )
   }
   }

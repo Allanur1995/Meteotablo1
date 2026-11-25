@@ -23,7 +23,6 @@ import kotlin.math.sin
 class DesktopSplashPanel(
   val appTitle: String = AuthorBrand.APP_TITLE,
   val subtitle: String = AuthorBrand.SUBTITLE,
-  val authorCredit: String = AuthorBrand.COPYRIGHT_LINE,
 ) : JPanel() {
 
   var progress: Float = 0.2f
@@ -89,13 +88,6 @@ class DesktopSplashPanel(
       val subW = fmSub.stringWidth(subtitle)
       g2.color = Color(0x9F, 0xB3, 0xC8)
       g2.drawString(subtitle, (cx - subW / 2f).toInt(), titleY + 32)
-
-      // Compiled author copyright line
-      g2.font = Font(Font.SANS_SERIF, Font.PLAIN, 11)
-      val fmAuthor = g2.fontMetrics
-      val authorW = fmAuthor.stringWidth(authorCredit)
-      g2.color = Color(0x6C, 0x82, 0x9C)
-      g2.drawString(authorCredit, (cx - authorW / 2f).toInt(), titleY + 52)
 
       // Progress track & indicator
       val barW = 240f

@@ -99,11 +99,7 @@ class DesktopServerConfigStorage(
     val loadedUrl = props.getProperty(KEY_SERVER_URL, ServerConfig.DEFAULT_SERVER_URL)
       .trim()
       .ifBlank { ServerConfig.DEFAULT_SERVER_URL }
-    val migratedUrl = if (loadedUrl == ServerConfig.LEGACY_ROOT_URL) {
-      ServerConfig.DEFAULT_SERVER_URL
-    } else {
-      loadedUrl
-    }
+    val migratedUrl = ServerConfig.migrateLegacyUrl(loadedUrl)
     return ServerConfig(
       url = migratedUrl,
       username = props.getProperty(KEY_USERNAME, ServerConfig.DEFAULT_USERNAME).orEmpty(),
@@ -227,4 +223,73 @@ class DesktopWindHistoryStorage(
     const val KEY_WIND_HISTORY = "wind_history_by_icao_json"
   }
 }
+
+class DesktopWeatherHistoryStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.WeatherHistoryStorage {
+
+  override fun loadAll(): Map<String, List<com.example.model.WeatherHistoryEntry>> {
+    val props = loadProps(configFile)
+    return com.example.data.WeatherHistorySerializer.fromJson(props.getProperty(KEY_WEATHER_HISTORY, null))
+  }
+
+  override fun saveAll(historyByIcao: Map<String, List<com.example.model.WeatherHistoryEntry>>) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_WEATHER_HISTORY, com.example.data.WeatherHistorySerializer.toJson(historyByIcao))
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_WEATHER_HISTORY = "weather_history_24h_by_icao_json"
+  }
+}
+
+class DesktopUnitPreferencesStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.UnitPreferencesStorage {
+
+  override fun loadPreferences(): com.example.data.UnitPreferences {
+    val props = loadProps(configFile)
+    val windUnit = props.getProperty(KEY_WIND_UNIT, null)?.let { name ->
+      com.example.model.WindSpeedUnit.entries.firstOrNull { it.name == name }
+    } ?: com.example.model.WindSpeedUnit.KT
+    val pressureUnit = props.getProperty(KEY_PRESSURE_UNIT, null)?.let { name ->
+      com.example.model.PressureUnit.entries.firstOrNull { it.name == name }
+    } ?: com.example.model.PressureUnit.HPA
+    val autoRefreshEnabled = props.getProperty(KEY_AUTO_REFRESH_ENABLED, "true").toBooleanStrictOrNull() ?: true
+    val intervalMin = com.example.data.AutoRefreshInterval.fromMinutes(
+      props.getProperty(KEY_AUTO_REFRESH_MINUTES, "15").toIntOrNull() ?: 15,
+    ).minutes
+    val isNightMode = props.getProperty(KEY_NIGHT_MODE, "false").toBooleanStrictOrNull() ?: false
+    return com.example.data.UnitPreferences(
+      windUnit = windUnit,
+      pressureUnit = pressureUnit,
+      autoRefreshEnabled = autoRefreshEnabled,
+      autoRefreshIntervalMinutes = intervalMin,
+      isNightMode = isNightMode,
+    )
+  }
+
+  override fun savePreferences(preferences: com.example.data.UnitPreferences) {
+    val props = loadProps(configFile)
+    props.setProperty(KEY_WIND_UNIT, preferences.windUnit.name)
+    props.setProperty(KEY_PRESSURE_UNIT, preferences.pressureUnit.name)
+    props.setProperty(KEY_AUTO_REFRESH_ENABLED, preferences.autoRefreshEnabled.toString())
+    props.setProperty(
+      KEY_AUTO_REFRESH_MINUTES,
+      com.example.data.AutoRefreshInterval.fromMinutes(preferences.autoRefreshIntervalMinutes).minutes.toString(),
+    )
+    props.setProperty(KEY_NIGHT_MODE, preferences.isNightMode.toString())
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_WIND_UNIT = "pref_wind_unit"
+    const val KEY_PRESSURE_UNIT = "pref_pressure_unit"
+    const val KEY_AUTO_REFRESH_ENABLED = "pref_auto_refresh_enabled"
+    const val KEY_AUTO_REFRESH_MINUTES = "pref_auto_refresh_minutes"
+    const val KEY_NIGHT_MODE = "pref_night_mode"
+  }
+}
+
 

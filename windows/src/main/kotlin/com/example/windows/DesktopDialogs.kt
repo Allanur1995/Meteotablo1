@@ -1,16 +1,23 @@
 package com.example.windows
 
 import com.example.data.AirportCatalog
+import com.example.data.AutoRefreshInterval
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
+import com.example.domain.DecodedTokenSeverity
+import com.example.domain.MetarTafDecoder
 import com.example.domain.UnitConverter
+import com.example.domain.WeatherExportPayload
+import com.example.domain.WeatherReportFormatter
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
+import com.example.model.UnitSystem
 import com.example.model.WindSpeedUnit
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
@@ -21,6 +28,8 @@ import java.awt.GridLayout
 import java.awt.Insets
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.io.File
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import javax.swing.BorderFactory
 import javax.swing.Box
@@ -29,7 +38,9 @@ import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JDialog
+import javax.swing.JFileChooser
 import javax.swing.JLabel
+import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JPasswordField
 import javax.swing.JScrollPane
@@ -38,7 +49,11 @@ import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.SwingConstants
+import javax.swing.filechooser.FileNameExtensionFilter
+import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 object DesktopDialogs {
 
@@ -49,14 +64,14 @@ object DesktopDialogs {
   ) {
     val state = controller.state
     val palette = state.palette
-    val dialog = JDialog(owner, "Станция, METAR и сервер", true)
+    val dialog = JDialog(owner, "Станция, METAR, Сервер и Автообновление", true)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    dialog.setSize(680, 520)
+    dialog.setSize(720, 560)
     dialog.setLocationRelativeTo(owner)
 
     val tabs = JTabbedPane()
 
-    // Tab 1: Stations + Favorites
+    // Tab 1: Stations + Favorites + Coordinates
     val stationPanel = JPanel(BorderLayout(8, 8)).apply {
       border = BorderFactory.createEmptyBorder(10, 10, 10, 10)
       background = palette.panelSurface
@@ -86,6 +101,34 @@ object DesktopDialogs {
       add(icaoField)
       add(applyIcaoBtn)
       add(addFavBtn)
+    }
+
+    val coordRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4)).apply {
+      background = palette.panelSurface
+      val latField = JTextField(String.format(Locale.US, "%.4f", state.station.latitude), 9)
+      val lonField = JTextField(String.format(Locale.US, "%.4f", state.station.longitude), 9)
+      val fetchCoordBtn = JButton("Загрузить по координатам").apply {
+        addActionListener {
+          val lat = latField.text.trim().replace(',', '.').toDoubleOrNull()
+          val lon = lonField.text.trim().replace(',', '.').toDoubleOrNull()
+          if (lat == null || lon == null || lat !in -90.0..90.0 || lon !in -180.0..180.0) {
+            JOptionPane.showMessageDialog(
+              dialog,
+              "Введите корректные координаты: широта -90..90, долгота -180..180",
+              "Ошибка координат",
+              JOptionPane.WARNING_MESSAGE,
+            )
+          } else {
+            controller.fetchWeatherByCoordinates(lat, lon)
+            dialog.dispose()
+          }
+        }
+      }
+      add(JLabel("Широта:"))
+      add(latField)
+      add(JLabel("Долгота:"))
+      add(lonField)
+      add(fetchCoordBtn)
     }
 
     val presetsPanel = JPanel(GridLayout(0, 2, 6, 6)).apply {
@@ -153,6 +196,7 @@ object DesktopDialogs {
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       background = palette.panelSurface
       add(customIcaoRow)
+      add(coordRow)
       add(savePresetRow)
       if (state.savedPresets.isNotEmpty()) {
         add(presetsListPanel)
@@ -161,7 +205,7 @@ object DesktopDialogs {
 
     stationPanel.add(northSection, BorderLayout.NORTH)
     stationPanel.add(JScrollPane(presetsPanel), BorderLayout.CENTER)
-    tabs.addTab("Станции", stationPanel)
+    tabs.addTab("Станции / Коорд.", stationPanel)
 
     // Tab 2: Manual METAR / TAF
     val metarPanel = JPanel(BorderLayout(8, 8)).apply {
@@ -200,7 +244,7 @@ object DesktopDialogs {
     )
     tabs.addTab("METAR / TAF", metarPanel)
 
-    // Tab 3: Custom Server & Internet Sites Config
+    // Tab 3: Custom Server, Auto-Refresh & Internet Sites Config
     val serverPanel = JPanel(GridBagLayout()).apply {
       border = BorderFactory.createEmptyBorder(12, 12, 12, 12)
       background = palette.panelSurface
@@ -221,6 +265,15 @@ object DesktopDialogs {
     val vatsimCheck = JCheckBox("VATSIM (metar.vatsim.net)", cfg.useVatsimMetar).apply {
       isOpaque = false
     }
+    val autoRefreshCheck = JCheckBox("Автообновление табло включено", state.autoRefreshEnabled).apply {
+      isOpaque = false
+    }
+    val intervalCombo = JComboBox(AutoRefreshInterval.entries.map { it.label }.toTypedArray()).apply {
+      selectedIndex = AutoRefreshInterval.entries.indexOf(
+        AutoRefreshInterval.fromMinutes(state.autoRefreshIntervalMinutes),
+      ).coerceAtLeast(0)
+    }
+
     val diagnosticArea = JTextArea(4, 42).apply {
       isEditable = false
       lineWrap = true
@@ -229,7 +282,7 @@ object DesktopDialogs {
       background = palette.fieldBackground
       foreground = palette.textSecondary
       border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
-      text = "Нажмите «Проверить IP-сервер (${state.station.icao})», чтобы проверить соединение, авторизацию и парсинг METAR."
+      text = "Поддерживается UMAS /cgi-bin/wdr (SATR/FTTR) для всех 7 аэропортов Туркменистана: UTAM, UTAK, UTAA, UTAN, UTAT, UTAV, UTAE."
     }
     val diagnosticScroll = JScrollPane(diagnosticArea).apply {
       preferredSize = Dimension(520, 82)
@@ -262,15 +315,27 @@ object DesktopDialogs {
     serverPanel.add(passField, gbc)
 
     gbc.gridx = 0; gbc.gridy = 4; gbc.weightx = 0.0
+    serverPanel.add(JLabel("Автообновление:"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    serverPanel.add(
+      JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+        isOpaque = false
+        add(autoRefreshCheck)
+        add(intervalCombo)
+      },
+      gbc,
+    )
+
+    gbc.gridx = 0; gbc.gridy = 5; gbc.weightx = 0.0
     serverPanel.add(JLabel("Интернет-сайты:"), gbc)
     gbc.gridx = 1; gbc.weightx = 1.0
     serverPanel.add(awcCheck, gbc)
-    gbc.gridx = 1; gbc.gridy = 5
-    serverPanel.add(tgftpCheck, gbc)
     gbc.gridx = 1; gbc.gridy = 6
+    serverPanel.add(tgftpCheck, gbc)
+    gbc.gridx = 1; gbc.gridy = 7
     serverPanel.add(vatsimCheck, gbc)
 
-    gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2; gbc.weightx = 1.0
+    gbc.gridx = 0; gbc.gridy = 8; gbc.gridwidth = 2; gbc.weightx = 1.0
     serverPanel.add(diagnosticScroll, gbc)
 
     val serverButtons = JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
@@ -315,6 +380,11 @@ object DesktopDialogs {
           val selectedMode = DataSourceMode.entries.getOrElse(modeCombo.selectedIndex) {
             DataSourceMode.AUTO_IP_FIRST
           }
+          val interval = AutoRefreshInterval.entries.getOrElse(intervalCombo.selectedIndex) {
+            AutoRefreshInterval.FIFTEEN_MIN
+          }
+          controller.setAutoRefreshEnabled(autoRefreshCheck.isSelected)
+          controller.setAutoRefreshInterval(interval.minutes)
           controller.updateServerConfig(
             ServerConfig(
               url = urlField.text,
@@ -336,10 +406,10 @@ object DesktopDialogs {
       add(resetBtn)
       add(saveBtn)
     }
-    gbc.gridx = 0; gbc.gridy = 8; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
+    gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
     serverPanel.add(serverButtons, gbc)
 
-    tabs.addTab("Сервер", serverPanel)
+    tabs.addTab("Сервер и Авто", serverPanel)
 
     // Tab 4: About / Author Attribution
     val aboutPanel = JPanel(BorderLayout(8, 8)).apply {
@@ -384,9 +454,9 @@ object DesktopDialogs {
     owner: Frame,
     controller: DesktopController,
   ) {
-    val dialog = JDialog(owner, "Таблица METAR и Роза ветров", false)
+    val dialog = JDialog(owner, "Таблица METAR, пороги тревоги и Роза ветров", false)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    dialog.setSize(940, 620)
+    dialog.setSize(980, 640)
     dialog.setLocationRelativeTo(owner)
 
     val root = JPanel(BorderLayout(8, 8)).apply {
@@ -408,7 +478,13 @@ object DesktopDialogs {
     val titleLabel = JLabel().apply { font = Font("Segoe UI", Font.BOLD, 15) }
     val windToggleBtn = JButton().apply { addActionListener { controller.toggleWindUnit() } }
     val pressureToggleBtn = JButton().apply { addActionListener { controller.togglePressureUnit() } }
-    val copyBtn = JButton("Копировать METAR").apply {
+    val decoderBtn = JButton("Декодер").apply {
+      addActionListener { showDecoderDialog(owner, controller) }
+    }
+    val thresholdsBtn = JButton("Пороги").apply {
+      addActionListener { showAlertsDialog(owner, controller) }
+    }
+    val copyBtn = JButton("Копировать").apply {
       addActionListener {
         val sel = StringSelection(controller.state.weather.rawMetar)
         Toolkit.getDefaultToolkit().systemClipboard.setContents(sel, null)
@@ -426,6 +502,8 @@ object DesktopDialogs {
       JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
         add(windToggleBtn)
         add(pressureToggleBtn)
+        add(decoderBtn)
+        add(thresholdsBtn)
         add(copyBtn)
         add(editBtn)
       },
@@ -436,8 +514,8 @@ object DesktopDialogs {
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       add(headerBar)
       add(JScrollPane(favoritesBar).apply {
-        preferredSize = Dimension(900, 44)
-        border = BorderFactory.createTitledBorder("Избранные аэропорты")
+        preferredSize = Dimension(920, 46)
+        border = BorderFactory.createTitledBorder("Мои аэропорты")
       })
     }
 
@@ -445,21 +523,47 @@ object DesktopDialogs {
     val tableModel = object : DefaultTableModel(arrayOf("Параметр", "Значение", "Детали", "Код"), 0) {
       override fun isCellEditable(row: Int, column: Int): Boolean = false
     }
+    var windBreached = false
+    var visBreached = false
+
     val table = JTable(tableModel).apply {
-      rowHeight = 26
-      font = Font("Segoe UI", Font.PLAIN, 12)
+      rowHeight = 28
+      font = Font("Segoe UI", Font.PLAIN, 12.5f.toInt())
       tableHeader.font = Font("Segoe UI", Font.BOLD, 12)
-      columnModel.getColumn(0).preferredWidth = 140
-      columnModel.getColumn(1).preferredWidth = 150
-      columnModel.getColumn(2).preferredWidth = 210
+      columnModel.getColumn(0).preferredWidth = 150
+      columnModel.getColumn(1).preferredWidth = 170
+      columnModel.getColumn(2).preferredWidth = 220
       columnModel.getColumn(3).preferredWidth = 90
+      setDefaultRenderer(
+        Any::class.java,
+        object : DefaultTableCellRenderer() {
+          override fun getTableCellRendererComponent(
+            t: JTable,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int,
+          ): Component {
+            val comp = super.getTableCellRendererComponent(t, value, isSelected, hasFocus, row, column)
+            val pal = controller.state.palette
+            val param = t.getValueAt(row, 0)?.toString().orEmpty()
+            val isRowAlert = (param == "Ветер" && windBreached) || (param == "Видимость" && visBreached)
+            if (!isSelected) {
+              background = if (isRowAlert) Color(217, 119, 6, 48) else pal.fieldBackground
+              foreground = if (isRowAlert) pal.tailwindNegative else pal.textPrimary
+            }
+            return comp
+          }
+        },
+      )
     }
 
     val rawArea = JTextArea(4, 60).apply {
       isEditable = false
       lineWrap = true
       wrapStyleWord = true
-      font = Font("Consolas", Font.PLAIN, 12)
+      font = Font("Consolas", Font.BOLD, 13)
     }
 
     val centerSplit = JPanel(BorderLayout(10, 8)).apply {
@@ -483,6 +587,16 @@ object DesktopDialogs {
       titleLabel.text = "Таблица METAR · ${st.station.icao} (${st.station.name})"
       windToggleBtn.text = "Ветер: ${st.windUnit.label}"
       pressureToggleBtn.text = "Давление: ${st.pressureUnit.label}"
+
+      val w = st.weather
+      val windPeakKt = maxOf(w.wind.speedKt, w.wind.gustKt ?: w.wind.speedKt)
+      val visMeters = when {
+        w.isCavok -> 10000
+        else -> w.visibilityMeters
+      }
+      windBreached = st.alertConfig.tableAlertsEnabled && windPeakKt >= st.alertConfig.tableWindAlertKt
+      visBreached = st.alertConfig.tableAlertsEnabled &&
+        visMeters != null && visMeters <= st.alertConfig.tableVisibilityAlertMeters
 
       favoritesBar.removeAll()
       st.favoriteIcaos.forEach { icao ->
@@ -512,6 +626,9 @@ object DesktopDialogs {
       buildTableRows(st.station, st.weather, st.windUnit, st.pressureUnit).forEach { row ->
         tableModel.addRow(row)
       }
+      table.repaint()
+      rawArea.background = pal.fieldBackground
+      rawArea.foreground = pal.textPrimary
       rawArea.text = "${st.weather.rawMetar}\n${st.weather.rawTaf}"
     }
 
@@ -523,6 +640,418 @@ object DesktopDialogs {
     })
 
     dialog.contentPane = root
+    dialog.isVisible = true
+  }
+
+  fun showDecoderDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val st = controller.state
+    val pal = st.palette
+    val dialog = JDialog(owner, "Открытый декодер METAR / TAF · ${st.station.icao}", false)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(820, 600)
+    dialog.setLocationRelativeTo(owner)
+
+    val metarRes = MetarTafDecoder.decodeMetar(st.weather.rawMetar, st.station)
+    val tafRes = MetarTafDecoder.decodeTaf(st.weather.rawTaf, st.station)
+
+    val tabs = JTabbedPane()
+
+    fun buildDecodedPanel(res: com.example.domain.DecodedMessageResult): JPanel {
+      val p = JPanel(BorderLayout(8, 8)).apply {
+        border = BorderFactory.createEmptyBorder(10, 10, 10, 10)
+        background = pal.panelSurface
+      }
+      val summaryArea = JTextArea("${res.rawText}\n\nСводка: ${res.plainSummaryParagraph}").apply {
+        isEditable = false
+        lineWrap = true
+        wrapStyleWord = true
+        font = Font("Consolas", Font.BOLD, 12.5f.toInt())
+        background = pal.fieldBackground
+        foreground = pal.textPrimary
+        border = BorderFactory.createCompoundBorder(
+          BorderFactory.createLineBorder(pal.border, 1),
+          BorderFactory.createEmptyBorder(8, 8, 8, 8),
+        )
+      }
+      val model = object : DefaultTableModel(arrayOf("Код", "Категория", "Значение", "Подробная расшифровка"), 0) {
+        override fun isCellEditable(row: Int, column: Int): Boolean = false
+      }
+      res.items.forEach { item ->
+        model.addRow(arrayOf(item.rawCode, item.category, item.shortValue, item.fullExplanation))
+      }
+      val table = JTable(model).apply {
+        rowHeight = 28
+        font = Font("Segoe UI", Font.PLAIN, 12)
+        tableHeader.font = Font("Segoe UI", Font.BOLD, 12)
+        columnModel.getColumn(0).preferredWidth = 110
+        columnModel.getColumn(1).preferredWidth = 115
+        columnModel.getColumn(2).preferredWidth = 135
+        columnModel.getColumn(3).preferredWidth = 390
+        setDefaultRenderer(
+          Any::class.java,
+          object : DefaultTableCellRenderer() {
+            override fun getTableCellRendererComponent(
+              t: JTable,
+              value: Any?,
+              isSelected: Boolean,
+              hasFocus: Boolean,
+              row: Int,
+              column: Int,
+            ): Component {
+              val c = super.getTableCellRendererComponent(t, value, isSelected, hasFocus, row, column)
+              val sev = res.items.getOrNull(row)?.severity ?: DecodedTokenSeverity.NORMAL
+              if (!isSelected) {
+                background = pal.fieldBackground
+                foreground = when (sev) {
+                  DecodedTokenSeverity.HAZARD -> pal.tailwindNegative
+                  DecodedTokenSeverity.CAUTION -> pal.metarAmber
+                  DecodedTokenSeverity.NORMAL -> pal.textPrimary
+                }
+              }
+              return c
+            }
+          },
+        )
+      }
+      p.add(JScrollPane(summaryArea).apply { preferredSize = Dimension(780, 96) }, BorderLayout.NORTH)
+      p.add(JScrollPane(table), BorderLayout.CENTER)
+      return p
+    }
+
+    tabs.addTab("METAR (${metarRes.items.size} групп)", buildDecodedPanel(metarRes))
+    tabs.addTab("TAF (${tafRes.items.size} групп)", buildDecodedPanel(tafRes))
+
+    val copyFullBtn = JButton("Копировать расшифровку").apply {
+      addActionListener {
+        val text = MetarTafDecoder.formatPlainTextReport(st.weather.rawMetar, st.weather.rawTaf, st.station)
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
+      }
+    }
+
+    dialog.contentPane.layout = BorderLayout(8, 8)
+    dialog.contentPane.add(tabs, BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+        add(copyFullBtn)
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
+    dialog.isVisible = true
+  }
+
+  fun showPressureConverterDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val st = controller.state
+    val pal = st.palette
+    val dialog = JDialog(owner, "Конвертер давления QNH / QFE (hPa ↔ inHg ↔ mmHg)", true)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(560, 400)
+    dialog.setLocationRelativeTo(owner)
+
+    val initialQnh = st.weather.qnhHpa?.toDouble() ?: 1013.25
+    val qnhHpaField = JTextField(String.format(Locale.US, "%.2f", initialQnh), 10)
+    val qnhInHgField = JTextField(String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(initialQnh)), 10)
+    val elevField = JTextField(st.station.elevationMeters.toString(), 8)
+    val qfeResultLabel = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Consolas", Font.BOLD, 14)
+      foreground = pal.accentCyan
+    }
+    val isaDiffLabel = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Consolas", Font.PLAIN, 12)
+      foreground = pal.textSecondary
+    }
+    var updating = false
+
+    fun updateDerived(qnhHpa: Double) {
+      val elevM = elevField.text.trim().toIntOrNull() ?: st.station.elevationMeters
+      val qfeHpa = UnitConverter.computeQfeFromQnhHpa(qnhHpa, elevM)
+      val qfeInHg = UnitConverter.convertHpaToInHg(qfeHpa)
+      val qfeMm = UnitConverter.convertHpaToMmHg(qfeHpa.roundToInt())
+      val qnhMm = UnitConverter.convertHpaToMmHg(qnhHpa.roundToInt())
+      qfeResultLabel.text = String.format(
+        Locale.US,
+        "QFE (%d м): %.1f hPa · %.2f inHg · %d мм рт.ст.",
+        elevM,
+        qfeHpa,
+        qfeInHg,
+        qfeMm,
+      )
+      val deltaIsa = qnhHpa - 1013.25
+      val sign = if (deltaIsa >= 0) "+" else ""
+      isaDiffLabel.text = String.format(
+        Locale.US,
+        "QNH: %d мм рт.ст. · Отклонение от ISA (1013.25): %s%.2f hPa",
+        qnhMm,
+        sign,
+        deltaIsa,
+      )
+    }
+
+    qnhHpaField.addActionListener {
+      if (updating) return@addActionListener
+      val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return@addActionListener
+      updating = true
+      qnhInHgField.text = String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(hpa))
+      updateDerived(hpa)
+      updating = false
+    }
+    qnhInHgField.addActionListener {
+      if (updating) return@addActionListener
+      val inhg = qnhInHgField.text.trim().replace(',', '.').toDoubleOrNull() ?: return@addActionListener
+      val hpa = UnitConverter.convertInHgToHpa(inhg)
+      updating = true
+      qnhHpaField.text = String.format(Locale.US, "%.2f", hpa)
+      updateDerived(hpa)
+      updating = false
+    }
+
+    val panel = JPanel(GridBagLayout()).apply {
+      border = BorderFactory.createEmptyBorder(14, 14, 14, 14)
+      background = pal.panelSurface
+    }
+    val gbc = GridBagConstraints().apply {
+      insets = Insets(6, 6, 6, 6)
+      anchor = GridBagConstraints.WEST
+      fill = GridBagConstraints.HORIZONTAL
+    }
+    gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+    panel.add(JLabel("QNH (hPa / гПа):"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(qnhHpaField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    panel.add(JButton("→ inHg").apply {
+      addActionListener { qnhHpaField.postActionEvent() }
+    }, gbc)
+
+    gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+    panel.add(JLabel("Altimeter (inHg):"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(qnhInHgField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    panel.add(JButton("→ hPa").apply {
+      addActionListener { qnhInHgField.postActionEvent() }
+    }, gbc)
+
+    gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
+    panel.add(JLabel("Превышение (м):"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(elevField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    panel.add(JButton("Пересчёт QFE").apply {
+      addActionListener { qnhHpaField.postActionEvent() }
+    }, gbc)
+
+    gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3
+    panel.add(qfeResultLabel, gbc)
+    gbc.gridy = 4
+    panel.add(isaDiffLabel, gbc)
+
+    gbc.gridy = 5
+    panel.add(
+      JPanel(FlowLayout(FlowLayout.LEFT, 8, 2)).apply {
+        isOpaque = false
+        add(JLabel("Единицы на табло:"))
+        add(JButton("hPa (гПа)").apply {
+          addActionListener { controller.setPressureUnit(PressureUnit.HPA) }
+        })
+        add(JButton("inHg (дюймы)").apply {
+          addActionListener { controller.setPressureUnit(PressureUnit.INHG) }
+        })
+      },
+      gbc,
+    )
+
+    updateDerived(initialQnh)
+
+    dialog.contentPane.layout = BorderLayout()
+    dialog.contentPane.add(panel, BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
+    dialog.isVisible = true
+  }
+
+  fun showDualWindRoseDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val st = controller.state
+    val pal = st.palette
+    val dialog = JDialog(owner, "Двойная Роза Ветров ВПП · ${st.station.icao}", false)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(860, 560)
+    dialog.setLocationRelativeTo(owner)
+
+    val pairSelector = JComboBox(st.station.runways.map { "${it.primaryDesignator} / ${it.reciprocalDesignator}" }.toTypedArray()).apply {
+      selectedIndex = st.selectedRunwayPairIndex.coerceIn(0, st.station.runways.lastIndex)
+    }
+    val leftRose = RunwayWindRosePanel { controller.toggleWindUnit() }
+    val rightRose = RunwayWindRosePanel { controller.toggleWindUnit() }
+    val summaryLabel = JLabel("", SwingConstants.CENTER).apply {
+      font = Font("Consolas", Font.BOLD, 13)
+    }
+
+    val centerGrid = JPanel(GridLayout(1, 2, 12, 8)).apply {
+      border = BorderFactory.createEmptyBorder(8, 12, 8, 12)
+      add(leftRose)
+      add(rightRose)
+    }
+
+    fun refreshRoses(stateSnap: DesktopUiState) {
+      val idx = pairSelector.selectedIndex.coerceIn(0, stateSnap.station.runways.lastIndex)
+      val pair = stateSnap.station.runways[idx]
+      val primary = com.example.domain.AviationWeatherParser.calculateRunwayComponents(
+        designator = pair.primaryDesignator,
+        runwayHeadingDeg = pair.primaryHeadingDeg,
+        wind = stateSnap.weather.wind,
+        frictionCoeff = stateSnap.weather.frictionCoeff,
+        rvrMeters = stateSnap.weather.rvrPrimaryMeters,
+      )
+      val reciprocal = com.example.domain.AviationWeatherParser.calculateRunwayComponents(
+        designator = pair.reciprocalDesignator,
+        runwayHeadingDeg = pair.reciprocalHeadingDeg,
+        wind = stateSnap.weather.wind,
+        frictionCoeff = stateSnap.weather.frictionCoeff,
+        rvrMeters = stateSnap.weather.rvrReciprocalMeters,
+      )
+      leftRose.updateData(primary, stateSnap.weather.wind, stateSnap.windUnit, pal)
+      rightRose.updateData(reciprocal, stateSnap.weather.wind, stateSnap.windUnit, pal)
+
+      val h1 = UnitConverter.convertWindFromKnots(primary.headwindKt, stateSnap.windUnit)
+      val c1 = UnitConverter.convertWindFromKnots(primary.crosswindKt, stateSnap.windUnit)
+      val h2 = UnitConverter.convertWindFromKnots(reciprocal.headwindKt, stateSnap.windUnit)
+      val c2 = UnitConverter.convertWindFromKnots(reciprocal.crosswindKt, stateSnap.windUnit)
+      summaryLabel.text = String.format(
+        Locale.US,
+        "ВПП %s: Встр %.1f / Бок %.1f %s   |   ВПП %s: Встр %.1f / Бок %.1f %s",
+        primary.designator, h1, c1, stateSnap.windUnit.label,
+        reciprocal.designator, h2, c2, stateSnap.windUnit.label,
+      )
+    }
+
+    pairSelector.addActionListener {
+      controller.selectRunwayPair(pairSelector.selectedIndex)
+      refreshRoses(controller.state)
+    }
+    refreshRoses(st)
+
+    val topBar = JPanel(FlowLayout(FlowLayout.LEFT, 10, 6)).apply {
+      add(JLabel("Полоса ВПП:"))
+      add(pairSelector)
+      add(JButton("Сменить ед. ветра").apply {
+        addActionListener {
+          controller.toggleWindUnit()
+          refreshRoses(controller.state)
+        }
+      })
+    }
+
+    dialog.contentPane.layout = BorderLayout(6, 6)
+    dialog.contentPane.add(topBar, BorderLayout.NORTH)
+    dialog.contentPane.add(centerGrid, BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(BorderLayout(6, 6)).apply {
+        border = BorderFactory.createEmptyBorder(4, 10, 8, 10)
+        add(summaryLabel, BorderLayout.CENTER)
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } }, BorderLayout.EAST)
+      },
+      BorderLayout.SOUTH,
+    )
+    dialog.isVisible = true
+  }
+
+  fun showExportDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val st = controller.state
+    val pal = st.palette
+    val payload = WeatherExportPayload(
+      station = st.station,
+      weather = st.weather,
+      primaryRunwayCalc = st.primaryRunwayCalc,
+      reciprocalRunwayCalc = st.reciprocalRunwayCalc,
+      windUnit = st.windUnit,
+      pressureUnit = st.pressureUnit,
+      windTrend = st.windTrend,
+      qnhTrend24h = st.qnhTrend24h,
+      weatherHistory24h = st.weatherHistory24h,
+    )
+    val summaryText = WeatherReportFormatter.buildTextSummary(payload)
+    val baseName = WeatherReportFormatter.suggestedFileBaseName(st.station, st.weather)
+
+    val dialog = JDialog(owner, "Экспорт метеосводки и трендов · ${st.station.icao}", true)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(720, 520)
+    dialog.setLocationRelativeTo(owner)
+
+    val previewArea = JTextArea(summaryText).apply {
+      isEditable = false
+      font = Font("Consolas", Font.PLAIN, 12)
+      background = pal.fieldBackground
+      foreground = pal.textPrimary
+      border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
+    }
+
+    val saveTxtBtn = JButton("Сохранить .TXT").apply {
+      addActionListener {
+        val chooser = JFileChooser().apply {
+          selectedFile = File("$baseName.txt")
+          fileFilter = FileNameExtensionFilter("Текстовый файл (*.txt)", "txt")
+        }
+        if (chooser.showSaveDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+          val file = chooser.selectedFile.let {
+            if (it.name.endsWith(".txt", ignoreCase = true)) it else File("${it.absolutePath}.txt")
+          }
+          file.writeText(summaryText, StandardCharsets.UTF_8)
+          JOptionPane.showMessageDialog(dialog, "Сводка сохранена:\n${file.absolutePath}")
+        }
+      }
+    }
+
+    val saveHtmlBtn = JButton("Сохранить отчёт .HTML").apply {
+      addActionListener {
+        val chooser = JFileChooser().apply {
+          selectedFile = File("$baseName.html")
+          fileFilter = FileNameExtensionFilter("HTML отчёт для печати / PDF (*.html)", "html")
+        }
+        if (chooser.showSaveDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+          val file = chooser.selectedFile.let {
+            if (it.name.endsWith(".html", ignoreCase = true)) it else File("${it.absolutePath}.html")
+          }
+          val html = WeatherReportFormatter.buildPrintableHtml(payload)
+          file.writeText(html, StandardCharsets.UTF_8)
+          JOptionPane.showMessageDialog(dialog, "HTML-отчёт сохранён:\n${file.absolutePath}")
+        }
+      }
+    }
+
+    val copyBtn = JButton("Копировать текст").apply {
+      addActionListener {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(summaryText), null)
+      }
+    }
+
+    dialog.contentPane.layout = BorderLayout(8, 8)
+    dialog.contentPane.add(JScrollPane(previewArea), BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT, 8, 8)).apply {
+        add(copyBtn)
+        add(saveTxtBtn)
+        add(saveHtmlBtn)
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
     dialog.isVisible = true
   }
 
@@ -560,14 +1089,14 @@ object DesktopDialogs {
     owner: Frame,
     controller: DesktopController,
   ) {
-    val dialog = JDialog(owner, "Метеооповещения избранных аэродромов", true)
+    val dialog = JDialog(owner, "Оповещения, пороги таблицы и минимумы VFR", true)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    dialog.setSize(680, 480)
+    dialog.setSize(740, 560)
     dialog.setLocationRelativeTo(owner)
 
     val state = controller.state
     val cfg = state.alertConfig
-    val enabledCheck = JCheckBox("Включить оповещения об изменениях погоды (${state.favoriteIcaos.joinToString(", ")})", cfg.enabled)
+    val enabledCheck = JCheckBox("Включить оповещения (${state.favoriteIcaos.joinToString(", ")})", cfg.enabled)
     val windCombo = JComboBox(arrayOf("±5 kt", "±8 kt", "±12 kt")).apply {
       selectedIndex = when (cfg.windChangeThresholdKt) {
         5 -> 0
@@ -575,13 +1104,54 @@ object DesktopDialogs {
         else -> 1
       }
     }
-    val visCombo = JComboBox(arrayOf("< 1500 м / ВНГО 500 ft", "< 3000 м / ВНГО 1000 ft", "< 5000 м / ВНГО 1500 ft")).apply {
+    val visCombo = JComboBox(arrayOf("< 1500 м / 500 ft", "< 3000 м / 1000 ft", "< 5000 м / 1500 ft")).apply {
       selectedIndex = when (cfg.visibilityThresholdMeters) {
         1500 -> 0
         5000 -> 2
         else -> 1
       }
     }
+
+    val tableAlertCheck = JCheckBox("Подсветка в таблице METAR", cfg.tableAlertsEnabled)
+    val tableWindCombo = JComboBox(arrayOf("≥ 15 kt", "≥ 20 kt", "≥ 25 kt", "≥ 30 kt")).apply {
+      selectedIndex = when (cfg.tableWindAlertKt) {
+        15 -> 0
+        20 -> 1
+        30 -> 3
+        else -> 2
+      }
+    }
+    val tableVisCombo = JComboBox(arrayOf("≤ 1500 м", "≤ 3000 м", "≤ 5000 м")).apply {
+      selectedIndex = when (cfg.tableVisibilityAlertMeters) {
+        1500 -> 0
+        5000 -> 2
+        else -> 1
+      }
+    }
+
+    val vfrCheck = JCheckBox("Оповещения VFR (ПВП минимумы)", cfg.vfrAlertsEnabled)
+    val vfrVisCombo = JComboBox(arrayOf("3000 м", "5000 м", "8000 м")).apply {
+      selectedIndex = when (cfg.vfrMinVisibilityMeters) {
+        3000 -> 0
+        8000 -> 2
+        else -> 1
+      }
+    }
+    val vfrCeilCombo = JComboBox(arrayOf("1000 ft", "1500 ft", "2500 ft")).apply {
+      selectedIndex = when (cfg.vfrMinCeilingFeet) {
+        1000 -> 0
+        2500 -> 2
+        else -> 1
+      }
+    }
+    val vfrWindCombo = JComboBox(arrayOf("15 kt", "20 kt", "25 kt")).apply {
+      selectedIndex = when (cfg.vfrMaxWindKt) {
+        15 -> 0
+        25 -> 2
+        else -> 1
+      }
+    }
+    val vfrAllCheck = JCheckBox("Все избранные аэропорты VFR", cfg.vfrMonitorAllFavorites)
 
     fun applyAlertPrefs() {
       val windKt = when (windCombo.selectedIndex) {
@@ -594,12 +1164,46 @@ object DesktopDialogs {
         2 -> 5000 to 450
         else -> 3000 to 300
       }
+      val tWind = when (tableWindCombo.selectedIndex) {
+        0 -> 15
+        1 -> 20
+        3 -> 30
+        else -> 25
+      }
+      val tVis = when (tableVisCombo.selectedIndex) {
+        0 -> 1500
+        2 -> 5000
+        else -> 3000
+      }
+      val vVis = when (vfrVisCombo.selectedIndex) {
+        0 -> 3000
+        2 -> 8000
+        else -> 5000
+      }
+      val vCeil = when (vfrCeilCombo.selectedIndex) {
+        0 -> 1000
+        2 -> 2500
+        else -> 1500
+      }
+      val vWind = when (vfrWindCombo.selectedIndex) {
+        0 -> 15
+        2 -> 25
+        else -> 20
+      }
       controller.updateAlertConfig(
-        cfg.copy(
+        controller.state.alertConfig.copy(
           enabled = enabledCheck.isSelected,
           windChangeThresholdKt = windKt,
           visibilityThresholdMeters = visM,
           ceilingThresholdMeters = ceilM,
+          tableAlertsEnabled = tableAlertCheck.isSelected,
+          tableWindAlertKt = tWind,
+          tableVisibilityAlertMeters = tVis,
+          vfrAlertsEnabled = vfrCheck.isSelected,
+          vfrMinVisibilityMeters = vVis,
+          vfrMinCeilingFeet = vCeil,
+          vfrMaxWindKt = vWind,
+          vfrMonitorAllFavorites = vfrAllCheck.isSelected,
         ),
       )
     }
@@ -607,18 +1211,45 @@ object DesktopDialogs {
     enabledCheck.addActionListener { applyAlertPrefs() }
     windCombo.addActionListener { applyAlertPrefs() }
     visCombo.addActionListener { applyAlertPrefs() }
+    tableAlertCheck.addActionListener { applyAlertPrefs() }
+    tableWindCombo.addActionListener { applyAlertPrefs() }
+    tableVisCombo.addActionListener { applyAlertPrefs() }
+    vfrCheck.addActionListener { applyAlertPrefs() }
+    vfrVisCombo.addActionListener { applyAlertPrefs() }
+    vfrCeilCombo.addActionListener { applyAlertPrefs() }
+    vfrWindCombo.addActionListener { applyAlertPrefs() }
+    vfrAllCheck.addActionListener { applyAlertPrefs() }
 
     val topPanel = JPanel().apply {
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
       add(enabledCheck)
-      val threshRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4)).apply {
-        add(JLabel("Сдвиг ветра:"))
-        add(windCombo)
-        add(JLabel("Порог видимости:"))
-        add(visCombo)
-      }
-      add(threshRow)
+      add(
+        JPanel(FlowLayout(FlowLayout.LEFT, 8, 3)).apply {
+          add(JLabel("Сдвиг ветра:"))
+          add(windCombo)
+          add(JLabel("Порог видимости:"))
+          add(visCombo)
+        },
+      )
+      add(
+        JPanel(FlowLayout(FlowLayout.LEFT, 8, 3)).apply {
+          add(tableAlertCheck)
+          add(JLabel("Ветер:"))
+          add(tableWindCombo)
+          add(JLabel("Вид.:"))
+          add(tableVisCombo)
+        },
+      )
+      add(
+        JPanel(FlowLayout(FlowLayout.LEFT, 8, 3)).apply {
+          add(vfrCheck)
+          add(vfrVisCombo)
+          add(vfrCeilCombo)
+          add(vfrWindCombo)
+          add(vfrAllCheck)
+        },
+      )
     }
 
     val listPanel = JPanel().apply {
@@ -626,7 +1257,7 @@ object DesktopDialogs {
       border = BorderFactory.createEmptyBorder(6, 10, 6, 10)
     }
     if (state.weatherAlerts.isEmpty()) {
-      listPanel.add(JLabel("Пока нет зафиксированных изменений погоды для избранных аэродромов."))
+      listPanel.add(JLabel("Пока нет зафиксированных изменений погоды или нарушений VFR."))
     } else {
       state.weatherAlerts.forEach { alert ->
         val card = JPanel(BorderLayout(6, 4)).apply {
@@ -662,9 +1293,9 @@ object DesktopDialogs {
 
     val footerRow = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 6)).apply {
       add(
-        JButton("Проверить избранные сейчас").apply {
+        JButton("Проверить VFR / Избранные").apply {
           addActionListener {
-            controller.checkFavoritesWeatherNow()
+            controller.checkVfrMinimumsNow()
             dialog.dispose()
           }
         },

@@ -29,13 +29,13 @@ class DesktopSmokeTest {
 
     val serverStorage = DesktopServerConfigStorage(tmpFile)
     val defCfg = serverStorage.loadConfig()
-    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", defCfg.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wdr", defCfg.url)
     assertEquals("meteo", defCfg.username)
     assertEquals("meteo", defCfg.password)
 
     serverStorage.saveConfig(
       ServerConfig(
-        url = "217.174.229.206:8181/cgi-bin/wlogin",
+        url = "217.174.229.206:8181/cgi-bin/wdr",
         username = "meteo",
         password = "meteo2",
         useCustomServer = true,
@@ -47,7 +47,7 @@ class DesktopSmokeTest {
       ),
     )
     val reloadedCfg = DesktopServerConfigStorage(tmpFile).loadConfig()
-    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", reloadedCfg.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wdr", reloadedCfg.url)
     assertEquals("meteo2", reloadedCfg.password)
     assertEquals(DataSourceMode.AUTO_INTERNET_FIRST, reloadedCfg.resolvedMode())
     assertFalse(reloadedCfg.useNoaaTgftp)
@@ -92,7 +92,6 @@ class DesktopSmokeTest {
   fun `desktop splash panel renders Meteotablo branding cleanly`() {
     val panel = DesktopSplashPanel()
     assertEquals("Meteotablo", panel.appTitle)
-    assertTrue(panel.authorCredit.contains("Allanur Saparow"))
     assertTrue(com.example.model.AuthorBrand.isExpectedBrand("Meteotablo"))
     assertFalse(com.example.model.AuthorBrand.isExpectedBrand("OtherApp"))
     panel.setSize(480, 340)
@@ -336,6 +335,89 @@ class DesktopSmokeTest {
       } finally {
         g2.dispose()
       }
+    } finally {
+      controller.shutdown()
+    }
+  }
+
+  @Test
+  fun `desktop controller supports metric-imperial units auto-refresh vfr alerts coordinates and 24h trends panel`() {
+    val controller = DesktopController(autoFetch = false)
+    try {
+      // 1. UnitSystem toggle (Metric <-> Imperial)
+      controller.applyUnitSystem(com.example.model.UnitSystem.METRIC)
+      assertEquals(WindSpeedUnit.MPS, controller.state.windUnit)
+      assertEquals(PressureUnit.HPA, controller.state.pressureUnit)
+      controller.applyUnitSystem(com.example.model.UnitSystem.IMPERIAL)
+      assertEquals(WindSpeedUnit.KT, controller.state.windUnit)
+      assertEquals(PressureUnit.INHG, controller.state.pressureUnit)
+
+      // 2. Auto-refresh config (5 / 15 / 30m + disable/enable)
+      controller.setAutoRefreshInterval(5)
+      assertEquals(5, controller.state.autoRefreshIntervalMinutes)
+      controller.setAutoRefreshEnabled(false)
+      assertFalse(controller.state.autoRefreshEnabled)
+      controller.setAutoRefreshInterval(30)
+      assertEquals(30, controller.state.autoRefreshIntervalMinutes)
+
+      // 3. Invalid coordinates handling
+      controller.fetchWeatherByCoordinates(120.0, 50.0)
+      assertTrue(controller.state.statusBanner?.contains("Некорректные координаты") == true)
+
+      // 4. VFR minimums breach detection
+      controller.selectStation("UTAA")
+      controller.applyCustomMetar("METAR UTAA 251000Z 27024KT 1800 BR BKN007 10/08 Q1008", "TAF UTAA")
+      controller.updateAlertConfig(
+        controller.state.alertConfig.copy(
+          enabled = true,
+          vfrAlertsEnabled = true,
+          vfrMinVisibilityMeters = 5000,
+          vfrMinCeilingFeet = 1500,
+          vfrMaxWindKt = 20,
+          vfrMonitorAllFavorites = true,
+        ),
+      )
+      controller.checkVfrMinimumsNow()
+      assertTrue(controller.state.weatherAlerts.any { it.icao == "UTAA" })
+
+      // 5. 24h Trends chart panel state binding & painting
+      val trendsPanel = WindPressure24hChartPanel(
+        onBackToBoard = {},
+        onSelectAirport = {},
+        onRefreshHistory = {},
+        onSelectUnitSystem = {},
+        onOpenExport = {},
+      )
+      trendsPanel.applyState(controller.state)
+      trendsPanel.setSize(960, 560)
+      trendsPanel.doLayout()
+      val image = java.awt.image.BufferedImage(960, 560, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+      val g2 = image.createGraphics()
+      try {
+        trendsPanel.paint(g2)
+      } finally {
+        g2.dispose()
+      }
+
+      // 6. Decoder + Report formatter export
+      val decoded = com.example.domain.MetarTafDecoder.decodeMetar(controller.state.weather.rawMetar, controller.state.station)
+      assertTrue(decoded.items.isNotEmpty())
+      val payload = com.example.domain.WeatherExportPayload(
+        station = controller.state.station,
+        weather = controller.state.weather,
+        primaryRunwayCalc = controller.state.primaryRunwayCalc,
+        reciprocalRunwayCalc = controller.state.reciprocalRunwayCalc,
+        windUnit = controller.state.windUnit,
+        pressureUnit = controller.state.pressureUnit,
+        windTrend = controller.state.windTrend,
+        qnhTrend24h = controller.state.qnhTrend24h,
+        weatherHistory24h = controller.state.weatherHistory24h,
+      )
+      val summaryText = com.example.domain.WeatherReportFormatter.buildTextSummary(payload)
+      assertTrue(summaryText.contains("UTAA"))
+      assertTrue(summaryText.contains("DA "))
+      assertFalse(summaryText.contains("Allanur"))
+      assertTrue(com.example.domain.WeatherReportFormatter.buildPrintableHtml(payload).contains("<html lang=\"ru\">"))
     } finally {
       controller.shutdown()
     }

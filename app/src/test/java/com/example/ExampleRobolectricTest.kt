@@ -81,13 +81,13 @@ class ExampleRobolectricTest {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val storage1 = SharedPreferencesServerConfigStorage(context)
     val initial = storage1.loadConfig()
-    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", initial.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wdr", initial.url)
     assertEquals("meteo", initial.username)
     assertEquals("meteo", initial.password)
 
     storage1.saveConfig(
       ServerConfig(
-        url = "217.174.229.206:8181/cgi-bin/wlogin",
+        url = "217.174.229.206:8181/cgi-bin/wdr",
         username = "meteo",
         password = "secret",
         useCustomServer = true,
@@ -101,7 +101,7 @@ class ExampleRobolectricTest {
 
     val storage2 = SharedPreferencesServerConfigStorage(context)
     val reloaded = storage2.loadConfig()
-    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", reloaded.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wdr", reloaded.url)
     assertEquals("secret", reloaded.password)
     assertFalse(reloaded.fallbackToNoaa)
     assertEquals(DataSourceMode.IP_ONLY, reloaded.resolvedMode())
@@ -321,8 +321,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("splash_logo").assertIsDisplayed()
     composeTestRule.onNodeWithTag("splash_app_name").assertIsDisplayed()
     composeTestRule.onNodeWithTag("splash_app_name").assertTextContains("Meteotablo")
-    composeTestRule.onNodeWithTag("splash_author_credit").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("splash_author_credit").assertTextContains("Allanur Saparow", substring = true)
+    composeTestRule.onNodeWithTag("splash_author_credit").assertDoesNotExist()
 
     composeTestRule.mainClock.advanceTimeBy(1200L)
     composeTestRule.mainClock.autoAdvance = true
@@ -333,7 +332,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("toolbar_brand_title").assertTextContains("Meteotablo")
     composeTestRule.onNodeWithTag("toolbar_station_selector").assertIsDisplayed()
     composeTestRule.onNodeWithTag("board_owner_footer").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("board_owner_footer").assertTextContains("Allanur Saparow", substring = true)
+    composeTestRule.onNodeWithTag("board_owner_footer").assertTextContains("О программе / Автор", substring = true)
 
     composeTestRule.onNodeWithTag("board_owner_footer").performClick()
     composeTestRule.waitForIdle()
@@ -1652,5 +1651,292 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("decoder_back_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("metar_taf_decoder_screen").assertDoesNotExist()
+  }
+
+  @Test
+  fun `d3 saved airport trends dashboard renders wind and pressure charts switches chips and updates kpis`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val favStorage = SharedPreferencesFavoriteStorage(context)
+    favStorage.saveFavorites(listOf("UTAA", "UTAM"))
+
+    val vm = MeteoViewModel(favoriteStorage = favStorage, autoFetch = false)
+    val now = System.currentTimeMillis()
+    val utaa = AirportCatalog.findOrDefault("UTAA")
+    val utam = AirportCatalog.findOrDefault("UTAM")
+
+    vm.mergeExternal24hHistory(
+      icao = "UTAA",
+      entries = listOf(
+        com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+          rawMetar = "METAR UTAA 250600Z 09008KT 9999 FEW040 16/05 Q1014",
+          rawTaf = "TAF UTAA",
+          station = utaa,
+          sourceLabel = "test",
+          explicitTimestampMillis = now - 4L * 3600_000L,
+          referenceNowMillis = now,
+        )!!,
+        com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+          rawMetar = "METAR UTAA 250900Z 11018G25KT 9999 SCT040 20/06 Q1020",
+          rawTaf = "TAF UTAA",
+          station = utaa,
+          sourceLabel = "test",
+          explicitTimestampMillis = now - 1L * 3600_000L,
+          referenceNowMillis = now,
+        )!!,
+      ),
+    )
+    vm.mergeExternal24hHistory(
+      icao = "UTAM",
+      entries = listOf(
+        com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+          rawMetar = "METAR UTAM 250700Z 06010KT 8000 FEW035 15/04 Q1012",
+          rawTaf = "TAF UTAM",
+          station = utam,
+          sourceLabel = "test",
+          explicitTimestampMillis = now - 2L * 3600_000L,
+          referenceNowMillis = now,
+        )!!,
+      ),
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("d3_trends_dashboard").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("d3_airport_chip_UTAA").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("UTAA", vm.uiState.value.selectedD3TrendIcao)
+    composeTestRule.onNodeWithTag("d3_kpi_wind").performScrollTo().assertTextContains("8–18", substring = true)
+    composeTestRule.onNodeWithTag("d3_kpi_pressure").performScrollTo().assertTextContains("1014–1020", substring = true)
+
+    // Switch chip to UTAM
+    composeTestRule.onNodeWithTag("d3_airport_chip_UTAM").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("UTAM", vm.uiState.value.selectedD3TrendIcao)
+    composeTestRule.onNodeWithTag("d3_kpi_pressure").performScrollTo().assertTextContains("1012", substring = true)
+  }
+
+  @Test
+  fun `vfr minimums alert system triggers notification when conditions drop below threshold`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    org.robolectric.Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    val context = app
+    val favStorage = SharedPreferencesFavoriteStorage(context)
+    favStorage.saveFavorites(listOf("UTAA"))
+    val alertStorage = SharedPreferencesWeatherAlertStorage(context)
+    alertStorage.saveConfig(
+      com.example.model.WeatherAlertConfig(
+        enabled = true,
+        vfrAlertsEnabled = true,
+        vfrMinVisibilityMeters = 5000,
+        vfrMinCeilingFeet = 1500,
+        vfrMaxWindKt = 20,
+        vfrMonitorAllFavorites = true,
+      ),
+    )
+    alertStorage.saveAlerts(emptyList())
+
+    val fakeNotifier = AndroidWeatherNotifier(context)
+    val vm = MeteoViewModel(
+      favoriteStorage = favStorage,
+      alertStorage = alertStorage,
+      weatherNotifier = fakeNotifier,
+      autoFetch = false,
+    )
+    vm.selectStation("UTAA")
+    // Below VFR thresholds (visibility 2200m < 5000m, ceiling BKN008=800ft < 1500ft, wind 24kt > 20kt)
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 251000Z 28024G32KT 2200 BR BKN008 11/09 Q1009",
+      rawTaf = "TAF UTAA",
+    )
+
+    vm.checkVfrMinimumsNow()
+    val alerts = vm.uiState.value.weatherAlerts
+    assertTrue("Expected VFR breach alert", alerts.any { it.icao == "UTAA" && it.summary.contains("VFR", ignoreCase = true) })
+
+    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+    assertTrue("Expected system notification posted", shadowNm.allNotifications.isNotEmpty())
+  }
+
+  @Test
+  fun `manual lat lon coordinate entry and gps location service update station and location summary`() {
+    val fakeLocationService = object : com.example.location.LocationService {
+      override suspend fun detectCurrentLocation(): Result<com.example.location.DetectedLocationResult> {
+        return Result.success(
+          com.example.location.DetectedLocationResult(
+            latitude = 37.9868,
+            longitude = 58.3610,
+            cityName = "Ashgabat",
+            providerLabel = "FusedGPS",
+          ),
+        )
+      }
+    }
+
+    val vm = MeteoViewModel(
+      locationService = fakeLocationService,
+      autoFetch = false,
+    )
+    // Grant location permission in Robolectric shadow so GPS tap invokes LocationService immediately
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    org.robolectric.Shadows.shadowOf(app).grantPermissions(
+      Manifest.permission.ACCESS_FINE_LOCATION,
+      Manifest.permission.ACCESS_COARSE_LOCATION,
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Tap GPS button -> fakeLocationService detects Ashgabat -> summary updated
+    composeTestRule.onNodeWithTag("location_gps_detect_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    val summaryAfterGps = vm.uiState.value.detectedLocationSummary
+    assertTrue("Expected GPS location summary, got $summaryAfterGps", summaryAfterGps?.contains("Ashgabat") == true)
+
+    // Open manual Lat/Lon coordinate entry panel and test invalid + valid input
+    composeTestRule.onNodeWithTag("coord_toggle_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("coord_entry_panel").performScrollTo().assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("coord_lat_input").performScrollTo().performTextInput("95.0")
+    composeTestRule.onNodeWithTag("coord_lon_input").performScrollTo().performTextInput("58.36")
+    composeTestRule.onNodeWithTag("coord_fetch_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("coord_error_text").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `location service finds nearest airport and board displays density altitude telemetry`() {
+    val fakeLocationService = object : com.example.location.LocationService {
+      override suspend fun detectCurrentLocation(): Result<com.example.location.DetectedLocationResult> {
+        return Result.success(
+          com.example.location.DetectedLocationResult(
+            latitude = 37.62,
+            longitude = 61.90,
+            cityName = "Mary",
+            providerLabel = "GPS",
+          ),
+        )
+      }
+    }
+    val nearest = kotlinx.coroutines.runBlocking {
+      fakeLocationService.detectNearestAirport().getOrThrow()
+    }
+    assertEquals("UTAM", nearest.airport.icao)
+    assertTrue(nearest.distanceKm < 15.0)
+
+    val (ashgabatNearest, distAsh) = com.example.location.LocationServiceHelper.findNearestAirport(37.98, 58.36)!!
+    assertEquals("UTAA", ashgabatNearest.icao)
+    assertTrue(distAsh < 5.0)
+
+    val vm = MeteoViewModel(locationService = fakeLocationService, autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar("METAR UTAA 251200Z 09010KT CAVOK 38/06 Q1008", "TAF UTAA")
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("aviation_performance_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("aviation_performance_card").assertTextContains("DA ", substring = true)
+    composeTestRule.onNodeWithTag("aviation_performance_card").assertTextContains("PA ", substring = true)
+  }
+
+  @Test
+  fun `pressure conversion utility auto updates when new metar arrives and reacts to elevation input`() {
+    val conv = com.example.domain.UnitConverter.convertQnhQfe(
+      pressureValue = 1020.0,
+      unit = PressureUnit.HPA,
+      elevationMeters = 500,
+      fromQnhToQfe = true,
+    )
+    assertEquals(1020.0, conv.qnhHpa, 0.01)
+    assertTrue(conv.qfeHpa in 958.0..963.0)
+    assertTrue(conv.baricOffsetHpa > 55.0)
+
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar("METAR UTAA 251200Z 09010KT CAVOK 24/08 Q1018", "TAF UTAA")
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("pressure_utility_auto_sync_switch").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("pressure_utility_qnh_result").assertTextContains("1018 гПа", substring = true)
+
+    // Adjust elevation (+50m) -> QFE changes accordingly
+    composeTestRule.onNodeWithTag("pressure_utility_elev_plus").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_qfe_result").assertTextContains("гПа", substring = true)
+
+    // Simulate new METAR arriving -> QNH/QFE auto-update immediately
+    vm.applyCustomMetar("METAR UTAA 251300Z 09012KT CAVOK 23/08 Q1025", "TAF UTAA")
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("pressure_utility_qnh_result").assertTextContains("1025 гПа", substring = true)
+  }
+
+  @Test
+  fun `runway wind components composable calculates headwind tailwind and crosswind for given heading`() {
+    val wind = WindData(
+      directionDeg = 300,
+      isVariable = false,
+      isCalm = false,
+      speedKt = 20,
+      gustKt = 30,
+      speedMps = 10.29,
+      gustMps = 15.43,
+    )
+
+    // Runway heading 270° with wind from 300° => 30° from right: cos(30)=17.3kt headwind, sin(30)=10.0kt right crosswind
+    val comp270 = com.example.ui.components.calculateRunwayWindComponents(270, wind)
+    assertEquals(17.32, comp270.headwindKt, 0.2)
+    assertEquals(10.0, comp270.crosswindKt, 0.2)
+    assertTrue(comp270.signedCrosswindKt > 0.0)
+    assertFalse(comp270.isTailwind)
+
+    // Reciprocal runway 090° => tailwind (-17.3kt) and left crosswind
+    val comp090 = com.example.ui.components.calculateRunwayWindComponents(90, wind)
+    assertTrue(comp090.isTailwind)
+    assertEquals(-17.32, comp090.headwindKt, 0.2)
+
+    val headingState = androidx.compose.runtime.mutableStateOf(270)
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        com.example.ui.components.RunwayWindComponentsDisplay(
+          runwayHeadingDeg = headingState.value,
+          wind = wind,
+          windUnit = WindSpeedUnit.KT,
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("runway_wind_components_display").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("rwy_component_headwind_box").assertTextContains("+17.3 kt", substring = true)
+    composeTestRule.onNodeWithTag("rwy_component_crosswind_box").assertTextContains("10.0 kt", substring = true)
+
+    // Switch runway heading to reciprocal 090° -> displays Tailwind component
+    headingState.value = 90
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("rwy_component_headwind_box").assertTextContains("-17.3 kt", substring = true)
   }
 }

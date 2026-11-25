@@ -85,14 +85,15 @@ class SessionCookieJar : CookieJar {
 class BasicAuthInterceptor(
   private val username: String,
   private val password: String,
+  private val preemptive: Boolean = true,
 ) : Interceptor {
   override fun intercept(chain: Interceptor.Chain): OkHttpResponse {
     val original = chain.request()
     val builder = original.newBuilder()
     if (original.header("User-Agent") == null) {
-      builder.header("User-Agent", "Meteotablo/1.0")
+      builder.header("User-Agent", "Mozilla/5.0 (compatible; Meteotablo/1.0)")
     }
-    if (username.isNotBlank() && original.header("Authorization") == null) {
+    if (preemptive && username.isNotBlank() && original.header("Authorization") == null) {
       builder.header("Authorization", Credentials.basic(username, password))
     }
     return chain.proceed(builder.build())
@@ -114,7 +115,21 @@ object MeteoServerRetrofitFactory {
     }
     return OkHttpClient.Builder()
       .cookieJar(cookieJar)
-      .addInterceptor(BasicAuthInterceptor(config.username, config.password))
+      .addInterceptor(BasicAuthInterceptor(config.username, config.password, preemptive = false))
+      .authenticator { _, response ->
+        if (config.username.isBlank() || response.request.header("Authorization") != null) {
+          null
+        } else {
+          val challenges = response.challenges()
+          if (challenges.any { it.scheme.equals("Basic", ignoreCase = true) }) {
+            response.request.newBuilder()
+              .header("Authorization", Credentials.basic(config.username, config.password))
+              .build()
+          } else {
+            null
+          }
+        }
+      }
       .addInterceptor(logging)
       .followRedirects(true)
       .followSslRedirects(true)

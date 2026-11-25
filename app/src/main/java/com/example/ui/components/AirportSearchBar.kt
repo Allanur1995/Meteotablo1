@@ -1,5 +1,9 @@
 package com.example.ui.components
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,7 +24,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FlightTakeoff
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -36,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -44,8 +51,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.data.AirportCatalog
 import com.example.ui.theme.LocalMeteoPalette
 
@@ -56,14 +65,59 @@ fun AirportSearchBar(
   isLoading: Boolean,
   onSelectStation: (String) -> Unit,
   compactMode: Boolean = false,
+  isDetectingLocation: Boolean = false,
+  detectedLocationSummary: String? = null,
+  onDetectGpsLocation: () -> Unit = {},
+  onFetchByCoordinates: (Double, Double) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
+  val context = LocalContext.current
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
 
   var query by remember { mutableStateOf("") }
   var isFocused by remember { mutableStateOf(false) }
+  var showCoordEntry by remember { mutableStateOf(false) }
+  var latInput by remember { mutableStateOf("") }
+  var lonInput by remember { mutableStateOf("") }
+  var coordError by remember { mutableStateOf<String?>(null) }
+  var locationPermissionDeniedHint by remember { mutableStateOf(false) }
+
+  val locationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestMultiplePermissions(),
+  ) { grants ->
+    val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+    val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    if (fineGranted || coarseGranted) {
+      locationPermissionDeniedHint = false
+      onDetectGpsLocation()
+    } else {
+      locationPermissionDeniedHint = true
+    }
+  }
+
+  fun requestGpsLocation() {
+    val fineGranted = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    val coarseGranted = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.ACCESS_COARSE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    if (fineGranted || coarseGranted) {
+      locationPermissionDeniedHint = false
+      onDetectGpsLocation()
+    } else {
+      locationPermissionLauncher.launch(
+        arrayOf(
+          Manifest.permission.ACCESS_FINE_LOCATION,
+          Manifest.permission.ACCESS_COARSE_LOCATION,
+        ),
+      )
+    }
+  }
 
   val normalizedLetters = remember(query) {
     query.trim().uppercase().filter { it.isLetterOrDigit() }.take(4)
@@ -85,6 +139,19 @@ fun AirportSearchBar(
     isFocused = false
     focusManager.clearFocus()
     keyboardController?.hide()
+  }
+
+  fun submitCoordinates() {
+    val parsedLat = latInput.trim().replace(',', '.').toDoubleOrNull()
+    val parsedLon = lonInput.trim().replace(',', '.').toDoubleOrNull()
+    if (parsedLat == null || parsedLon == null || parsedLat !in -90.0..90.0 || parsedLon !in -180.0..180.0) {
+      coordError = "Введите корректные координаты: широта -90..90, долгота -180..180"
+      return
+    }
+    coordError = null
+    focusManager.clearFocus()
+    keyboardController?.hide()
+    onFetchByCoordinates(parsedLat, parsedLon)
   }
 
   Column(
@@ -188,7 +255,7 @@ fun AirportSearchBar(
             RoundedCornerShape(3.dp),
           )
           .clickable(enabled = canSubmit) { submit() }
-          .padding(horizontal = 12.dp, vertical = 8.dp),
+          .padding(horizontal = 10.dp, vertical = 8.dp),
       ) {
         if (isLoading) {
           CircularProgressIndicator(
@@ -211,6 +278,158 @@ fun AirportSearchBar(
           fontWeight = if (canSubmit) FontWeight.Bold else FontWeight.Medium,
           maxLines = 1,
         )
+      }
+
+      // GPS / Play Services Location button
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+          .heightIn(min = 48.dp)
+          .testTag("location_gps_detect_button")
+          .clip(RoundedCornerShape(3.dp))
+          .background(if (isDetectingLocation) palette.buttonActiveBackground else palette.buttonBackground)
+          .border(1.dp, if (isDetectingLocation) palette.metarAmber else palette.border, RoundedCornerShape(3.dp))
+          .clickable(enabled = !isDetectingLocation) { requestGpsLocation() }
+          .padding(horizontal = 10.dp, vertical = 8.dp),
+      ) {
+        if (isDetectingLocation) {
+          CircularProgressIndicator(
+            strokeWidth = 2.dp,
+            color = palette.metarAmber,
+            modifier = Modifier.size(14.dp),
+          )
+        } else {
+          Icon(
+            imageVector = Icons.Filled.MyLocation,
+            contentDescription = "Определить аэропорт по GPS",
+            tint = palette.metarAmber,
+            modifier = Modifier.size(16.dp),
+          )
+        }
+        Text(
+          text = if (compactMode) "GPS" else "Моё место",
+          color = palette.textPrimary,
+          fontSize = 11.5.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+      }
+
+      // Manual Coordinates Toggle button
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+          .heightIn(min = 48.dp)
+          .testTag("coord_toggle_button")
+          .clip(RoundedCornerShape(3.dp))
+          .background(if (showCoordEntry) palette.buttonActiveBackground else palette.buttonBackground)
+          .border(1.dp, if (showCoordEntry) palette.metarAmber else palette.border, RoundedCornerShape(3.dp))
+          .clickable { showCoordEntry = !showCoordEntry }
+          .padding(horizontal = 10.dp, vertical = 8.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Explore,
+          contentDescription = "Ввод широты и долготы",
+          tint = if (showCoordEntry) palette.metarAmber else palette.textSecondary,
+          modifier = Modifier.size(16.dp),
+        )
+        Text(
+          text = "Lat/Lon",
+          color = palette.textPrimary,
+          fontSize = 11.5.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+      }
+    }
+
+    if (locationPermissionDeniedHint) {
+      Text(
+        text = "Для автоопределения аэропорта разрешите геолокацию или введите координаты Lat/Lon вручную.",
+        color = palette.metarAmber,
+        fontSize = 11.sp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(palette.panelSurface)
+          .border(1.dp, palette.metarAmber)
+          .padding(horizontal = 10.dp, vertical = 6.dp)
+          .testTag("location_permission_hint"),
+      )
+    }
+
+    if (!detectedLocationSummary.isNullOrBlank()) {
+      Text(
+        text = "Геолокация: $detectedLocationSummary",
+        color = palette.textSecondary,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(palette.secondaryFieldBackground)
+          .border(0.8.dp, palette.border)
+          .padding(horizontal = 10.dp, vertical = 4.dp)
+          .testTag("detected_location_summary"),
+      )
+    }
+
+    AnimatedVisibility(visible = showCoordEntry) {
+      Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(palette.panelSurface)
+          .border(1.dp, palette.borderStrong)
+          .padding(8.dp)
+          .testTag("coord_entry_panel"),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          CoordinateField(
+            value = latInput,
+            onValueChange = { latInput = it },
+            placeholder = "Широта (напр. 39.0933)",
+            testTag = "coord_lat_input",
+            modifier = Modifier.weight(1f),
+          )
+          CoordinateField(
+            value = lonInput,
+            onValueChange = { lonInput = it },
+            placeholder = "Долгота (напр. 63.6133)",
+            testTag = "coord_lon_input",
+            modifier = Modifier.weight(1f),
+          )
+          Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("coord_fetch_button")
+              .clip(RoundedCornerShape(3.dp))
+              .background(palette.buttonActiveBackground)
+              .border(1.dp, palette.metarAmber, RoundedCornerShape(3.dp))
+              .clickable { submitCoordinates() }
+              .padding(horizontal = 14.dp, vertical = 8.dp),
+          ) {
+            Text(
+              text = "По коорд.",
+              color = palette.metarAmber,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+        coordError?.let { err ->
+          Text(
+            text = err,
+            color = palette.tailwindNegative,
+            fontSize = 11.sp,
+            modifier = Modifier.testTag("coord_error_text"),
+          )
+        }
       }
     }
 
@@ -294,5 +513,54 @@ fun AirportSearchBar(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun CoordinateField(
+  value: String,
+  onValueChange: (String) -> Unit,
+  placeholder: String,
+  testTag: String,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalMeteoPalette.current
+  Box(
+    contentAlignment = Alignment.CenterStart,
+    modifier = modifier
+      .heightIn(min = 44.dp)
+      .background(palette.fieldBackground, RoundedCornerShape(3.dp))
+      .border(1.dp, palette.border, RoundedCornerShape(3.dp))
+      .padding(horizontal = 10.dp, vertical = 8.dp),
+  ) {
+    if (value.isEmpty()) {
+      Text(
+        text = placeholder,
+        color = palette.textMuted,
+        fontSize = 11.5.sp,
+        maxLines = 1,
+      )
+    }
+    BasicTextField(
+      value = value,
+      onValueChange = { raw ->
+        onValueChange(raw.filter { it.isDigit() || it == '.' || it == ',' || it == '-' }.take(12))
+      },
+      singleLine = true,
+      textStyle = TextStyle(
+        color = palette.textPrimary,
+        fontSize = 12.5.sp,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+      ),
+      cursorBrush = SolidColor(palette.metarAmber),
+      keyboardOptions = KeyboardOptions(
+        keyboardType = KeyboardType.Decimal,
+        imeAction = ImeAction.Done,
+      ),
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag(testTag),
+    )
   }
 }

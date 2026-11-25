@@ -938,7 +938,7 @@ fun SettingsScreen(
           .testTag("settings_owner_info_card"),
       ) {
         Text(
-          text = "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · Автор: ${AuthorBrand.AUTHOR_NAME} (${AuthorBrand.AUTHOR_HANDLE})",
+          text = "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · Авиационное метеотабло",
           color = palette.textSecondary,
           fontSize = 11.5.sp,
           fontWeight = FontWeight.SemiBold,

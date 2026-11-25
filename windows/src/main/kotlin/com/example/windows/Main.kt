@@ -23,6 +23,8 @@ fun main() {
         controllerRef?.openAlertStation(icao)
       },
       autoFetch = true,
+      unitPreferencesStorage = DesktopUnitPreferencesStorage(),
+      weatherHistoryStorage = DesktopWeatherHistoryStorage(),
     )
     controllerRef = controller
     DesktopSplashLauncher.showAndLaunch {

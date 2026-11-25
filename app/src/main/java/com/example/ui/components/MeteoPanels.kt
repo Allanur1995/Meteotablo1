@@ -56,12 +56,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.domain.AviationPerformanceCalculator
+import com.example.domain.AviationPerformanceMetrics
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
@@ -1063,12 +1066,16 @@ fun CenterWeatherPanel(
   localClock: String,
   pressureUnit: PressureUnit,
   onTogglePressureUnit: () -> Unit,
+  station: AirportStation? = null,
   windTrend: WindTrendSummary? = null,
   windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   compactMode: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
+  val perfMetrics = remember(station, weather) {
+    station?.let { AviationPerformanceCalculator.calculate(it, weather) }
+  }
   val cloudsSummary = if (weather.clouds.isNotEmpty()) {
     weather.clouds.joinToString(" ") { it.rawToken }
   } else if (weather.isCavok) {
@@ -1217,6 +1224,13 @@ fun CenterWeatherPanel(
           fontWeight = FontWeight.Medium,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
+        )
+      }
+
+      if (perfMetrics != null) {
+        AviationPerformanceStrip(
+          metrics = perfMetrics,
+          compactMode = true,
         )
       }
 
@@ -1432,6 +1446,13 @@ fun CenterWeatherPanel(
       )
     }
 
+    if (perfMetrics != null) {
+      AviationPerformanceStrip(
+        metrics = perfMetrics,
+        compactMode = false,
+      )
+    }
+
     if (windTrend != null) {
       WindTrendIndicator(
         trend = windTrend,
@@ -1439,6 +1460,67 @@ fun CenterWeatherPanel(
         compactMode = false,
       )
     }
+  }
+}
+
+@Composable
+private fun AviationPerformanceStrip(
+  metrics: AviationPerformanceMetrics,
+  compactMode: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalMeteoPalette.current
+  val hasAlert = metrics.highDensityAltitudeWarning || metrics.fogRiskWarning || metrics.icingRiskWarning
+  val accentColor = when {
+    metrics.icingRiskWarning || metrics.fogRiskWarning -> palette.tailwindNegative
+    metrics.highDensityAltitudeWarning -> palette.metarAmber
+    else -> palette.headwindPositive
+  }
+  val paText = metrics.pressureAltitudeFeet?.let { "$it ft" } ?: "--"
+  val daText = metrics.densityAltitudeFeet?.let { "$it ft" } ?: "--"
+  val isaText = metrics.isaDeviationC?.let { if (it >= 0) "+$it°C" else "$it°C" } ?: "--"
+  val rhText = metrics.relativeHumidityPercent?.let { "$it%" } ?: "--"
+
+  Column(
+    verticalArrangement = Arrangement.spacedBy(if (compactMode) 2.dp else 3.dp),
+    modifier = modifier
+      .fillMaxWidth()
+      .background(palette.secondaryFieldBackground)
+      .border(1.dp, if (hasAlert) accentColor else palette.border)
+      .padding(horizontal = 6.dp, vertical = if (compactMode) 3.dp else 5.dp)
+      .semantics(mergeDescendants = true) {}
+      .testTag("aviation_performance_card"),
+  ) {
+    Row(
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(
+        text = "PA $paText · DA $daText",
+        color = palette.textPrimary,
+        fontSize = if (compactMode) 10.5.sp else 11.5.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+      Text(
+        text = "МСА $isaText · RH $rhText",
+        color = palette.textSecondary,
+        fontSize = if (compactMode) 10.sp else 11.sp,
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+      )
+    }
+    Text(
+      text = metrics.advisorySummary(),
+      color = accentColor,
+      fontSize = if (compactMode) 10.sp else 11.sp,
+      fontWeight = FontWeight.SemiBold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
   }
 }
 
@@ -1716,7 +1798,7 @@ fun MetarTafFooter(
         modifier = Modifier.padding(end = 8.dp),
       )
       Text(
-        text = com.example.model.AuthorBrand.COPYRIGHT_LINE,
+        text = "О программе / Автор",
         color = palette.textMuted,
         fontSize = if (compactMode) 9.5.sp else 10.sp,
         textAlign = TextAlign.End,

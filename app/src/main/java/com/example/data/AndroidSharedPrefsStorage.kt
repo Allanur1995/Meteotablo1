@@ -61,11 +61,7 @@ class SharedPreferencesServerConfigStorage(
       ?.trim()
       ?.ifBlank { ServerConfig.DEFAULT_SERVER_URL }
       ?: ServerConfig.DEFAULT_SERVER_URL
-    val migratedUrl = if (loadedUrl == ServerConfig.LEGACY_ROOT_URL) {
-      ServerConfig.DEFAULT_SERVER_URL
-    } else {
-      loadedUrl
-    }
+    val migratedUrl = ServerConfig.migrateLegacyUrl(loadedUrl)
     return ServerConfig(
       url = migratedUrl,
       username = prefs.getString(KEY_USERNAME, ServerConfig.DEFAULT_USERNAME).orEmpty(),

@@ -16,9 +16,9 @@ import org.junit.Test
 class CustomMeteoServerClientTest {
 
   @Test
-  fun `default server config points to user IP wlogin CGI with meteo credentials`() {
+  fun `default server config points to user IP wdr CGI with meteo credentials`() {
     val cfg = ServerConfig()
-    assertEquals("http://217.174.229.206:8181/cgi-bin/wlogin", cfg.url)
+    assertEquals("http://217.174.229.206:8181/cgi-bin/wdr", cfg.url)
     assertEquals("meteo", cfg.username)
     assertEquals("meteo", cfg.password)
     assertTrue(cfg.useCustomServer)
@@ -284,5 +284,166 @@ class CustomMeteoServerClientTest {
     } finally {
       server.stop(0)
     }
+  }
+
+  @Test
+  fun `fetchMetarAndTaf handles python UMAS cgi-bin wdr user-pass POST and SATR-FTTR links for all 7 turkmen airports`() {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/cgi-bin/wdr") { ex ->
+      if (ex.requestMethod.equals("POST", ignoreCase = true)) {
+        val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+        assertTrue(body.contains("user=meteo"))
+        assertTrue(body.contains("pass=meteo"))
+        val html = """
+          <html><body>
+            <h3>Сообщения WDR</h3>
+            <a href="/cgi-bin/wdr?msg=satr_main">SATR31UTAA_250000</a><br/>
+            <a href="/cgi-bin/wdr?msg=fttr_main">FTTR31UTAA_242300</a>
+          </body></html>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        ex.responseHeaders.add("Set-Cookie", "WDR_SESSION=tkm777; Path=/")
+        ex.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+        ex.sendResponseHeaders(200, html.size.toLong())
+        ex.responseBody.use { it.write(html) }
+      } else {
+        val q = ex.requestURI.rawQuery.orEmpty()
+        val cookie = ex.requestHeaders.getFirst("Cookie").orEmpty()
+        if (q.isNotBlank()) {
+          assertTrue("Expected session cookie on GET $q", cookie.contains("WDR_SESSION=tkm777"))
+        }
+        val text = when {
+          q.contains("msg=satr_main") -> """
+            SATR31 UTAA 250000
+            METAR UTAM 250000Z 09005MPS 9999 FEW040 16/04 Q1022 NOSIG=
+            METAR UTAK 250000Z 31008MPS 9999 SCT030 14/06 Q1021=
+            METAR UTAA 250000Z 11006MPS CAVOK 18/03 Q1023=
+            METAR UTAN 250000Z 29007MPS 8000 SCT025 13/05 Q1020=
+            METAR UTAT 250000Z 06004MPS 9999 FEW045 15/02 Q1024=
+            METAR UTAV 250000Z 04006MPS 9999 SCT040 12/03 Q1025=
+            METAR UTAE 250000Z 14005MPS 7000 FEW035 17/05 Q1021=
+          """.trimIndent()
+          q.contains("msg=fttr_main") -> """
+            FTTR31 UTAA 242300
+            TAF UTAM 242300Z 2500/2524 09006MPS 9999 SCT040=
+            TAF UTAK 242300Z 2500/2524 31009MPS 8000 BKN025=
+            TAF UTAA 242300Z 2500/2524 11007MPS CAVOK=
+            TAF UTAN 242300Z 2500/2524 29008MPS 9999 SCT030=
+            TAF UTAT 242300Z 2500/2524 06005MPS 9999 FEW040=
+            TAF UTAV 242300Z 2500/2524 04006MPS CAVOK=
+            TAF UTAE 242300Z 2500/2524 14006MPS 9999 SCT035=
+          """.trimIndent()
+          else -> ""
+        }.toByteArray(Charsets.UTF_8)
+        ex.responseHeaders.add("Content-Type", "text/plain; charset=utf-8")
+        ex.sendResponseHeaders(200, text.size.toLong())
+        ex.responseBody.use { it.write(text) }
+      }
+    }
+
+    server.start()
+    try {
+      val port = server.address.port
+      val client = CustomMeteoServerClient()
+      val config = ServerConfig(
+        url = "http://127.0.0.1:$port/cgi-bin/wdr",
+        username = "meteo",
+        password = "meteo",
+      )
+      val turkmenIcaos = listOf("UTAM", "UTAK", "UTAA", "UTAN", "UTAT", "UTAV", "UTAE")
+      turkmenIcaos.forEach { icao ->
+        val outcome = runBlocking { client.fetchMetarAndTaf(icao, config) }
+        assertNotNull("Expected METAR for $icao", outcome.rawMetar)
+        assertNotNull("Expected TAF for $icao", outcome.rawTaf)
+        assertTrue("METAR for $icao should contain ICAO", outcome.rawMetar!!.contains("METAR $icao 250000Z"))
+        assertTrue("TAF for $icao should contain ICAO", outcome.rawTaf!!.contains("TAF $icao 242300Z"))
+      }
+    } finally {
+      server.stop(0)
+    }
+  }
+  @Test
+  fun `umas wdr client omits preemptive basic auth handles unquoted hrefs and serves as fallback from wlogin`() {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/cgi-bin/wlogin") { ex ->
+      // Legacy wlogin returns 404 or blank page -> CustomMeteoServerClient should fall back to /cgi-bin/wdr
+      val err = "<html><body>Not on wlogin</body></html>".toByteArray(Charsets.UTF_8)
+      ex.sendResponseHeaders(404, err.size.toLong())
+      ex.responseBody.use { it.write(err) }
+    }
+    server.createContext("/cgi-bin/wdr") { ex ->
+      // Ensure NO preemptive Basic Auth header is sent (matches Python requests.Session)
+      val authHeader = ex.requestHeaders.getFirst("Authorization")
+      assertTrue("Must not send preemptive Basic Auth header, was: $authHeader", authHeader == null)
+
+      if (ex.requestMethod.equals("POST", ignoreCase = true)) {
+        val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+        assertTrue(body.contains("user=meteo"))
+        assertTrue(body.contains("pass=meteo"))
+        val html = """
+          <html><body>
+            <a href=/cgi-bin/wdr?id=s1><b>SATR31UTAA_250100</b></a>
+            <a href='/cgi-bin/wdr?id=s0'>SATR31UTAA_250000</a>
+            <a href="/cgi-bin/wdr?id=f1">FTTR31UTAA_250000</a>
+          </body></html>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        ex.responseHeaders.add("Set-Cookie", "SID=wdr_clean_99; Path=/")
+        ex.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+        ex.sendResponseHeaders(200, html.size.toLong())
+        ex.responseBody.use { it.write(html) }
+      } else {
+        val q = ex.requestURI.rawQuery.orEmpty()
+        assertTrue(ex.requestHeaders.getFirst("Cookie").orEmpty().contains("SID=wdr_clean_99"))
+        val text = when {
+          q.contains("id=s1") -> """
+            METAR UTAA 250100Z 09004MPS 9999 FEW040 16/03 Q1023=
+            METAR UTAM 250100Z 11005MPS CAVOK 18/02 Q1022=
+          """.trimIndent()
+          q.contains("id=f1") -> """
+            TAF UTAA 250000Z 2500/2524 09006MPS 9999 SCT040=
+            TAF UTAM 250000Z 2500/2524 11007MPS CAVOK=
+          """.trimIndent()
+          else -> "empty"
+        }.toByteArray(Charsets.UTF_8)
+        ex.responseHeaders.add("Content-Type", "text/plain; charset=utf-8")
+        ex.sendResponseHeaders(200, text.size.toLong())
+        ex.responseBody.use { it.write(text) }
+      }
+    }
+
+    server.start()
+    try {
+      val port = server.address.port
+      val wdrClient = com.example.data.UmasWdrClient()
+      val directRes = wdrClient.fetchStation(
+        "UTAM",
+        ServerConfig(url = "http://127.0.0.1:$port/cgi-bin/wdr", username = "meteo", password = "meteo"),
+      )
+      assertEquals("METAR UTAM 250100Z 11005MPS CAVOK 18/02 Q1022", directRes.rawMetar)
+      assertEquals("TAF UTAM 250000Z 2500/2524 11007MPS CAVOK", directRes.rawTaf)
+
+      // Also verify legacy /cgi-bin/wlogin config falls back seamlessly to /cgi-bin/wdr
+      val client = CustomMeteoServerClient()
+      val fallbackOutcome = runBlocking {
+        client.fetchMetarAndTaf(
+          "UTAA",
+          ServerConfig(url = "http://127.0.0.1:$port/cgi-bin/wlogin", username = "meteo", password = "meteo"),
+        )
+      }
+      assertEquals("METAR UTAA 250100Z 09004MPS 9999 FEW040 16/03 Q1023", fallbackOutcome.rawMetar)
+      assertEquals("TAF UTAA 250000Z 2500/2524 09006MPS 9999 SCT040", fallbackOutcome.rawTaf)
+    } finally {
+      server.stop(0)
+    }
+  }
+
+  @Test
+  fun `unit converter supports bidirectional hPa-inHg and mps-kt conversions`() {
+    val inHg = com.example.domain.UnitConverter.convertHpaToInHg(1013.25)
+    assertEquals(29.92, inHg, 0.02)
+    assertEquals(1013.25, com.example.domain.UnitConverter.convertInHgToHpa(inHg), 0.5)
+
+    val knots = com.example.domain.UnitConverter.convertMpsToKnots(10.0)
+    assertEquals(19.44, knots, 0.1)
+    assertEquals(10.0, com.example.domain.UnitConverter.convertKnotsToMps(knots), 0.1)
   }
 }

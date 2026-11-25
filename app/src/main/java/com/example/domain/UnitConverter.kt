@@ -52,6 +52,22 @@ object UnitConverter {
     return convertWindFromKnots(speedKt.toDouble(), targetUnit)
   }
 
+  fun convertMpsToKnots(mps: Double): Double = mps / KT_TO_MPS
+
+  fun convertKnotsToMps(kt: Double): Double = kt * KT_TO_MPS
+
+  fun convertKphToKnots(kph: Double): Double = kph / KT_TO_KPH
+
+  fun convertWind(value: Double, from: WindSpeedUnit, to: WindSpeedUnit): Double {
+    if (from == to) return value
+    val kt = when (from) {
+      WindSpeedUnit.KT -> value
+      WindSpeedUnit.MPS -> convertMpsToKnots(value)
+      WindSpeedUnit.KPH -> convertKphToKnots(value)
+    }
+    return convertWindFromKnots(kt, to)
+  }
+
   fun formatWindSpeedValue(speedKt: Int, targetUnit: WindSpeedUnit): Int {
     return convertWindFromKnots(speedKt, targetUnit).roundToInt()
   }
@@ -62,9 +78,30 @@ object UnitConverter {
 
   fun convertInHgToHpa(inHg: Double): Double = inHg / HPA_TO_INHG
 
+  fun convertPressure(value: Double, from: PressureUnit, to: PressureUnit): Double {
+    if (from == to) return value
+    return when (from) {
+      PressureUnit.HPA -> convertHpaToInHg(value)
+      PressureUnit.INHG -> convertInHgToHpa(value)
+    }
+  }
+
   fun convertHpaToMmHg(hpa: Int): Int = (hpa * HPA_TO_MMHG).roundToInt()
 
   fun convertHpaToMmHgDouble(hpa: Double): Double = hpa * HPA_TO_MMHG
+
+  data class QnhQfeConversionResult(
+    val qnhHpa: Double,
+    val qfeHpa: Double,
+    val qnhInHg: Double,
+    val qfeInHg: Double,
+    val qnhMmHg: Int,
+    val qfeMmHg: Int,
+    val pressureAltitudeFeet: Int,
+    val elevationMeters: Int,
+  ) {
+    val baricOffsetHpa: Double get() = qnhHpa - qfeHpa
+  }
 
   fun computeQfeFromQnhHpa(qnhHpa: Double, elevationMeters: Int): Double {
     val ratio = (1.0 - ISA_LAPSE_FACTOR * elevationMeters).coerceIn(0.2, 1.5)
@@ -81,6 +118,28 @@ object UnitConverter {
     val qnhRatio = (qnhHpa / 1013.25).coerceIn(0.5, 1.3)
     val deltaFt = 145366.45 * (1.0 - qnhRatio.pow(0.190284))
     return (elevationFt + deltaFt).roundToInt()
+  }
+
+  fun convertQnhQfe(
+    pressureValue: Double,
+    unit: PressureUnit,
+    elevationMeters: Int,
+    fromQnhToQfe: Boolean = true,
+  ): QnhQfeConversionResult {
+    val safeElev = elevationMeters.coerceIn(-500, 6000)
+    val inputHpa = if (unit == PressureUnit.HPA) pressureValue else convertInHgToHpa(pressureValue)
+    val qnhHpa = if (fromQnhToQfe) inputHpa else computeQnhFromQfeHpa(inputHpa, safeElev)
+    val qfeHpa = if (fromQnhToQfe) computeQfeFromQnhHpa(inputHpa, safeElev) else inputHpa
+    return QnhQfeConversionResult(
+      qnhHpa = qnhHpa,
+      qfeHpa = qfeHpa,
+      qnhInHg = convertHpaToInHg(qnhHpa),
+      qfeInHg = convertHpaToInHg(qfeHpa),
+      qnhMmHg = convertHpaToMmHgDouble(qnhHpa).roundToInt(),
+      qfeMmHg = convertHpaToMmHgDouble(qfeHpa).roundToInt(),
+      pressureAltitudeFeet = computePressureAltitudeFeet(qnhHpa, safeElev),
+      elevationMeters = safeElev,
+    )
   }
 
   fun formatPressurePrimary(

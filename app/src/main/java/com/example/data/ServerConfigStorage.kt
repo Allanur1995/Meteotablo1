@@ -35,10 +35,22 @@ data class ServerConfig(
   }
 
   companion object {
-    const val DEFAULT_SERVER_URL = "http://217.174.229.206:8181/cgi-bin/wlogin"
+    const val DEFAULT_SERVER_URL = "http://217.174.229.206:8181/cgi-bin/wdr"
+    const val LEGACY_WLOGIN_URL = "http://217.174.229.206:8181/cgi-bin/wlogin"
     const val LEGACY_ROOT_URL = "http://217.174.229.206:8181/"
     const val DEFAULT_USERNAME = "meteo"
     const val DEFAULT_PASSWORD = "meteo"
+
+    fun migrateLegacyUrl(raw: String): String {
+      val trimmed = raw.trim()
+      return when {
+        trimmed.isBlank() ||
+          trimmed == LEGACY_ROOT_URL ||
+          trimmed == "http://217.174.229.206:8181" ||
+          trimmed == LEGACY_WLOGIN_URL -> DEFAULT_SERVER_URL
+        else -> trimmed
+      }
+    }
 
     fun normalizeServerUrl(raw: String): String {
       val trimmed = raw.trim()

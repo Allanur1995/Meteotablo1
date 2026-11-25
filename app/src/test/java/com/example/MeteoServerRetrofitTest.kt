@@ -136,4 +136,97 @@ class MeteoServerRetrofitTest {
     val (extracted, _) = CustomMeteoServerClient.extractMetarAndTaf(envelopeJson, "UTAE", moshi)
     assertEquals("METAR UTAE 141700Z 14007KT 8000 12/05 Q1022 NOSIG", extracted)
   }
+
+  @Test
+  fun `aviation weather network manager fetches metar taf bbox nearest and 24h history via retrofit`() = runTest {
+    val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/api/data/metar") { exchange ->
+      val query = exchange.requestURI.rawQuery.orEmpty()
+      val payload = when {
+        query.contains("bbox=") -> """
+          [
+            {"icaoId":"UTAM","rawOb":"METAR UTAM 251200Z 09012KT CAVOK 34/08 Q1011","lat":37.62,"lon":61.90,"elev":220,"name":"Mary"},
+            {"icaoId":"UTAA","rawOb":"METAR UTAA 251200Z 11008KT CAVOK 32/09 Q1012","lat":37.98,"lon":58.36,"elev":211,"name":"Ashgabat"}
+          ]
+        """.trimIndent()
+        query.contains("hours=24") -> """
+          [
+            {"icaoId":"UTAM","rawOb":"METAR UTAM 251100Z 08010KT CAVOK 33/08 Q1012","obsTime":1764068400,"temp":33,"dewp":8,"wdir":80,"wspd":10,"altim":1012.0},
+            {"icaoId":"UTAM","rawOb":"METAR UTAM 251200Z 09012KT CAVOK 34/08 Q1011","obsTime":1764072000,"temp":34,"dewp":8,"wdir":90,"wspd":12,"altim":1011.0}
+          ]
+        """.trimIndent()
+        else -> """
+          [
+            {"icaoId":"UTAM","rawOb":"METAR UTAM 251200Z 09012KT CAVOK 34/08 Q1011","lat":37.62,"lon":61.90,"elev":220,"name":"Mary"}
+          ]
+        """.trimIndent()
+      }
+      val bytes = payload.toByteArray()
+      exchange.responseHeaders.add("Content-Type", "application/json")
+      exchange.sendResponseHeaders(200, bytes.size.toLong())
+      exchange.responseBody.use { it.write(bytes) }
+    }
+    server.createContext("/api/data/taf") { exchange ->
+      val payload = """[{"icaoId":"UTAM","rawTAF":"TAF UTAM 251100Z 2512/2612 09012KT 9999 FEW040"}]"""
+      val bytes = payload.toByteArray()
+      exchange.responseHeaders.add("Content-Type", "application/json")
+      exchange.sendResponseHeaders(200, bytes.size.toLong())
+      exchange.responseBody.use { it.write(bytes) }
+    }
+    server.start()
+
+    try {
+      val manager = com.example.network.AviationWeatherNetworkManager(
+        awcBaseUrl = "http://127.0.0.1:${server.address.port}/",
+      )
+      val latest = manager.fetchLatestWeather(
+        icao = "UTAM",
+        useAviationWeatherGov = true,
+        useNoaaTgftp = false,
+        useVatsimMetar = false,
+      )
+      assertNotNull(latest)
+      assertEquals("METAR UTAM 251200Z 09012KT CAVOK 34/08 Q1011", latest!!.rawMetar)
+      assertEquals("TAF UTAM 251100Z 2512/2612 09012KT 9999 FEW040", latest.rawTaf)
+
+      val nearest = manager.fetchNearestByCoordinates(37.63, 61.89)
+      assertNotNull(nearest)
+      assertEquals("UTAM", nearest!!.icao)
+      assertTrue(nearest.distanceKm < 5.0)
+      assertEquals("TAF UTAM 251100Z 2512/2612 09012KT 9999 FEW040", nearest.rawTaf)
+
+      val history = manager.fetch24hHistory("UTAM")
+      assertEquals(2, history.metars.size)
+      assertEquals(1, history.tafs.size)
+    } finally {
+      server.stop(0)
+    }
+  }
+
+  @Test
+  fun `aviation performance calculator computes density altitude humidity and warnings`() {
+    val utam = com.example.data.AirportCatalog.findKnown("UTAM")!!
+    val hotMetar = com.example.domain.AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAM 251200Z 09012KT CAVOK 40/10 Q1005",
+      rawTafInput = "TAF UTAM",
+      station = utam,
+      sourceLabel = "test",
+    )
+    val hotMetrics = com.example.domain.AviationPerformanceCalculator.calculate(utam, hotMetar)
+    assertTrue(hotMetrics.highDensityAltitudeWarning)
+    assertTrue((hotMetrics.densityAltitudeFeet ?: 0) > hotMetrics.elevationFeet + 2000)
+    assertTrue((hotMetrics.isaDeviationC ?: 0) >= 20)
+    assertTrue(hotMetrics.advisorySummary().contains("Выс. DA"))
+
+    val foggyMetar = com.example.domain.AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAM 250400Z 00000KT 0400 FG OVC002 01/00 Q1015",
+      rawTafInput = "TAF UTAM",
+      station = utam,
+      sourceLabel = "test",
+    )
+    val icyFogMetrics = com.example.domain.AviationPerformanceCalculator.calculate(utam, foggyMetar)
+    assertTrue(icyFogMetrics.fogRiskWarning)
+    assertTrue(icyFogMetrics.icingRiskWarning)
+    assertTrue((icyFogMetrics.relativeHumidityPercent ?: 0) >= 90)
+  }
 }

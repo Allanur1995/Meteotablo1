@@ -547,38 +547,60 @@ fun StationAndMetarDialog(
                 .testTag("server_pass_input"),
             )
           }
-          Spacer(modifier = Modifier.height(8.dp))
-          OutlinedButton(
-            onClick = {
-              isTestingIp = true
-              ipTestReport = null
-              val probeCfg = ServerConfig(
-                url = serverUrlInput,
-                username = serverUserInput.trim(),
-                password = serverPassInput,
-                sourceMode = DataSourceMode.IP_ONLY,
-                useCustomServer = true,
-                fallbackToNoaa = false,
-              )
-              dialogScope.launch {
-                val report = withContext(Dispatchers.IO) {
-                  CustomMeteoServerClient().testConnection(currentStation.icao, probeCfg)
-                }
-                ipTestReport = report
-                isTestingIp = false
-              }
-            },
-            enabled = !isTestingIp,
-            modifier = Modifier
-              .fillMaxWidth()
-              .heightIn(min = 48.dp)
-              .testTag("server_test_connection_button"),
+          Spacer(modifier = Modifier.height(6.dp))
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
           ) {
-            Text(
-              text = if (isTestingIp) "Проверка IP (${currentStation.icao})…" else "Проверить IP-сервер (${currentStation.icao})",
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold,
-            )
+            OutlinedButton(
+              onClick = {
+                isTestingIp = true
+                ipTestReport = null
+                val probeCfg = ServerConfig(
+                  url = serverUrlInput,
+                  username = serverUserInput.trim(),
+                  password = serverPassInput,
+                  sourceMode = DataSourceMode.IP_ONLY,
+                  useCustomServer = true,
+                  fallbackToNoaa = false,
+                )
+                dialogScope.launch {
+                  val report = withContext(Dispatchers.IO) {
+                    CustomMeteoServerClient().testConnection(currentStation.icao, probeCfg)
+                  }
+                  ipTestReport = report
+                  isTestingIp = false
+                }
+              },
+              enabled = !isTestingIp,
+              modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("server_test_connection_button"),
+            ) {
+              Text(
+                text = if (isTestingIp) "Проверка (${currentStation.icao})…" else "Проверить IP (${currentStation.icao})",
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold,
+              )
+            }
+            OutlinedButton(
+              onClick = {
+                sourceMode = DataSourceMode.AUTO_IP_FIRST
+                serverUrlInput = ServerConfig.DEFAULT_SERVER_URL
+                serverUserInput = ServerConfig.DEFAULT_USERNAME
+                serverPassInput = ServerConfig.DEFAULT_PASSWORD
+              },
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("server_reset_wdr_button"),
+            ) {
+              Text(
+                text = "WDR по умолч.",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+              )
+            }
           }
           ipTestReport?.let { rep ->
             Spacer(modifier = Modifier.height(6.dp))
@@ -643,7 +665,7 @@ fun StationAndMetarDialog(
           }
           Spacer(modifier = Modifier.height(6.dp))
           Text(
-            text = "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION} · ${AuthorBrand.COPYRIGHT_LINE}",
+            text = "${AuthorBrand.APP_TITLE} v${AuthorBrand.APP_VERSION}",
             color = palette.textMuted,
             fontSize = 10.sp,
           )
@@ -839,6 +861,9 @@ fun WeatherAlertsDialog(
   onMarkAllRead: () -> Unit,
   onClearAlerts: () -> Unit,
   onDismiss: () -> Unit,
+  onToggleVfrMonitoredAirport: (String) -> Unit = {},
+  onSetVfrMonitorAllFavorites: (Boolean) -> Unit = {},
+  onCheckVfrNow: () -> Unit = {},
 ) {
   val palette = LocalMeteoPalette.current
   val context = LocalContext.current
@@ -864,7 +889,7 @@ fun WeatherAlertsDialog(
           tint = palette.metarAmber,
         )
         Text(
-          text = "Метеооповещения избранных",
+          text = "Метеооповещения и VFR минимумы",
           fontSize = 17.sp,
           fontWeight = FontWeight.Bold,
         )
@@ -875,7 +900,7 @@ fun WeatherAlertsDialog(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
           .fillMaxWidth()
-          .heightIn(max = 390.dp)
+          .heightIn(max = 410.dp)
           .verticalScroll(rememberScrollState())
           .testTag("weather_alerts_dialog"),
       ) {
@@ -995,6 +1020,175 @@ fun WeatherAlertsDialog(
                 }
                 .padding(horizontal = 8.dp, vertical = 5.dp),
             )
+          }
+        }
+
+        // VFR Minimums Breach Monitoring Section
+        Column(
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(palette.secondaryFieldBackground, RoundedCornerShape(4.dp))
+            .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+            .padding(8.dp)
+            .testTag("vfr_minimums_section"),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Минимумы ПВП (VFR Minimums)",
+                color = palette.metarAmber,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = "Оповещение при падении METAR ниже VFR",
+                color = palette.textSecondary,
+                fontSize = 10.5.sp,
+              )
+            }
+            Switch(
+              checked = alertConfig.vfrAlertsEnabled,
+              onCheckedChange = { vfrOn ->
+                onUpdateConfig(alertConfig.copy(vfrAlertsEnabled = vfrOn))
+              },
+              modifier = Modifier.testTag("vfr_alerts_enabled_switch"),
+            )
+          }
+
+          Text(
+            text = "Видимость VFR (мин):",
+            color = palette.textSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(3000, 5000, 8000).forEach { visM ->
+              val selected = alertConfig.vfrMinVisibilityMeters == visM
+              Text(
+                text = "${visM} м",
+                color = palette.textPrimary,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                  .testTag("vfr_vis_$visM")
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (selected) palette.buttonActiveBackground else palette.fieldBackground)
+                  .border(1.dp, if (selected) palette.metarAmber else palette.border, RoundedCornerShape(4.dp))
+                  .clickable { onUpdateConfig(alertConfig.copy(vfrMinVisibilityMeters = visM)) }
+                  .padding(horizontal = 8.dp, vertical = 5.dp),
+              )
+            }
+          }
+
+          Text(
+            text = "ВНГО VFR (мин):",
+            color = palette.textSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(1000, 1500, 2500).forEach { ceilFt ->
+              val selected = alertConfig.vfrMinCeilingFeet == ceilFt
+              Text(
+                text = "${ceilFt} ft",
+                color = palette.textPrimary,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                  .testTag("vfr_ceil_$ceilFt")
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (selected) palette.buttonActiveBackground else palette.fieldBackground)
+                  .border(1.dp, if (selected) palette.metarAmber else palette.border, RoundedCornerShape(4.dp))
+                  .clickable { onUpdateConfig(alertConfig.copy(vfrMinCeilingFeet = ceilFt)) }
+                  .padding(horizontal = 8.dp, vertical = 5.dp),
+              )
+            }
+          }
+
+          Text(
+            text = "Макс. ветер / порывы VFR:",
+            color = palette.textSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(15, 20, 25).forEach { windKt ->
+              val selected = alertConfig.vfrMaxWindKt == windKt
+              Text(
+                text = "$windKt kt",
+                color = palette.textPrimary,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                  .testTag("vfr_wind_$windKt")
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (selected) palette.buttonActiveBackground else palette.fieldBackground)
+                  .border(1.dp, if (selected) palette.metarAmber else palette.border, RoundedCornerShape(4.dp))
+                  .clickable { onUpdateConfig(alertConfig.copy(vfrMaxWindKt = windKt)) }
+                  .padding(horizontal = 8.dp, vertical = 5.dp),
+              )
+            }
+          }
+
+          Text(
+            text = "Контролируемые аэродромы VFR:",
+            color = palette.textSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          val vfrCandidates = remember(favoriteIcaos) {
+            (favoriteIcaos + AirportCatalog.presets.map { it.icao }).distinct().take(12)
+          }
+          val activeMonitored = alertConfig.resolvedVfrMonitoredIcaos(favoriteIcaos)
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text = "Все избранные",
+              color = palette.textPrimary,
+              fontSize = 11.sp,
+              fontWeight = if (alertConfig.vfrMonitorAllFavorites) FontWeight.Bold else FontWeight.Normal,
+              modifier = Modifier
+                .testTag("vfr_monitor_all_chip")
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (alertConfig.vfrMonitorAllFavorites) palette.buttonActiveBackground else palette.fieldBackground)
+                .border(1.dp, if (alertConfig.vfrMonitorAllFavorites) palette.metarAmber else palette.border, RoundedCornerShape(4.dp))
+                .clickable { onSetVfrMonitorAllFavorites(!alertConfig.vfrMonitorAllFavorites) }
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            )
+            vfrCandidates.forEach { icao ->
+              val isMonitored = icao in activeMonitored
+              Text(
+                text = icao,
+                color = if (isMonitored) palette.metarAmber else palette.textSecondary,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = if (isMonitored) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                  .testTag("vfr_airport_chip_$icao")
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (isMonitored) palette.buttonActiveBackground else palette.fieldBackground)
+                  .border(1.dp, if (isMonitored) palette.metarAmber else palette.border, RoundedCornerShape(4.dp))
+                  .clickable { onToggleVfrMonitoredAirport(icao) }
+                  .padding(horizontal = 8.dp, vertical = 5.dp),
+              )
+            }
+          }
+
+          OutlinedButton(
+            onClick = onCheckVfrNow,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("vfr_check_now_button"),
+          ) {
+            Text("Проверить VFR минимумы сейчас", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
           }
         }
 

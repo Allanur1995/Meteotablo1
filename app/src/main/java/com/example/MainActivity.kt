@@ -37,6 +37,7 @@ import com.example.data.SharedPreferencesWeatherHistoryStorage
 import com.example.data.SharedPreferencesWeatherPresetStorage
 import com.example.data.SharedPreferencesWindHistoryStorage
 import com.example.diagnostics.CrashReporter
+import com.example.location.PlayServicesLocationService
 import com.example.notifications.AndroidWeatherNotifier
 import com.example.ui.MeteoTabloScreen
 import com.example.ui.MeteotabloSplashScreen
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity() {
               unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(applicationContext),
               weatherNotifier = AndroidWeatherNotifier(applicationContext),
               weatherHistoryStorage = SharedPreferencesWeatherHistoryStorage(applicationContext),
+              locationService = PlayServicesLocationService(applicationContext),
             ) as T
           }
         },

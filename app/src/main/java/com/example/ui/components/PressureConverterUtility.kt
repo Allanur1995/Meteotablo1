@@ -29,10 +29,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -128,8 +130,9 @@ fun PressureConversionUtilityPanel(
   val palette = LocalMeteoPalette.current
   var activeUnit by remember(boardPressureUnit) { mutableStateOf(boardPressureUnit) }
   var direction by remember { mutableStateOf(PressureCalcDirection.QNH_TO_QFE) }
+  var autoSyncMetar by remember { mutableStateOf(true) }
   var elevationInput by remember(station.icao) { mutableStateOf(station.elevationMeters.toString()) }
-  var pressureInput by remember(station.icao, weather.qnhHpa) {
+  var pressureInput by remember(station.icao) {
     val initialHpa = (weather.qnhHpa ?: 1013).toDouble()
     mutableStateOf(
       if (boardPressureUnit == PressureUnit.HPA) {
@@ -138,6 +141,27 @@ fun PressureConversionUtilityPanel(
         String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(initialHpa))
       },
     )
+  }
+
+  LaunchedEffect(station.icao) {
+    elevationInput = station.elevationMeters.toString()
+  }
+
+  LaunchedEffect(station.icao, weather.rawMetar, weather.qnhHpa, weather.qfeHpa, autoSyncMetar) {
+    if (autoSyncMetar) {
+      val sourceHpa = when (direction) {
+        PressureCalcDirection.QNH_TO_QFE -> (weather.qnhHpa ?: 1013).toDouble()
+        PressureCalcDirection.QFE_TO_QNH -> {
+          val eMeters = elevationInput.toIntOrNull()?.coerceIn(-500, 6000) ?: station.elevationMeters
+          (weather.qfeHpa?.toDouble()) ?: UnitConverter.computeQfeFromQnhHpa((weather.qnhHpa ?: 1013).toDouble(), eMeters)
+        }
+      }
+      pressureInput = if (activeUnit == PressureUnit.HPA) {
+        sourceHpa.roundToInt().toString()
+      } else {
+        String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(sourceHpa))
+      }
+    }
   }
 
   val switchUnit: (PressureUnit) -> Unit = { targetUnit ->
@@ -158,27 +182,23 @@ fun PressureConversionUtilityPanel(
   val elevFeet = (elevMeters * 3.28084).roundToInt()
 
   val rawEntered = pressureInput.replace(',', '.').toDoubleOrNull()
-  val enteredHpa = rawEntered?.let { value ->
-    if (activeUnit == PressureUnit.HPA) value else UnitConverter.convertInHgToHpa(value)
+  val conversion = rawEntered?.let { value ->
+    UnitConverter.convertQnhQfe(
+      pressureValue = value,
+      unit = activeUnit,
+      elevationMeters = elevMeters,
+      fromQnhToQfe = direction == PressureCalcDirection.QNH_TO_QFE,
+    )
   }
 
-  val qnhHpaExact = when {
-    enteredHpa == null -> null
-    direction == PressureCalcDirection.QNH_TO_QFE -> enteredHpa
-    else -> UnitConverter.computeQnhFromQfeHpa(enteredHpa, elevMeters)
-  }
-  val qfeHpaExact = when {
-    enteredHpa == null -> null
-    direction == PressureCalcDirection.QNH_TO_QFE -> UnitConverter.computeQfeFromQnhHpa(enteredHpa, elevMeters)
-    else -> enteredHpa
-  }
-
-  val qnhInHgExact = qnhHpaExact?.let { UnitConverter.convertHpaToInHg(it) }
-  val qnhMmHg = qnhHpaExact?.let { UnitConverter.convertHpaToMmHgDouble(it).roundToInt() }
-  val qfeInHgExact = qfeHpaExact?.let { UnitConverter.convertHpaToInHg(it) }
-  val qfeMmHg = qfeHpaExact?.let { UnitConverter.convertHpaToMmHgDouble(it).roundToInt() }
-  val pressureAltFt = qnhHpaExact?.let { UnitConverter.computePressureAltitudeFeet(it, elevMeters) }
-  val deltaHpa = if (qnhHpaExact != null && qfeHpaExact != null) qnhHpaExact - qfeHpaExact else null
+  val qnhHpaExact = conversion?.qnhHpa
+  val qfeHpaExact = conversion?.qfeHpa
+  val qnhInHgExact = conversion?.qnhInHg
+  val qnhMmHg = conversion?.qnhMmHg
+  val qfeInHgExact = conversion?.qfeInHg
+  val qfeMmHg = conversion?.qfeMmHg
+  val pressureAltFt = conversion?.pressureAltitudeFeet
+  val deltaHpa = conversion?.baricOffsetHpa
 
   Column(
     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -189,6 +209,36 @@ fun PressureConversionUtilityPanel(
       .border(1.dp, palette.border, RoundedCornerShape(4.dp))
       .padding(10.dp),
   ) {
+    // Live METAR auto-update banner + switch
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+      modifier = Modifier
+        .fillMaxWidth()
+        .background(palette.secondaryFieldBackground, RoundedCornerShape(4.dp))
+        .border(0.8.dp, palette.border, RoundedCornerShape(4.dp))
+        .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "Авто-обновление от METAR (${station.icao})",
+          color = palette.textPrimary,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+          text = "METAR ${weather.observationTimeUtc} · QNH ${weather.qnhHpa ?: "--"} гПа",
+          color = palette.textSecondary,
+          fontSize = 10.sp,
+          fontFamily = FontFamily.Monospace,
+        )
+      }
+      Switch(
+        checked = autoSyncMetar,
+        onCheckedChange = { autoSyncMetar = it },
+        modifier = Modifier.testTag("pressure_utility_auto_sync_switch"),
+      )
+    }
     // Unit Toggle: hPa <-> inHg
     Row(
       horizontalArrangement = Arrangement.spacedBy(6.dp),

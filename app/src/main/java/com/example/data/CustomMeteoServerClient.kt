@@ -69,14 +69,15 @@ class CustomMeteoServerClient {
 
   private val cookieJar = SessionCookieJar()
   private val moshi: Moshi = MeteoServerRetrofitFactory.createMoshi()
+  private val wdrClient = UmasWdrClient(cookieJar)
 
   suspend fun testConnection(icao: String, config: ServerConfig): ConnectionTestReport {
     val outcome = fetchMetarAndTaf(icao, config)
-    val httpLine = outcome.logs.firstOrNull { it.startsWith("HTTP ") }
-    val httpCode = httpLine
-      ?.substringAfter("HTTP ")
-      ?.substringBefore(" ")
-      ?.toIntOrNull()
+    val httpCode = outcome.logs
+      .mapNotNull { line ->
+        Regex("(?:WDR HTTP|HTTP)\\s+(\\d{3})").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+      }
+      .firstOrNull()
     val reachable = httpCode != null
     val summary = when {
       !outcome.rawMetar.isNullOrBlank() ->
@@ -127,12 +128,26 @@ class CustomMeteoServerClient {
       moshi = moshi,
     )
 
-    logs.add("Retrofit GET $targetUrlStr (логин: ${config.username.ifBlank { "нет" }})")
-    val firstResp = api.fetchPage(targetUrlStr)
-    var currentUrl = firstResp.raw().request.url
-    var currentBody = readBody(firstResp)
-    var statusCode = firstResp.code()
-    logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+    var currentUrl: HttpUrl
+    var currentBody: String
+    var statusCode: Int
+    val wdrDirectFirst = if (baseHttpUrl.encodedPath.endsWith("/wdr", ignoreCase = true) && config.username.isNotBlank()) {
+      tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+    } else {
+      null
+    }
+    if (wdrDirectFirst != null) {
+      currentUrl = wdrDirectFirst.first
+      currentBody = wdrDirectFirst.second
+      statusCode = 200
+    } else {
+      logs.add("Retrofit GET $targetUrlStr (логин: ${config.username.ifBlank { "нет" }})")
+      val firstResp = api.fetchPage(targetUrlStr)
+      currentUrl = firstResp.raw().request.url
+      currentBody = readBody(firstResp)
+      statusCode = firstResp.code()
+      logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+    }
 
     if (baseHttpUrl.encodedPath == "/") {
       val initialHasContent = isLoginFormHtml(currentBody) ||
@@ -204,11 +219,27 @@ class CustomMeteoServerClient {
             currentBody = readBody(redirResp)
           }
         }
-
-        if (isLoginFormHtml(currentBody)) {
-          return null to "Не удалось войти на $hostLabel (проверьте логин и пароль)"
-        }
       }
+    }
+
+    if ((baseHttpUrl.encodedPath.endsWith("/wdr", ignoreCase = true) ||
+        statusCode >= 400 ||
+        isLoginFormHtml(currentBody) ||
+        (extractMetarAndTaf(currentBody, cleanIcao, moshi).first.isNullOrBlank() &&
+          extractAftnBulletinCandidates(currentBody, cleanIcao, currentUrl).isEmpty() &&
+          extractFrameUrls(currentBody, currentUrl).isEmpty())) &&
+      config.username.isNotBlank()
+    ) {
+      val wdrOutcome = tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+      if (wdrOutcome != null) {
+        currentUrl = wdrOutcome.first
+        currentBody = wdrOutcome.second
+        statusCode = 200
+      }
+    }
+
+    if (isLoginFormHtml(currentBody)) {
+      return null to "Не удалось войти на $hostLabel (проверьте логин и пароль)"
     }
 
     val inspectedDocs = mutableListOf(currentUrl to currentBody)
@@ -249,6 +280,22 @@ class CustomMeteoServerClient {
       }
     }
 
+    if (candidates.isEmpty() &&
+      inspectedDocs.none { (_, body) -> extractMetarAndTaf(body, cleanIcao, moshi).first != null } &&
+      config.username.isNotBlank() &&
+      !currentUrl.encodedPath.endsWith("/wdr", ignoreCase = true)
+    ) {
+      val wdrOutcome = tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+      if (wdrOutcome != null) {
+        currentUrl = wdrOutcome.first
+        currentBody = wdrOutcome.second
+        inspectedDocs.add(currentUrl to currentBody)
+        candidates = inspectedDocs
+          .flatMap { (docUrl, docBody) -> extractAftnBulletinCandidates(docBody, cleanIcao, docUrl) }
+          .distinctBy { it.url }
+      }
+    }
+
     return AuthenticatedSessionDocs(
       api = api,
       hostLabel = hostLabel,
@@ -270,8 +317,35 @@ class CustomMeteoServerClient {
     val cleanIcao = icao.trim().uppercase()
     val hostFallback = config.url
     return try {
+      val normalizedUrl = ServerConfig.normalizeServerUrl(config.url).toHttpUrlOrNull()
+      if (normalizedUrl != null && normalizedUrl.encodedPath.endsWith("/wdr", ignoreCase = true)) {
+        val wdrHist = wdrClient.fetchHistory24h(cleanIcao, config, maxBulletins)
+        logs.addAll(wdrHist.logs)
+        if (wdrHist.metars.isNotEmpty()) {
+          val latestTaf = wdrHist.tafs.firstOrNull()
+          val pairs = wdrHist.metars.map { HistoricalReportPair(rawMetar = it, rawTaf = latestTaf) }
+          return CustomHistoryOutcome(
+            observations = pairs,
+            tafs = wdrHist.tafs,
+            sourceHost = wdrHist.hostLabel,
+            logs = logs,
+          )
+        }
+      }
+
       val (session, authErr) = openAuthenticatedSessionDocs(cleanIcao, config, logs)
       if (session == null) {
+        val wdrHist = wdrClient.fetchHistory24h(cleanIcao, config, maxBulletins)
+        logs.addAll(wdrHist.logs)
+        if (wdrHist.metars.isNotEmpty()) {
+          val latestTaf = wdrHist.tafs.firstOrNull()
+          return CustomHistoryOutcome(
+            observations = wdrHist.metars.map { HistoricalReportPair(rawMetar = it, rawTaf = latestTaf) },
+            tafs = wdrHist.tafs,
+            sourceHost = wdrHist.hostLabel,
+            logs = logs,
+          )
+        }
         return CustomHistoryOutcome(
           observations = emptyList(),
           tafs = emptyList(),
@@ -368,17 +442,43 @@ class CustomMeteoServerClient {
     }
 
     return try {
+      val isExplicitWdrPath = baseHttpUrl.encodedPath.endsWith("/wdr", ignoreCase = true)
+      if (isExplicitWdrPath) {
+        val wdrResult = wdrClient.fetchStation(cleanIcao, config)
+        logs.addAll(wdrResult.logs)
+        if (!wdrResult.rawMetar.isNullOrBlank()) {
+          return CustomFetchOutcome(
+            rawMetar = wdrResult.rawMetar,
+            rawTaf = wdrResult.rawTaf,
+            sourceHost = wdrResult.hostLabel,
+            logs = logs,
+          )
+        }
+        if (!wdrResult.reachable) {
+          return CustomFetchOutcome(
+            rawMetar = null,
+            rawTaf = null,
+            sourceHost = wdrResult.hostLabel,
+            logs = logs,
+            errorMessage = wdrResult.errorMessage ?: "IP-сервер ${wdrResult.hostLabel} недоступен",
+          )
+        }
+      }
+
       val api = MeteoServerRetrofitFactory.create(
         config = config,
         cookieJar = cookieJar,
         moshi = moshi,
       )
 
+      var currentUrl: HttpUrl
+      var currentBody: String
+      var statusCode: Int
       logs.add("Retrofit GET $targetUrlStr (логин: ${config.username.ifBlank { "нет" }})")
       val firstResp = api.fetchPage(targetUrlStr)
-      var currentUrl = firstResp.raw().request.url
-      var currentBody = readBody(firstResp)
-      var statusCode = firstResp.code()
+      currentUrl = firstResp.raw().request.url
+      currentBody = readBody(firstResp)
+      statusCode = firstResp.code()
       logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
 
       // If user configured bare host "/" and root returns an error or empty shell, auto-probe /cgi-bin/wlogin
@@ -441,6 +541,15 @@ class CustomMeteoServerClient {
         }
       }
 
+      if (baseHttpUrl.encodedPath.endsWith("/wdr", ignoreCase = true) && config.username.isNotBlank()) {
+        val wdrDirect = tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+        if (wdrDirect != null) {
+          currentUrl = wdrDirect.first
+          currentBody = wdrDirect.second
+          statusCode = 200
+        }
+      }
+
       // Handle HTML form login if the server presents a login form
       if (isLoginFormHtml(currentBody)) {
         val parsedForm = parseHtmlForm(currentBody, currentUrl, config.username, config.password)
@@ -462,14 +571,42 @@ class CustomMeteoServerClient {
           }
 
           if (isLoginFormHtml(currentBody)) {
-            return CustomFetchOutcome(
-              rawMetar = null,
-              rawTaf = null,
-              sourceHost = hostLabel,
-              logs = logs,
-              errorMessage = "Не удалось войти на $hostLabel (проверьте логин и пароль)",
-            )
+            val wdrFallback = if (config.username.isNotBlank()) {
+              tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+            } else {
+              null
+            }
+            if (wdrFallback != null) {
+              currentUrl = wdrFallback.first
+              currentBody = wdrFallback.second
+              statusCode = 200
+            } else {
+              return CustomFetchOutcome(
+                rawMetar = null,
+                rawTaf = null,
+                sourceHost = hostLabel,
+                logs = logs,
+                errorMessage = "Не удалось войти на $hostLabel (проверьте логин и пароль)",
+              )
+            }
           }
+        }
+      }
+
+      // Also probe POST /cgi-bin/wdr directly if initial path failed or produced no SATR/FTTR/METAR data
+      if ((statusCode >= 400 ||
+          (extractMetarAndTaf(currentBody, cleanIcao, moshi).first.isNullOrBlank() &&
+            extractAftnBulletinCandidates(currentBody, cleanIcao, currentUrl).isEmpty() &&
+            extractFrameUrls(currentBody, currentUrl).isEmpty() &&
+            extractWmaNavUrl(currentBody, currentUrl) == null)) &&
+        config.username.isNotBlank() &&
+        !currentUrl.encodedPath.endsWith("/wdr", ignoreCase = true)
+      ) {
+        val wdrFallback = tryUmasWdrDirectPost(api, baseHttpUrl, config, logs)
+        if (wdrFallback != null) {
+          currentUrl = wdrFallback.first
+          currentBody = wdrFallback.second
+          statusCode = 200
         }
       }
 
@@ -526,11 +663,11 @@ class CustomMeteoServerClient {
 
       val fetchedBulletinUrls = mutableSetOf<String>()
 
-      // 3. Fetch newest matching METAR bulletin links (SA../SP.. or station links)
+      // 3. Fetch newest matching METAR bulletin links (SATR* / SA.. / SP.. or station links)
       if (metar.isNullOrBlank() && candidates.isNotEmpty()) {
         val metarCandidates = rankCandidates(
           candidates.filter { it.kind == BulletinKind.METAR || it.kind == BulletinKind.GENERAL },
-        ).take(6)
+        ).take(12)
 
         for (candidate in metarCandidates) {
           if (candidate.url == currentUrl.toString()) continue
@@ -553,11 +690,11 @@ class CustomMeteoServerClient {
         }
       }
 
-      // 4. Independently fetch newest matching TAF bulletin links (FT../FC..) if TAF is still missing
+      // 4. Independently fetch newest matching TAF bulletin links (FTTR* / FT.. / FC..) if TAF is still missing
       if (taf.isNullOrBlank() && candidates.isNotEmpty()) {
         val tafCandidates = rankCandidates(
           candidates.filter { it.kind == BulletinKind.TAF || it.kind == BulletinKind.GENERAL },
-        ).take(4)
+        ).take(8)
 
         for (candidate in tafCandidates) {
           if (candidate.url == currentUrl.toString() || candidate.url in fetchedBulletinUrls) continue
@@ -626,6 +763,18 @@ class CustomMeteoServerClient {
         }
       }
 
+      // 7. Guaranteed fallback to clean Python-style /cgi-bin/wdr flow if not already tried
+      if (metar.isNullOrBlank() && !isExplicitWdrPath && config.username.isNotBlank()) {
+        val wdrResult = wdrClient.fetchStation(cleanIcao, config)
+        logs.addAll(wdrResult.logs)
+        if (!wdrResult.rawMetar.isNullOrBlank()) {
+          metar = wdrResult.rawMetar
+          if (taf.isNullOrBlank() && !wdrResult.rawTaf.isNullOrBlank()) {
+            taf = wdrResult.rawTaf
+          }
+        }
+      }
+
       if (metar.isNullOrBlank()) {
         val snippet = stripHtml(currentBody).replace(Regex("\\s+"), " ").take(140)
         logs.add("METAR для $cleanIcao не найден на $hostLabel. Фрагмент: $snippet")
@@ -659,6 +808,32 @@ class CustomMeteoServerClient {
         errorMessage = "Сервер $hostLabel недоступен: $msg",
       )
     }
+  }
+
+  private suspend fun tryUmasWdrDirectPost(
+    api: MeteoServerApi,
+    baseHttpUrl: HttpUrl,
+    config: ServerConfig,
+    logs: MutableList<String>,
+  ): Pair<HttpUrl, String>? {
+    val wdrUrl = baseHttpUrl.newBuilder().encodedPath("/cgi-bin/wdr").query(null).build().toString()
+    logs.add("UMAS WDR POST $wdrUrl (user=${config.username})")
+    val resp = runCatching {
+      api.submitLoginForm(
+        wdrUrl,
+        linkedMapOf(
+          "user" to config.username,
+          "pass" to config.password,
+        ),
+      )
+    }.getOrNull() ?: return null
+    val body = readBody(resp)
+    val resolvedUrl = resp.raw().request.url
+    logs.add("WDR HTTP ${resp.code()} <- $resolvedUrl (${body.length} символов)")
+    if (!resp.isSuccessful || body.isBlank() || isLoginFormHtml(body)) {
+      return null
+    }
+    return resolvedUrl to body
   }
 
   private suspend fun submitParsedForm(
@@ -736,7 +911,7 @@ class CustomMeteoServerClient {
   companion object {
 
     private val wmoBulletinRegex = Regex(
-      "\\b((SA|SP|FT|FC)[A-Z0-9]{2,4}([A-Z]{4}))(?:[_\\s-]?(\\d{6}))?\\b",
+      "\\b((SA|SP|FT|FC)[A-Z0-9]{2,4})\\s*([A-Z]{4})(?:[_\\s-]?(\\d{6}))?\\b",
       RegexOption.IGNORE_CASE,
     )
 
@@ -925,9 +1100,9 @@ class CustomMeteoServerClient {
         val label: String
 
         if (wmoMatch != null) {
-          val fullHeader = wmoMatch.groupValues[1].uppercase()
           val tt = wmoMatch.groupValues[2].uppercase()
           val originCccc = wmoMatch.groupValues[3].uppercase()
+          val fullHeader = "${wmoMatch.groupValues[1].uppercase()}$originCccc"
           val tsStr = wmoMatch.groupValues[4]
           rawTimestamp = tsStr.takeIf { it.length == 6 }?.toIntOrNull()
           label = if (tsStr.isNotBlank()) "${fullHeader}_$tsStr" else fullHeader
@@ -946,23 +1121,31 @@ class CustomMeteoServerClient {
             else -> 0
           }
         } else {
+          val isSatrLink = linkText.startsWith("SATR", ignoreCase = true)
+          val isFttrLink = linkText.startsWith("FTTR", ignoreCase = true)
           val hasIcao = combined.contains(cleanIcao, ignoreCase = true)
-          val hasMetarWord = combined.contains("metar", ignoreCase = true) ||
+          val hasMetarWord = isSatrLink ||
+            combined.contains("metar", ignoreCase = true) ||
             combined.contains("speci", ignoreCase = true) ||
             combined.contains("svodka", ignoreCase = true) ||
             combined.contains("fact", ignoreCase = true) ||
             combined.contains("obs", ignoreCase = true)
-          val hasTafWord = combined.contains("taf", ignoreCase = true) ||
+          val hasTafWord = isFttrLink ||
+            combined.contains("taf", ignoreCase = true) ||
             combined.contains("forecast", ignoreCase = true)
 
           if (!hasIcao && !hasMetarWord && !hasTafWord) continue
 
           kind = when {
-            hasTafWord && !hasMetarWord -> BulletinKind.TAF
-            hasMetarWord && !hasTafWord -> BulletinKind.METAR
+            isFttrLink || (hasTafWord && !hasMetarWord) -> BulletinKind.TAF
+            isSatrLink || (hasMetarWord && !hasTafWord) -> BulletinKind.METAR
             else -> BulletinKind.GENERAL
           }
-          matchScore = if (hasIcao) 3 else 0
+          matchScore = when {
+            hasIcao -> 3
+            (isSatrLink || isFttrLink) && stationPrefix2 == "UT" -> 2
+            else -> 0
+          }
           rawTimestamp = Regex("(?:^|_)(\\d{6})(?:$|[^\\d])")
             .find(linkText)
             ?.groupValues
@@ -999,7 +1182,7 @@ class CustomMeteoServerClient {
             val adjustedDay = if (hasMonthBoundary && day in 1..5) day + 31 else day
             adjustedDay * 10000 + hhmm
           }
-          .thenByDescending { it.htmlOrder },
+          .thenBy { it.htmlOrder },
       )
     }
 
@@ -1081,6 +1264,7 @@ class CustomMeteoServerClient {
       val metarBoundaryLookahead = "(?==|\"|\\r?\\n\\s*(?:METAR|SPECI|TAF(?:\\s|$)|[A-Z]{4}\\s+\\d{6}Z|NNNN|\\r?\\n)|$)"
       val metarPatterns = listOf(
         Regex("\\b(?:METAR|SPECI)(?:\\s+(?:COR|RTD|AMD|CC[A-Z]))?\\s+$upperIcao\\s+\\d{6}Z(?!\\s+\\d{4}/\\d{4}\\b)[^=\"]*?$metarBoundaryLookahead", RegexOption.IGNORE_CASE),
+        Regex("(?m)^\\s*(?:METAR|SPECI)(?:\\s+(?:COR|RTD|AMD|CC[A-Z]))?\\s+$upperIcao\\b[^=]*?(?==|$)", RegexOption.IGNORE_CASE),
         Regex("\\b$upperIcao\\s+\\d{6}Z(?!\\s+\\d{4}/\\d{4}\\b)\\s+(?:AUTO\\s+|COR\\s+)?(?:(?:\\d{3}|VRB|///)\\d{2,3}(?:G\\d{2,3})?(?:KT|MPS|KMH)|/////(?:KT|MPS|KMH)?)\\b[^=\"]*?$metarBoundaryLookahead", RegexOption.IGNORE_CASE),
         Regex("\\b$upperIcao\\s+\\d{6}Z(?!\\s+\\d{4}/\\d{4}\\b)\\s+(?:CAVOK|\\d{4}|////)\\b[^=\"]*?$metarBoundaryLookahead", RegexOption.IGNORE_CASE),
       )
@@ -1105,6 +1289,7 @@ class CustomMeteoServerClient {
       val tafBoundaryLookahead = "(?==|\"|\\r?\\n\\s*(?:METAR|SPECI|TAF(?:\\s|$)|[A-Z]{4}\\s+\\d{6}Z|NNNN|\\r?\\n)|$)"
       val tafPatterns = listOf(
         Regex("\\bTAF(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+$upperIcao\\s+\\d{6}Z[^=\"]*?$tafBoundaryLookahead", RegexOption.IGNORE_CASE),
+        Regex("(?m)^\\s*TAF(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+$upperIcao\\b[^=]*?(?==|$)", RegexOption.IGNORE_CASE),
         // Collective FT bulletins list each station on its own line with DDHHMMZ DDHH/DDHH without repeating "TAF"
         Regex("\\b$upperIcao\\s+\\d{6}Z\\s+\\d{4}/\\d{4}\\b[^=\"]*?$tafBoundaryLookahead", RegexOption.IGNORE_CASE),
       )

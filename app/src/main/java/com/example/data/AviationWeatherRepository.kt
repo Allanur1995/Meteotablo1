@@ -3,23 +3,16 @@ package com.example.data
 import com.example.domain.AviationWeatherParser
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
+import com.example.network.AviationWeatherNetworkManager
 import java.util.Calendar
 import java.util.TimeZone
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONArray
 
-class AviationWeatherRepository {
-
-  private val client = OkHttpClient.Builder()
-    .connectTimeout(10, TimeUnit.SECONDS)
-    .readTimeout(12, TimeUnit.SECONDS)
-    .build()
-
-  private val customServerClient = CustomMeteoServerClient()
+class AviationWeatherRepository(
+  private val publicNetworkManager: AviationWeatherNetworkManager = AviationWeatherNetworkManager(),
+  private val customServerClient: CustomMeteoServerClient = CustomMeteoServerClient(),
+) {
 
   data class FetchResult(
     val weather: DecodedWeather,
@@ -136,7 +129,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
     return@withContext Result.success(ipRes)
   }
 
-  logs.add("IP-сервер недоступен -> переход на интернет")
+  logs.add("IP-сервер (${ipErr ?: "недоступен"}) -> переход на интернет")
   val (netRes, netErr) =
     fetchFromInternetSites(icao, serverConfig, station, logs)
 
@@ -159,12 +152,125 @@ DataSourceMode.AUTO_IP_FIRST -> {
         val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
         if (ipRes != null) return@withContext Result.success(ipRes)
 
-        val msg = listOfNotNull(netErr, ipErr).joinToString(" | ").i
+        val msg = listOfNotNull(netErr, ipErr).joinToString(" | ").ifBlank {
           "Нет актуального METAR для $icao"
         }
         Result.failure(IllegalStateException(msg))
       }
     }
+  }
+
+  suspend fun fetchWeatherByCoordinates(
+    latitude: Double,
+    longitude: Double,
+    locationLabel: String? = null,
+    serverConfig: ServerConfig = ServerConfig(),
+  ): Result<FetchResult> = withContext(Dispatchers.IO) {
+    val logs = mutableListOf<String>()
+    val clampedLat = latitude.coerceIn(-89.9, 89.9)
+    val clampedLon = longitude.coerceIn(-180.0, 180.0)
+    val cleanLabel = locationLabel?.trim()?.takeIf { it.isNotBlank() }
+    logs.add(
+      "Поиск погоды по координатам: ${
+        String.format(java.util.Locale.US, "%.4f, %.4f", clampedLat, clampedLon)
+      }${cleanLabel?.let { " ($it)" } ?: ""}",
+    )
+
+    val nearestCatalog = AirportCatalog.allStations.minByOrNull { st ->
+      com.example.domain.AirportMapProjection.haversineKm(clampedLat, clampedLon, st.latitude, st.longitude)
+    } ?: AirportCatalog.presets.first()
+    val nearestDistKm = com.example.domain.AirportMapProjection.haversineKm(
+      clampedLat,
+      clampedLon,
+      nearestCatalog.latitude,
+      nearestCatalog.longitude,
+    )
+
+    val ipAirports = setOf("UTAA", "UTAM", "UTAK", "UTAT", "UTAV", "UTAN", "UTAE")
+    if (nearestCatalog.icao in ipAirports &&
+      nearestDistKm <= 120.0 &&
+      serverConfig.resolvedMode() != DataSourceMode.INTERNET_ONLY
+    ) {
+      logs.add("Ближайший аэродром ТМ ${nearestCatalog.icao} (${nearestDistKm} км) -> запрос через IP/авто")
+      val live = fetchLiveWeather(nearestCatalog, serverConfig)
+      if (live.isSuccess) {
+        val res = live.getOrThrow()
+        val displayStation = if (nearestDistKm > 15.0 && cleanLabel != null) {
+          res.resolvedStation.copy(
+            city = "$cleanLabel (~${nearestDistKm} км до ${res.resolvedStation.icao})",
+          )
+        } else {
+          res.resolvedStation
+        }
+        return@withContext Result.success(
+          res.copy(
+            resolvedStation = displayStation,
+            logMessages = logs + res.logMessages,
+          ),
+        )
+      }
+    }
+
+    // Query public Retrofit API (aviationweather.gov bounding box) for nearest reporting station to exact coordinates
+    val awcCandidate = publicNetworkManager.fetchNearestByCoordinates(
+      latitude = clampedLat,
+      longitude = clampedLon,
+      useAviationWeatherGov = serverConfig.useAviationWeatherGov,
+      logs = logs,
+    )
+    if (awcCandidate != null) {
+      val known = AirportCatalog.findKnown(awcCandidate.icao)
+      val approxUtcOffset = kotlin.math.round(clampedLon / 15.0).toInt().coerceIn(-12, 14)
+      val cityLabel = cleanLabel?.let { "$it (бл. ${awcCandidate.icao} · ${awcCandidate.distanceKm.toInt()} км)" }
+        ?: known?.city
+        ?: String.format(java.util.Locale.US, "%.2f°, %.2f°", clampedLat, clampedLon)
+      val matchedStation = known?.copy(city = cityLabel) ?: AirportStation(
+        icao = awcCandidate.icao,
+        name = awcCandidate.name ?: "${awcCandidate.icao} Airfield",
+        city = cityLabel,
+        latitude = awcCandidate.stationLat ?: clampedLat,
+        longitude = awcCandidate.stationLon ?: clampedLon,
+        elevationMeters = awcCandidate.elevationMeters ?: 50,
+        utcOffsetHours = approxUtcOffset,
+        timezoneLabel = if (approxUtcOffset >= 0) "UTC+$approxUtcOffset" else "UTC$approxUtcOffset",
+        runways = listOf(com.example.model.RunwayPair("36", 360, "18", 180)),
+      )
+      val decoded = AviationWeatherParser.parse(
+        rawMetarInput = awcCandidate.rawMetar,
+        rawTafInput = awcCandidate.rawTaf ?: "TAF ${matchedStation.icao} — нет данных",
+        station = matchedStation,
+        sourceLabel = "GPS/координаты (AWC ${matchedStation.icao})",
+      )
+      return@withContext Result.success(FetchResult(decoded, matchedStation, logs))
+    }
+
+    // Fallback to nearest catalog airport
+    logs.add("Нет станций в радиусе AWC -> ближайший каталог ${nearestCatalog.icao} ($nearestDistKm км)")
+    val fallbackRes = fetchLiveWeather(nearestCatalog, serverConfig)
+    if (fallbackRes.isSuccess) {
+      val res = fallbackRes.getOrThrow()
+      val updatedStation = if (cleanLabel != null) {
+        res.resolvedStation.copy(city = "$cleanLabel (бл. ${res.resolvedStation.icao})")
+      } else {
+        res.resolvedStation
+      }
+      return@withContext Result.success(res.copy(resolvedStation = updatedStation, logMessages = logs + res.logMessages))
+    }
+
+    // Last resort: still switch to coordinate-aware nearest station placeholder so user sees coordinates & sun times
+    val approxOffset = kotlin.math.round(clampedLon / 15.0).toInt().coerceIn(-12, 14)
+    val fallbackCoordsStation = nearestCatalog.copy(
+      city = cleanLabel ?: String.format(java.util.Locale.US, "%.3f°, %.3f°", clampedLat, clampedLon),
+      latitude = clampedLat,
+      longitude = clampedLon,
+      utcOffsetHours = approxOffset,
+      timezoneLabel = if (approxOffset >= 0) "UTC+$approxOffset" else "UTC$approxOffset",
+    )
+    Result.failure(
+      IllegalStateException(
+        "Не удалось загрузить METAR для ${fallbackCoordsStation.city} (ближайший ${nearestCatalog.icao}, $nearestDistKm км)",
+      ),
+    )
   }
 
   private suspend fun fetchFromCustomIpServer(
@@ -193,176 +299,47 @@ DataSourceMode.AUTO_IP_FIRST -> {
     return null to (outcome.errorMessage ?: "Нет данных для $icao на сервере ${outcome.sourceHost}")
   }
 
-  private fun fetchFromInternetSites(
+  private suspend fun fetchFromInternetSites(
     icao: String,
     serverConfig: ServerConfig,
     station: AirportStation,
     logs: MutableList<String>,
   ): Pair<FetchResult?, String?> {
-    var resolvedStation = station
-    var rawMetar: String? = null
-    var rawTaf: String? = null
-    var metarSourceSite = "интернет"
+    return try {
+      val response = publicNetworkManager.fetchLatestWeather(
+        icao = icao,
+        useAviationWeatherGov = serverConfig.useAviationWeatherGov,
+        useNoaaTgftp = serverConfig.useNoaaTgftp,
+        useVatsimMetar = serverConfig.useVatsimMetar,
+        logs = logs,
+      ) ?: return null to "Нет актуального METAR для $icao на интернет-сайтах"
 
-    try {
-      // 1. aviationweather.gov JSON API
-      if (serverConfig.useAviationWeatherGov) {
-        val metarUrl = "https://aviationweather.gov/api/data/metar?ids=$icao&format=json"
-        logs.add("GET $metarUrl")
-        runCatching {
-          val metarReq = Request.Builder()
-            .url(metarUrl)
-            .header("User-Agent", "Meteotablo/1.0")
-            .build()
-          client.newCall(metarReq).execute().use { resp ->
-            logs.add("aviationweather.gov METAR HTTP ${resp.code}")
-            if (resp.isSuccessful) {
-              val body = resp.body?.string().orEmpty().trim()
-              if (body.startsWith("[")) {
-                val arr = JSONArray(body)
-                if (arr.length() > 0) {
-                  val obj = arr.getJSONObject(0)
-                  rawMetar = obj.optString("rawOb").takeIf { it.isNotBlank() }
-                  if (!rawMetar.isNullOrBlank()) {
-                    metarSourceSite = "интернет (aviationweather.gov)"
-                  }
-                  val lat = obj.optDouble("lat", Double.NaN)
-                  val lon = obj.optDouble("lon", Double.NaN)
-                  val elev = obj.optInt("elev", Int.MIN_VALUE)
-                  val apiName = obj.optString("name")
-                  if (!lat.isNaN() && !lon.isNaN() && AirportCatalog.presets.none { it.icao == icao }) {
-                    resolvedStation = resolvedStation.copy(
-                      latitude = lat,
-                      longitude = lon,
-                      elevationMeters = if (elev != Int.MIN_VALUE) elev else resolvedStation.elevationMeters,
-                      name = apiName.ifBlank { resolvedStation.name },
-                    )
-                  }
-                }
-              }
-            }
-          }
-        }.onFailure { err ->
-          logs.add("aviationweather.gov ошибка: ${err.message ?: err::class.simpleName}")
-        }
+      var resolvedStation = station
+      if (response.resolvedLat != null &&
+        response.resolvedLon != null &&
+        AirportCatalog.presets.none { it.icao == icao }
+      ) {
+        resolvedStation = resolvedStation.copy(
+          latitude = response.resolvedLat,
+          longitude = response.resolvedLon,
+          elevationMeters = response.resolvedElevMeters ?: resolvedStation.elevationMeters,
+          name = response.resolvedName ?: resolvedStation.name,
+        )
       }
 
-      // 2. NOAA TGFTP raw station text file
-      if (rawMetar.isNullOrBlank() && serverConfig.useNoaaTgftp) {
-        val noaaUrl = "https://tgftp.nws.noaa.gov/data/observations/metar/stations/$icao.TXT"
-        logs.add("GET $noaaUrl")
-        runCatching {
-          val noaaReq = Request.Builder()
-            .url(noaaUrl)
-            .header("User-Agent", "Meteotablo/1.0")
-            .build()
-          client.newCall(noaaReq).execute().use { resp ->
-            logs.add("tgftp.nws.noaa.gov METAR HTTP ${resp.code}")
-            if (resp.isSuccessful) {
-              val lines = resp.body?.string().orEmpty()
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-              val found = lines.lastOrNull { it.contains(icao) } ?: lines.lastOrNull()
-              if (!found.isNullOrBlank()) {
-                rawMetar = found
-                metarSourceSite = "интернет (noaa.gov)"
-              }
-            }
-          }
-        }.onFailure { err ->
-          logs.add("tgftp.nws.noaa.gov ошибка: ${err.message ?: err::class.simpleName}")
-        }
-      }
-
-      // 3. VATSIM global METAR mirror
-      if (rawMetar.isNullOrBlank() && serverConfig.useVatsimMetar) {
-        val vatsimUrl = "https://metar.vatsim.net/metar.php?id=$icao"
-        logs.add("GET $vatsimUrl")
-        runCatching {
-          val vatsimReq = Request.Builder()
-            .url(vatsimUrl)
-            .header("User-Agent", "Meteotablo/1.0")
-            .build()
-          client.newCall(vatsimReq).execute().use { resp ->
-            logs.add("metar.vatsim.net HTTP ${resp.code}")
-            if (resp.isSuccessful) {
-              val text = resp.body?.string().orEmpty()
-                .lines()
-                .map { it.trim() }
-                .firstOrNull { it.contains(icao, ignoreCase = true) }
-              if (!text.isNullOrBlank()) {
-                rawMetar = text
-                metarSourceSite = "интернет (vatsim.net)"
-              }
-            }
-          }
-        }.onFailure { err ->
-          logs.add("metar.vatsim.net ошибка: ${err.message ?: err::class.simpleName}")
-        }
-      }
-
-      // TAF lookup from internet sites
-      if (serverConfig.useAviationWeatherGov) {
-        val tafUrl = "https://aviationweather.gov/api/data/taf?ids=$icao&format=json"
-        runCatching {
-          val tafReq = Request.Builder()
-            .url(tafUrl)
-            .header("User-Agent", "Meteotablo/1.0")
-            .build()
-          client.newCall(tafReq).execute().use { resp ->
-            logs.add("aviationweather.gov TAF HTTP ${resp.code}")
-            if (resp.isSuccessful) {
-              val body = resp.body?.string().orEmpty().trim()
-              if (body.startsWith("[")) {
-                val arr = JSONArray(body)
-                if (arr.length() > 0) {
-                  rawTaf = arr.getJSONObject(0).optString("rawTAF").takeIf { it.isNotBlank() }
-                }
-              }
-            }
-          }
-        }
-      }
-      if (rawTaf.isNullOrBlank() && serverConfig.useNoaaTgftp) {
-        val noaaTafUrl = "https://tgftp.nws.noaa.gov/data/forecasts/taf/stations/$icao.TXT"
-        runCatching {
-          val tafReq = Request.Builder()
-            .url(noaaTafUrl)
-            .header("User-Agent", "Meteotablo/1.0")
-            .build()
-          client.newCall(tafReq).execute().use { resp ->
-            if (resp.isSuccessful) {
-              val lines = resp.body?.string().orEmpty()
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() && !it.matches(Regex("\\d{4}/\\d{2}/\\d{2}.*")) }
-              if (lines.isNotEmpty()) {
-                rawTaf = lines.joinToString(" ")
-              }
-            }
-          }
-        }
-      }
-
-      val finalMetar = rawMetar
-      if (finalMetar.isNullOrBlank()) {
-        return null to "Нет актуального METAR для $icao на интернет-сайтах"
-      }
-
-      val finalTaf = rawTaf ?: "TAF $icao — нет данных"
+      val finalTaf = response.rawTaf ?: "TAF $icao — нет данных"
       val decoded = AviationWeatherParser.parse(
-        rawMetarInput = finalMetar,
+        rawMetarInput = response.rawMetar,
         rawTafInput = finalTaf,
         station = resolvedStation,
-        sourceLabel = metarSourceSite,
+        sourceLabel = response.sourceLabel,
       )
-      logs.add("Успешно декодирован $icao с $metarSourceSite (${decoded.observationTimeUtc})")
-      return FetchResult(decoded, resolvedStation, logs) to null
+      logs.add("Успешно декодирован $icao с ${response.sourceLabel} (${decoded.observationTimeUtc})")
+      FetchResult(decoded, resolvedStation, logs) to null
     } catch (e: Exception) {
       val msg = e.message ?: e::class.simpleName ?: "Ошибка интернет-источников"
       logs.add("Ошибка интернет-источников: $msg")
-      return null to msg
+      null to msg
     }
   }
 
@@ -384,8 +361,13 @@ DataSourceMode.AUTO_IP_FIRST -> {
       DataSourceMode.IP_ONLY -> fetch24hFromCustomIpServer(icao, serverConfig, station, logs)
       DataSourceMode.INTERNET_ONLY -> fetch24hFromInternet(icao, serverConfig, station, logs)
       DataSourceMode.AUTO_IP_FIRST -> {
-        val ipList = fetch24hFromCustomIpServer(icao, serverConfig, station, logs)
-        ipList.ifEmpty { fetch24hFromInternet(icao, serverConfig, station, logs) }
+        val ipAirports = setOf("UTAA", "UTAM", "UTAK", "UTAT", "UTAV", "UTAN", "UTAE")
+        if (icao in ipAirports) {
+          val ipList = fetch24hFromCustomIpServer(icao, serverConfig, station, logs)
+          ipList.ifEmpty { fetch24hFromInternet(icao, serverConfig, station, logs) }
+        } else {
+          fetch24hFromInternet(icao, serverConfig, station, logs)
+        }
       }
       DataSourceMode.AUTO_INTERNET_FIRST -> {
         val netList = fetch24hFromInternet(icao, serverConfig, station, logs)
@@ -421,73 +403,39 @@ DataSourceMode.AUTO_IP_FIRST -> {
     }
   }
 
-  private fun fetch24hFromInternet(
+  private suspend fun fetch24hFromInternet(
     icao: String,
     serverConfig: ServerConfig,
     station: AirportStation,
     logs: MutableList<String>,
   ): List<com.example.model.WeatherHistoryEntry> {
     if (!serverConfig.useAviationWeatherGov) return emptyList()
-
-    val tafList = mutableListOf<Pair<Long, String>>()
-    runCatching {
-      val tafUrl = "https://aviationweather.gov/api/data/taf?ids=$icao&format=json&hours=24"
-      logs.add("GET $tafUrl")
-      val req = Request.Builder().url(tafUrl).header("User-Agent", "Meteotablo/1.0").build()
-      client.newCall(req).execute().use { resp ->
-        if (resp.isSuccessful) {
-          val body = resp.body?.string().orEmpty().trim()
-          if (body.startsWith("[")) {
-            val arr = JSONArray(body)
-            for (i in 0 until arr.length()) {
-              val obj = arr.optJSONObject(i) ?: continue
-              val rawTaf = obj.optString("rawTAF").takeIf { it.isNotBlank() } ?: continue
-              val issueSec = obj.optLong("issueTime", 0L)
-              val issueMs = if (issueSec > 0L) issueSec * 1000L else System.currentTimeMillis()
-              tafList.add(issueMs to rawTaf)
-            }
-          }
-        }
-      }
+    val histData = publicNetworkManager.fetch24hHistory(
+      icao = icao,
+      useAviationWeatherGov = true,
+      logs = logs,
+    )
+    val tafList = histData.tafs.mapNotNull { dto ->
+      val raw = dto.rawTaf?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+      val issueMs = (dto.issueTime ?: 0L).let { if (it > 0L) it * 1000L else System.currentTimeMillis() }
+      issueMs to raw
     }
-
-    val metarEntries = mutableListOf<com.example.model.WeatherHistoryEntry>()
-    runCatching {
-      val metarUrl = "https://aviationweather.gov/api/data/metar?ids=$icao&format=json&hours=24"
-      logs.add("GET $metarUrl")
-      val req = Request.Builder().url(metarUrl).header("User-Agent", "Meteotablo/1.0").build()
-      client.newCall(req).execute().use { resp ->
-        logs.add("aviationweather.gov 24h METAR HTTP ${resp.code}")
-        if (resp.isSuccessful) {
-          val body = resp.body?.string().orEmpty().trim()
-          if (body.startsWith("[")) {
-            val arr = JSONArray(body)
-            for (i in 0 until arr.length()) {
-              val obj = arr.optJSONObject(i) ?: continue
-              val rawOb = obj.optString("rawOb").takeIf { it.isNotBlank() } ?: continue
-              val obsSec = obj.optLong("obsTime", 0L)
-              val obsMs = if (obsSec > 0L) obsSec * 1000L else null
-              val matchedTaf = if (obsMs != null && tafList.isNotEmpty()) {
-                tafList.filter { it.first <= obsMs + 3600_000L }
-                  .maxByOrNull { it.first }?.second ?: tafList.firstOrNull()?.second
-              } else {
-                tafList.firstOrNull()?.second
-              }
-              com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
-                rawMetar = rawOb,
-                rawTaf = matchedTaf,
-                station = station,
-                sourceLabel = "aviationweather.gov (24ч)",
-                explicitTimestampMillis = obsMs,
-              )?.let(metarEntries::add)
-            }
-          }
-        }
+    return histData.metars.mapNotNull { dto ->
+      val rawOb = dto.rawOb?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+      val obsMs = dto.obsTime?.takeIf { it > 0L }?.let { it * 1000L }
+      val matchedTaf = if (obsMs != null && tafList.isNotEmpty()) {
+        tafList.filter { it.first <= obsMs + 3600_000L }
+          .maxByOrNull { it.first }?.second ?: tafList.firstOrNull()?.second
+      } else {
+        tafList.firstOrNull()?.second
       }
-    }.onFailure { err ->
-      logs.add("aviationweather.gov 24ч ошибка: ${err.message ?: err::class.simpleName}")
+      com.example.domain.WeatherHistoryAnalyzer.parseHistoricalMetar(
+        rawMetar = rawOb,
+        rawTaf = matchedTaf,
+        station = station,
+        sourceLabel = "aviationweather.gov (24ч)",
+        explicitTimestampMillis = obsMs,
+      )
     }
-
-    return metarEntries
   }
 }
