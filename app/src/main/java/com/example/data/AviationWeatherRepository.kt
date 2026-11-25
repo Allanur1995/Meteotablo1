@@ -105,19 +105,51 @@ class AviationWeatherRepository {
         }
       }
 
-      DataSourceMode.AUTO_IP_FIRST -> {
-        val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
-        if (ipRes != null) return@withContext Result.success(ipRes)
+      
+DataSourceMode.AUTO_IP_FIRST -> {
+  val ipAirports = setOf(
+    "UTAA", "UTAM", "UTAK", "UTAT",
+    "UTAV", "UTAN", "UTAE"
+  )
 
-        logs.add("IP-сервер недоступен/пуст -> переход на интернет-сайты…")
-        val (netRes, netErr) = fetchFromInternetSites(icao, serverConfig, station, logs)
-        if (netRes != null) return@withContext Result.success(netRes)
+  if (icao !in ipAirports) {
+    logs.add("$icao: интернет-источник")
+    val (netRes, netErr) =
+      fetchFromInternetSites(icao, serverConfig, station, logs)
 
-        val msg = listOfNotNull(ipErr, netErr).joinToString(" | ").ifBlank {
-          "Нет актуального METAR для $icao"
-        }
-        Result.failure(IllegalStateException(msg))
-      }
+    if (netRes != null) {
+      return@withContext Result.success(netRes)
+    }
+
+    return@withContext Result.failure(
+      IllegalStateException(
+        netErr ?: "Нет актуального METAR для $icao в интернете"
+      )
+    )
+  }
+
+  logs.add("$icao: приоритетный источник — IP-сервер")
+  val (ipRes, ipErr) =
+    fetchFromCustomIpServer(icao, serverConfig, station, logs)
+
+  if (ipRes != null) {
+    return@withContext Result.success(ipRes)
+  }
+
+  logs.add("IP-сервер недоступен -> переход на интернет")
+  val (netRes, netErr) =
+    fetchFromInternetSites(icao, serverConfig, station, logs)
+
+  if (netRes != null) {
+    return@withContext Result.success(netRes)
+  }
+
+  val msg = listOfNotNull(ipErr, netErr)
+    .joinToString(" | ")
+    .ifBlank { "Нет актуального METAR для $icao" }
+
+  Result.failure(IllegalStateException(msg))
+}
 
       DataSourceMode.AUTO_INTERNET_FIRST -> {
         val (netRes, netErr) = fetchFromInternetSites(icao, serverConfig, station, logs)
@@ -127,7 +159,7 @@ class AviationWeatherRepository {
         val (ipRes, ipErr) = fetchFromCustomIpServer(icao, serverConfig, station, logs)
         if (ipRes != null) return@withContext Result.success(ipRes)
 
-        val msg = listOfNotNull(netErr, ipErr).joinToString(" | ").ifBlank {
+        val msg = listOfNotNull(netErr, ipErr).joinToString(" | ").i
           "Нет актуального METAR для $icao"
         }
         Result.failure(IllegalStateException(msg))
