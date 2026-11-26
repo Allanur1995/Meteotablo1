@@ -382,7 +382,7 @@ class CustomMeteoServerClient {
 
       val tafBulletins = rankCandidates(
         session.candidates.filter { it.kind == BulletinKind.TAF },
-      ).take(8)
+      ).take(16)
 
       for (cand in tafBulletins) {
         if (cand.url == session.currentUrl.toString() || !visited.add(cand.url)) continue
@@ -454,15 +454,13 @@ class CustomMeteoServerClient {
             logs = logs,
           )
         }
-        if (!wdrResult.reachable) {
-          return CustomFetchOutcome(
-            rawMetar = null,
-            rawTaf = null,
-            sourceHost = wdrResult.hostLabel,
-            logs = logs,
-            errorMessage = wdrResult.errorMessage ?: "IP-сервер ${wdrResult.hostLabel} недоступен",
-          )
-        }
+        return CustomFetchOutcome(
+          rawMetar = null,
+          rawTaf = wdrResult.rawTaf,
+          sourceHost = wdrResult.hostLabel,
+          logs = logs,
+          errorMessage = wdrResult.errorMessage ?: "IP-сервер ${wdrResult.hostLabel} недоступен",
+        )
       }
 
       val api = MeteoServerRetrofitFactory.create(
@@ -690,11 +688,11 @@ class CustomMeteoServerClient {
         }
       }
 
-      // 4. Independently fetch newest matching TAF bulletin links (FTTR* / FT.. / FC..) if TAF is still missing
+      // 4. Independently fetch newest matching TAF bulletin links (FTTR* / FCTR* / FT.. / FC..) if TAF is still missing
       if (taf.isNullOrBlank() && candidates.isNotEmpty()) {
         val tafCandidates = rankCandidates(
           candidates.filter { it.kind == BulletinKind.TAF || it.kind == BulletinKind.GENERAL },
-        ).take(8)
+        ).take(16)
 
         for (candidate in tafCandidates) {
           if (candidate.url == currentUrl.toString() || candidate.url in fetchedBulletinUrls) continue
@@ -900,12 +898,21 @@ class CustomMeteoServerClient {
       return String(bytes, metaCharset)
     }
 
-    val utf8 = String(bytes, Charsets.UTF_8)
-    return if (utf8.contains('\uFFFD')) {
-      runCatching { String(bytes, Charset.forName("windows-1251")) }.getOrDefault(utf8)
-    } else {
-      utf8
+    // Strict UTF-8 check: if valid UTF-8 use UTF-8; otherwise decode as KOI8-R (UMAS default) then windows-1251
+    val strictUtf8 = runCatching {
+      Charsets.UTF_8.newDecoder()
+        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        .decode(java.nio.ByteBuffer.wrap(bytes))
+        .toString()
+    }.getOrNull()
+    if (strictUtf8 != null) {
+      return strictUtf8
     }
+
+    return runCatching { String(bytes, Charset.forName("KOI8-R")) }
+      .recoverCatching { String(bytes, Charset.forName("windows-1251")) }
+      .getOrElse { String(bytes, Charsets.UTF_8) }
   }
 
   companion object {
@@ -1121,8 +1128,14 @@ class CustomMeteoServerClient {
             else -> 0
           }
         } else {
-          val isSatrLink = linkText.startsWith("SATR", ignoreCase = true)
-          val isFttrLink = linkText.startsWith("FTTR", ignoreCase = true)
+          val isSatrLink = linkText.startsWith("SATR", ignoreCase = true) ||
+            linkText.startsWith("SPTR", ignoreCase = true) ||
+            resolvedUrl.contains("SATR", ignoreCase = true) ||
+            resolvedUrl.contains("SPTR", ignoreCase = true)
+          val isFttrLink = linkText.startsWith("FTTR", ignoreCase = true) ||
+            linkText.startsWith("FCTR", ignoreCase = true) ||
+            resolvedUrl.contains("FTTR", ignoreCase = true) ||
+            resolvedUrl.contains("FCTR", ignoreCase = true)
           val hasIcao = combined.contains(cleanIcao, ignoreCase = true)
           val hasMetarWord = isSatrLink ||
             combined.contains("metar", ignoreCase = true) ||
@@ -1286,21 +1299,49 @@ class CustomMeteoServerClient {
         if (foundMetars.isNotEmpty()) break
       }
 
-      val tafBoundaryLookahead = "(?==|\"|\\r?\\n\\s*(?:METAR|SPECI|TAF(?:\\s|$)|[A-Z]{4}\\s+\\d{6}Z|NNNN|\\r?\\n)|$)"
-      val tafPatterns = listOf(
-        Regex("\\bTAF(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+$upperIcao\\s+\\d{6}Z[^=\"]*?$tafBoundaryLookahead", RegexOption.IGNORE_CASE),
-        Regex("(?m)^\\s*TAF(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+$upperIcao\\b[^=]*?(?==|$)", RegexOption.IGNORE_CASE),
-        // Collective FT bulletins list each station on its own line with DDHHMMZ DDHH/DDHH without repeating "TAF"
-        Regex("\\b$upperIcao\\s+\\d{6}Z\\s+\\d{4}/\\d{4}\\b[^=\"]*?$tafBoundaryLookahead", RegexOption.IGNORE_CASE),
-      )
+      val tafBoundaryLookahead =
+        "(?==|\"|\\r?\\n\\s*(?:METAR|SPECI|TAF(?:\\s|$)|(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?[A-Z]{4}\\s+(?:\\d{6}Z?|(?:NIL|CNL)\\b)|NNNN)|$)"
+      val hasTafContext = Regex("\\b(?:TAF|FTTR|FCTR|FT[A-Z0-9]{2}|FC[A-Z0-9]{2})\\b", RegexOption.IGNORE_CASE)
+        .containsMatchIn(plain)
+      val tafPatterns = buildList {
+        add(
+          Regex(
+            "\\bTAF(?:\\s+TAF)?(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))*\\s+$upperIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+\\d{6}Z?[^=\"]*?$tafBoundaryLookahead",
+            RegexOption.IGNORE_CASE,
+          ),
+        )
+        add(
+          Regex(
+            "(?:^|=|\\r?\\n)\\s*TAF(?:\\s+TAF)?(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))*\\s+$upperIcao\\b[^=]*?(?==|$)",
+            RegexOption.IGNORE_CASE,
+          ),
+        )
+        // Collective FT/FC bulletins list each station on its own line (or inline after '=') with DDHHMM(Z) DDHH/DDHH without repeating "TAF"
+        add(
+          Regex(
+            "(?:^|=|\\r?\\n|\\b)\\s*(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?$upperIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+\\d{6}Z?\\s+(?:\\d{4}/\\d{4}|\\d{6}|\\d{4})\\b[^=\"]*?$tafBoundaryLookahead",
+            RegexOption.IGNORE_CASE,
+          ),
+        )
+        if (hasTafContext) {
+          add(
+            Regex(
+              "(?:^|=|\\r?\\n)\\s*(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?$upperIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?(?:\\s+\\d{6}Z?)?\\s+(?:NIL|CNL)\\b[^=\"]*?$tafBoundaryLookahead",
+              RegexOption.IGNORE_CASE,
+            ),
+          )
+        }
+      }
 
       val foundTafs = linkedSetOf<String>()
       for (tafPattern in tafPatterns) {
         tafPattern.findAll(plain).forEach { tm ->
           var line = tm.value.trim()
             .replace(Regex("\\s+"), " ")
+            .trimStart('=', '"', ',')
             .trimEnd('=', '"', ',')
             .trim()
+            .replace(Regex("^TAF\\s+TAF\\b", RegexOption.IGNORE_CASE), "TAF")
           if (!line.startsWith("TAF", ignoreCase = true)) {
             line = "TAF $line"
           }

@@ -27,6 +27,7 @@ import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.data.SharedPreferencesFavoriteStorage
+import com.example.data.SharedPreferencesRecentSearchesStorage
 import com.example.data.SharedPreferencesServerConfigStorage
 import com.example.data.SharedPreferencesUnitPreferencesStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
@@ -223,12 +224,8 @@ class ExampleRobolectricTest {
 
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("demo_button").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_menu").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("toolbar_source_selector").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_decoder_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("toolbar_source_selector").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("toolbar_source_selector").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("source_mode_item_INTERNET_ONLY").performClick()
@@ -243,15 +240,12 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("taf_footer_row").assertExists()
     composeTestRule.onNodeWithTag("metar_footer_row").assertExists()
 
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").assertTextContains("kt", substring = true)
-    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("гПа", substring = true)
     composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
     composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("дм", substring = true)
     composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performClick()
     composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").assertTextContains("гПа", substring = true)
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_close").performClick()
     composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("metar_table_button").performScrollTo().performClick()
@@ -331,8 +325,12 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("splash_screen").assertDoesNotExist()
     composeTestRule.onNodeWithTag("toolbar_brand_title").assertTextContains("Meteotablo")
     composeTestRule.onNodeWithTag("toolbar_station_selector").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Время UTC").performScrollTo().assertIsDisplayed()
+    assertTrue(vm.uiState.value.liveLocalClock.endsWith("Z"))
     composeTestRule.onNodeWithTag("board_owner_footer").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("board_owner_footer").assertTextContains("О программе / Автор", substring = true)
+    composeTestRule.onNodeWithTag("board_owner_footer").assertTextContains("О программе", substring = true)
+    assertTrue(composeTestRule.onAllNodesWithText("Allanur", substring = true).fetchSemanticsNodes().isEmpty())
+    assertTrue(composeTestRule.onAllNodesWithText("Автор", substring = true).fetchSemanticsNodes().isEmpty())
 
     composeTestRule.onNodeWithTag("board_owner_footer").performClick()
     composeTestRule.waitForIdle()
@@ -359,9 +357,7 @@ class ExampleRobolectricTest {
     }
 
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_save_current").performClick()
     composeTestRule.waitForIdle()
@@ -382,10 +378,8 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     assertEquals("UTAN", vm.uiState.value.station.icao)
 
-    // Recall saved UTAA 12R/30L setup via consolidated quick-controls presets menu
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
+    // Recall saved UTAA 12R/30L setup via toolbar presets menu
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_item_$savedId").performClick()
     composeTestRule.waitForIdle()
@@ -398,9 +392,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("wind_center_box_12R").assertExists()
 
     // Delete via dialog management
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_presets_button").performClick()
+    composeTestRule.onNodeWithTag("toolbar_presets_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("preset_menu_manage").performClick()
     composeTestRule.waitForIdle()
@@ -466,12 +458,9 @@ class ExampleRobolectricTest {
     val title = posted.first().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
     assertTrue(title.contains("UTAA"))
 
-    // Verify banner & consolidated quick controls unread alert counter
+    // Verify banner & top toolbar unread alert counter
     composeTestRule.onNodeWithTag("weather_alert_banner").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("(1)", substring = true)
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_alerts_button").assertTextContains("Тревога (1)")
+    composeTestRule.onNodeWithTag("toolbar_alerts_button").performScrollTo().assertTextContains("Тревога (1)")
 
     // Open alerts dialog, verify alert item rendered, then mark all read
     composeTestRule.onNodeWithTag("toolbar_alerts_button").performClick()
@@ -709,11 +698,11 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("settings_preview_wind").performScrollTo().assertTextContains("16 kt", substring = true)
     composeTestRule.onNodeWithTag("settings_preview_pressure").performScrollTo().assertTextContains("30,21 дм", substring = true)
 
-    // Return to main weather display and confirm consolidated quick controls reflect Imperial units
+    // Return to main weather display and confirm direct toolbar unit chips reflect Imperial units
     composeTestRule.onNodeWithTag("settings_back_button").performClick()
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("kt", substring = true)
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().assertTextContains("дм", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_wind_unit_toggle").performScrollTo().assertTextContains("kt", substring = true)
+    composeTestRule.onNodeWithTag("toolbar_pressure_unit_toggle").performScrollTo().assertTextContains("дм", substring = true)
 
     // Verify persistence across ViewModel recreation
     val vmReloaded = MeteoViewModel(unitPreferencesStorage = SharedPreferencesUnitPreferencesStorage(context), autoFetch = false)
@@ -1451,9 +1440,7 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_export_button").performClick()
+    composeTestRule.onNodeWithTag("toolbar_export_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("export_report_dialog").assertIsDisplayed()
@@ -1529,10 +1516,8 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
-    // Open QNH/QFE conversion utility from Quick Controls menu
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performClick()
+    // Open QNH/QFE conversion utility directly from toolbar
+    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("pressure_utility_dialog").assertIsDisplayed()
@@ -1876,9 +1861,7 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
-    composeTestRule.onNodeWithTag("toolbar_quick_controls_button").performScrollTo().performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performClick()
+    composeTestRule.onNodeWithTag("toolbar_pressure_utility_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("pressure_utility_auto_sync_switch").assertIsDisplayed()
@@ -1939,4 +1922,193 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("rwy_component_headwind_box").assertTextContains("-17.3 kt", substring = true)
   }
+
+  @Test
+  fun `runway orientation wind visualizer renders relative geometry and crosswind exceedance alert`() {
+    val strongCrosswind = WindData(
+      directionDeg = 360,
+      isVariable = false,
+      isCalm = false,
+      speedKt = 24,
+      gustKt = 30,
+      speedMps = 12.35,
+      gustMps = 15.43,
+    )
+    val limitState = androidx.compose.runtime.mutableStateOf(15)
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        com.example.ui.components.RunwayOrientationWindVisualizer(
+          runwayDesignator = "27",
+          runwayHeadingDeg = 270,
+          wind = strongCrosswind,
+          windUnit = WindSpeedUnit.KT,
+          maxCrosswindKt = limitState.value,
+          aircraftLabel = "Cessna 172",
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("runway_orientation_visualizer").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("runway_orientation_canvas").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("visualizer_crosswind_warning").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("visualizer_crosswind_warning").assertTextContains("Cessna 172", substring = true)
+
+    // Raise threshold above 24 kt crosswind -> warning disappears
+    limitState.value = 35
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("visualizer_crosswind_warning").assertDoesNotExist()
+  }
+
+  @Test
+  fun `settings aircraft crosswind limit persists selects preset and triggers board warning banner`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val alertStorage = SharedPreferencesWeatherAlertStorage(context)
+    alertStorage.saveConfig(com.example.model.WeatherAlertConfig())
+
+    val vm = MeteoViewModel(alertStorage = alertStorage, autoFetch = false)
+    vm.selectStation("UTAM") // 35L = 345 deg
+    // Wind from 075° at 22 kt => pure 90° crosswind of 22 kt on 35L
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAM 260800Z 07522KT CAVOK 18/06 Q1020 NOSIG",
+      rawTaf = "TAF UTAM",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // Open Settings and configure Cessna 172 (15 kt max crosswind)
+    composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("settings_crosswind_limit_card").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("settings_aircraft_preset_CESSNA_172").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(15, vm.uiState.value.alertConfig.maxCrosswindKt)
+    assertEquals("CESSNA_172", vm.uiState.value.alertConfig.aircraftTypeId)
+
+    // Adjust +2 kt via stepper -> becomes 17 kt (custom), still below 22 kt crosswind
+    composeTestRule.onNodeWithTag("settings_crosswind_plus").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(17, vm.uiState.value.alertConfig.maxCrosswindKt)
+    composeTestRule.onNodeWithTag("settings_crosswind_preview_status").performScrollTo().assertTextContains("ПРЕВЫШЕНИЕ", substring = true)
+
+    // Verify persisted in SharedPreferencesWeatherAlertStorage
+    val saved = SharedPreferencesWeatherAlertStorage(context).loadConfig()
+    assertEquals(17, saved.maxCrosswindKt)
+    assertTrue(saved.crosswindWarningEnabled)
+
+    // Return to main board -> visual warning banner appears above instrument deck
+    composeTestRule.onNodeWithTag("settings_back_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("crosswind_limit_warning_banner").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `recent searches stores last 5 unique ICAO codes locally and allows reselection or clearing from UI`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val recentStorage = SharedPreferencesRecentSearchesStorage(context)
+    recentStorage.saveRecentSearches(emptyList())
+
+    val vm = MeteoViewModel(
+      recentSearchesStorage = recentStorage,
+      autoFetch = false,
+    )
+    listOf("UTAM", "UTAA", "UTAK", "UTAN", "UTAT", "UTAV").forEach { icao ->
+      vm.selectStation(icao)
+    }
+    // Re-query UTAA: should move to front and remain capped at 5
+    vm.selectStation("UTAA")
+
+    assertEquals(listOf("UTAA", "UTAV", "UTAT", "UTAN", "UTAK"), vm.uiState.value.recentSearches)
+    assertEquals(listOf("UTAA", "UTAV", "UTAT", "UTAN", "UTAK"), SharedPreferencesRecentSearchesStorage(context).loadRecentSearches())
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("recent_searches_row").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("recent_search_chip_UTAK").assertExists().performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals("UTAK", vm.uiState.value.station.icao)
+    assertEquals(listOf("UTAK", "UTAA", "UTAV", "UTAT", "UTAN"), vm.uiState.value.recentSearches)
+
+    composeTestRule.onNodeWithTag("recent_searches_clear").performClick()
+    composeTestRule.waitForIdle()
+
+    assertTrue(vm.uiState.value.recentSearches.isEmpty())
+    assertTrue(SharedPreferencesRecentSearchesStorage(context).loadRecentSearches().isEmpty())
+    composeTestRule.onAllNodesWithTag("recent_searches_row").fetchSemanticsNodes().let { nodes ->
+      assertTrue(nodes.isEmpty())
+    }
+  }
+
+  @Test
+  fun `wind rose components increment metarFetchSeq and animate rotate pulse cleanly`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    assertEquals(0L, vm.uiState.value.metarFetchSeq)
+
+    vm.applyCustomMetar("METAR UTAM 261000Z 29012KT CAVOK 20/05 Q1018", "TAF UTAM")
+    assertEquals(1L, vm.uiState.value.metarFetchSeq)
+
+    val seqState = androidx.compose.runtime.mutableLongStateOf(0L)
+    val sampleWind = WindData(
+      directionDeg = 290,
+      isVariable = false,
+      isCalm = false,
+      speedKt = 12,
+      gustKt = 20,
+      speedMps = 6.2,
+    )
+    val sampleCalc = RunwayCalculation(
+      designator = "35L",
+      headingDeg = 345,
+      crosswindMps = 5.1,
+      headwindMps = 3.5,
+      crosswindKt = 9.8,
+      headwindKt = 6.9,
+      frictionCoeff = 0.65,
+      rvrMeters = 1800,
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        Box {
+          RunwayWindRose(
+            calculation = sampleCalc,
+            wind = sampleWind,
+            windUnit = WindSpeedUnit.KT,
+            onToggleUnit = {},
+            metarFetchSeq = seqState.longValue,
+          )
+          WindRoseCanvas(
+            wind = sampleWind,
+            windUnit = WindSpeedUnit.KT,
+            onToggleUnit = {},
+            activeRunway = sampleCalc,
+            metarFetchSeq = seqState.longValue,
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    seqState.longValue = 1L
+    composeTestRule.waitForIdle()
+    seqState.longValue = 2L
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("wind_rose_canvas").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("wind_center_box_35L").assertIsDisplayed()
+  }
 }
+

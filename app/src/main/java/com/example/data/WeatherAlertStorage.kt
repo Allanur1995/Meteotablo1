@@ -1,5 +1,6 @@
 package com.example.data
 
+import com.example.model.AircraftTypePreset
 import com.example.model.FavoriteWeatherSnapshot
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherAlertSeverity
@@ -59,6 +60,10 @@ object WeatherAlertSerializer {
       put("vfrMaxWindKt", config.vfrMaxWindKt)
       put("vfrMonitorAllFavorites", config.vfrMonitorAllFavorites)
       put("vfrMonitoredIcaos", JSONArray(config.vfrMonitoredIcaos))
+      put("crosswindWarningEnabled", config.crosswindWarningEnabled)
+      put("aircraftTypeId", config.aircraftTypeId)
+      put("customAircraftName", config.customAircraftName)
+      put("maxCrosswindKt", config.maxCrosswindKt)
     }.toString()
   }
 
@@ -75,6 +80,7 @@ object WeatherAlertSerializer {
           }
         }
       }.distinct()
+      val preset = AircraftTypePreset.fromId(obj.optString("aircraftTypeId", AircraftTypePreset.ATR_72.id))
       WeatherAlertConfig(
         enabled = obj.optBoolean("enabled", true),
         windChangeThresholdKt = obj.optInt("windChangeThresholdKt", 8).coerceIn(3, 30),
@@ -90,6 +96,10 @@ object WeatherAlertSerializer {
         vfrMaxWindKt = obj.optInt("vfrMaxWindKt", 25).coerceIn(10, 60),
         vfrMonitorAllFavorites = obj.optBoolean("vfrMonitorAllFavorites", true),
         vfrMonitoredIcaos = vfrIcaos,
+        crosswindWarningEnabled = obj.optBoolean("crosswindWarningEnabled", true),
+        aircraftTypeId = preset.id,
+        customAircraftName = obj.optString("customAircraftName", "Мой самолёт"),
+        maxCrosswindKt = obj.optInt("maxCrosswindKt", preset.defaultMaxCrosswindKt).coerceIn(5, 60),
       )
     }.getOrDefault(WeatherAlertConfig())
   }

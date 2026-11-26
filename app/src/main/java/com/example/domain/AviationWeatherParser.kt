@@ -29,7 +29,9 @@ object AviationWeatherParser {
     calendarForSun: Calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC")),
   ): DecodedWeather {
     val cleanMetar = rawMetarInput.trim().replace(Regex("\\s+"), " ")
+      .replace(Regex("^METAR\\s+METAR\\b", RegexOption.IGNORE_CASE), "METAR")
     val cleanTaf = rawTafInput.trim().replace(Regex("\\s+"), " ")
+      .replace(Regex("^TAF\\s+TAF\\b", RegexOption.IGNORE_CASE), "TAF")
     val tokens = cleanMetar.split(" ").filter { it.isNotBlank() }
 
     val obsTimeToken = tokens.firstOrNull { Regex("^\\d{6}Z$").matches(it) }
@@ -84,11 +86,12 @@ object AviationWeatherParser {
     val sunTimes = SolarCalculator.calculateSunriseSunset(
       latitude = station.latitude,
       longitude = station.longitude,
-      utcOffsetHours = station.utcOffsetHours,
+      utcOffsetHours = 0,
       calendar = calendarForSun,
+      appendZuluSuffix = true,
     )
 
-    val resolvedReceived = receivedTimeLocal ?: currentLocalTimeString(station.utcOffsetHours)
+    val resolvedReceived = receivedTimeLocal ?: currentUtcTimeString()
 
     return DecodedWeather(
       stationIcao = station.icao,
@@ -394,5 +397,10 @@ object AviationWeatherParser {
     val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
     cal.add(Calendar.HOUR_OF_DAY, utcOffsetHours)
     return "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+  }
+
+  fun currentUtcTimeString(): String {
+    val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+    return "%02d:%02dZ".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
   }
 }

@@ -28,14 +28,15 @@ class AviationWeatherRepository(
     val sunTimes = com.example.domain.SolarCalculator.calculateSunriseSunset(
       latitude = station.latitude,
       longitude = station.longitude,
-      utcOffsetHours = station.utcOffsetHours,
+      utcOffsetHours = 0,
       calendar = cal,
+      appendZuluSuffix = true,
     )
     return DecodedWeather(
       stationIcao = station.icao,
       observationTimeUtc = "--:--Z",
       localObsTime = "--:--",
-      receivedTimeLocal = AviationWeatherParser.currentLocalTimeString(station.utcOffsetHours),
+      receivedTimeLocal = AviationWeatherParser.currentUtcTimeString(),
       wind = com.example.model.WindData(
         directionDeg = null,
         isVariable = false,
@@ -126,6 +127,32 @@ DataSourceMode.AUTO_IP_FIRST -> {
     fetchFromCustomIpServer(icao, serverConfig, station, logs)
 
   if (ipRes != null) {
+    val hasIpTaf = ipRes.weather.rawTaf.isNotBlank() &&
+      !ipRes.weather.rawTaf.contains("нет данных", ignoreCase = true)
+    if (!hasIpTaf && (serverConfig.useAviationWeatherGov || serverConfig.useNoaaTgftp)) {
+      val fallbackTaf = runCatching {
+        publicNetworkManager.fetchLatestTafOnly(
+          icao = icao,
+          useAviationWeatherGov = serverConfig.useAviationWeatherGov,
+          useNoaaTgftp = serverConfig.useNoaaTgftp,
+          logs = logs,
+        )
+      }.getOrNull()
+      if (!fallbackTaf.isNullOrBlank()) {
+        val cleanFallbackTaf = fallbackTaf.trim().replace(Regex("\\s+"), " ")
+          .replace(Regex("^TAF\\s+TAF\\b", RegexOption.IGNORE_CASE), "TAF")
+        logs.add("IP вернул METAR без TAF -> TAF $icao дополнен из интернета")
+        return@withContext Result.success(
+          ipRes.copy(
+            weather = ipRes.weather.copy(
+              rawTaf = cleanFallbackTaf,
+              sourceLabel = "${ipRes.weather.sourceLabel} + TAF инет",
+            ),
+            logMessages = logs,
+          ),
+        )
+      }
+    }
     return@withContext Result.success(ipRes)
   }
 

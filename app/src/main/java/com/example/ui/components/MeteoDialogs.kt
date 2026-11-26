@@ -625,7 +625,7 @@ fun StationAndMetarDialog(
                 fontWeight = FontWeight.Bold,
               )
               Text(
-                text = rep.logs.takeLast(5).joinToString("\n"),
+                text = rep.logs.takeLast(10).joinToString("\n"),
                 color = palette.textSecondary,
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,

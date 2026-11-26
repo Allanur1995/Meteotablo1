@@ -18,6 +18,7 @@ import java.awt.geom.Line2D
 import java.awt.geom.Path2D
 import java.util.Locale
 import javax.swing.JPanel
+import javax.swing.Timer
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -30,6 +31,11 @@ class WindRoseDetailPanel(
   private var wind: WindData? = null
   private var windUnit: WindSpeedUnit = WindSpeedUnit.KT
   private var palette: DesktopPalette = DayDesktopPalette
+  private var lastFetchSeq: Long = 0L
+  internal var pulseDeg: Double = 0.0
+    private set
+  private var pulseStartMs: Long = 0L
+  private var pulseTimer: Timer? = null
 
   init {
     preferredSize = Dimension(280, 280)
@@ -43,12 +49,47 @@ class WindRoseDetailPanel(
     })
   }
 
-  fun updateData(wind: WindData, windUnit: WindSpeedUnit, palette: DesktopPalette) {
+  override fun removeNotify() {
+    pulseTimer?.stop()
+    pulseTimer = null
+    super.removeNotify()
+  }
+
+  fun updateData(
+    wind: WindData,
+    windUnit: WindSpeedUnit,
+    palette: DesktopPalette,
+    metarFetchSeq: Long = 0L,
+  ) {
     this.wind = wind
     this.windUnit = windUnit
     this.palette = palette
     background = palette.fieldBackground
+    if (metarFetchSeq > 0L && metarFetchSeq != lastFetchSeq) {
+      lastFetchSeq = metarFetchSeq
+      triggerRotatePulse()
+    }
     repaint()
+  }
+
+  private fun triggerRotatePulse() {
+    pulseTimer?.stop()
+    pulseStartMs = System.currentTimeMillis()
+    pulseDeg = -9.0
+    val timer = Timer(16) { evt ->
+      val elapsed = (System.currentTimeMillis() - pulseStartMs).coerceAtLeast(0L)
+      val t = (elapsed / 420.0).coerceIn(0.0, 1.0)
+      if (t >= 1.0) {
+        pulseDeg = 0.0
+        (evt.source as? Timer)?.stop()
+        pulseTimer = null
+      } else {
+        pulseDeg = -9.0 * (1.0 - t) * cos(t * PI * 1.5)
+      }
+      repaint()
+    }
+    pulseTimer = timer
+    timer.start()
   }
 
   override fun paintComponent(g: Graphics) {
@@ -94,8 +135,9 @@ class WindRoseDetailPanel(
     }
 
     // Compass ticks
+    val dialPulseRad = (pulseDeg * 0.6) * PI / 180.0
     for (deg in 0 until 360 step 10) {
-      val rad = (deg - 90.0) * PI / 180.0
+      val rad = (deg - 90.0) * PI / 180.0 + dialPulseRad
       val inner = if (deg % 30 == 0) outerRadius * 0.93 else outerRadius * 0.96
       g2.color = palette.compassStroke
       g2.stroke = BasicStroke(if (deg % 30 == 0) 1.4f else 0.8f)
@@ -131,7 +173,7 @@ class WindRoseDetailPanel(
         g2.fill(Arc2D.Double(cx - r, cy - r, r * 2, r * 2, 90.0 - w.variableFromDeg!!, -sweep.toDouble(), Arc2D.PIE))
       }
 
-      val rad = (dir - 90.0) * PI / 180.0
+      val rad = (dir + pulseDeg - 90.0) * PI / 180.0
       if (gustRatio > speedRatio) {
         val gR = hubRadius + usableSpan * gustRatio
         g2.color = Color(palette.metarAmber.red, palette.metarAmber.green, palette.metarAmber.blue, 140)

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -31,7 +32,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import com.example.domain.UnitConverter
 import com.example.model.AirportStation
 import com.example.model.RunwayCalculation
+import com.example.model.WeatherAlertConfig
 import com.example.model.WindData
 import com.example.model.WindSpeedUnit
 import com.example.ui.theme.LocalMeteoPalette
@@ -76,6 +82,8 @@ fun DualRunwayWindRosePanel(
   windUnit: WindSpeedUnit,
   onSelectRunwayPair: (Int) -> Unit,
   onToggleUnit: () -> Unit,
+  alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+  metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -253,6 +261,7 @@ fun DualRunwayWindRosePanel(
             wind = wind,
             windUnit = windUnit,
             onToggleUnit = onToggleUnit,
+            metarFetchSeq = metarFetchSeq,
             modifier = Modifier.weight(0.95f),
           )
           Column(
@@ -288,6 +297,7 @@ fun DualRunwayWindRosePanel(
             wind = wind,
             windUnit = windUnit,
             onToggleUnit = onToggleUnit,
+            metarFetchSeq = metarFetchSeq,
             modifier = Modifier.fillMaxWidth(),
           )
           Row(
@@ -318,6 +328,8 @@ fun DualRunwayWindRosePanel(
       defaultHeadingDeg = bestCalc.headingDeg,
       windUnit = windUnit,
       onToggleUnit = onToggleUnit,
+      maxCrosswindKt = if (alertConfig.crosswindWarningEnabled) alertConfig.maxCrosswindKt else null,
+      aircraftLabel = alertConfig.resolvedAircraftName(),
     )
   }
 }
@@ -331,6 +343,7 @@ private fun DualRunwayCompassCanvas(
   wind: WindData,
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
+  metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -352,6 +365,21 @@ private fun DualRunwayCompassCanvas(
     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
     label = "dualRwyHdg",
   )
+  val fetchRotatePulse = remember { Animatable(0f) }
+  var lastFetchSeq by remember { mutableLongStateOf(metarFetchSeq) }
+  LaunchedEffect(metarFetchSeq) {
+    if (metarFetchSeq > 0L && metarFetchSeq != lastFetchSeq) {
+      lastFetchSeq = metarFetchSeq
+      fetchRotatePulse.snapTo(-9f)
+      fetchRotatePulse.animateTo(
+        targetValue = 0f,
+        animationSpec = spring(
+          dampingRatio = 0.52f,
+          stiffness = Spring.StiffnessMediumLow,
+        ),
+      )
+    }
+  }
 
   val accessDesc = "Двойная роза ВПП ${primaryCalc.designator} и ${reciprocalCalc.designator}, ветер ${wind.speedKt} узлов"
 
@@ -404,45 +432,50 @@ private fun DualRunwayCompassCanvas(
       }
 
       // 10° / 30° compass ticks + cardinal & degree labels
-      for (deg in 0 until 360 step 10) {
+      rotate(degrees = fetchRotatePulse.value * 0.6f, pivot = Offset(cx, cy)) {
+        for (deg in 0 until 360 step 10) {
+          val rad = (deg - 90.0) * PI / 180.0
+          val cosA = cos(rad).toFloat()
+          val sinA = sin(rad).toFloat()
+          val isMajor = deg % 30 == 0
+          val innerR = if (isMajor) radius - 5.dp.toPx() else radius - 2.5.dp.toPx()
+          val outerR = if (isMajor) radius + 4.dp.toPx() else radius + 2.dp.toPx()
+          drawLine(
+            color = palette.compassStroke,
+            start = Offset(cx + innerR * cosA, cy + innerR * sinA),
+            end = Offset(cx + outerR * cosA, cy + outerR * sinA),
+            strokeWidth = if (isMajor) 1.4.dp.toPx() else 0.8.dp.toPx(),
+          )
+        }
+      }
+      for (deg in 0 until 360 step 30) {
         val rad = (deg - 90.0) * PI / 180.0
         val cosA = cos(rad).toFloat()
         val sinA = sin(rad).toFloat()
-        val isMajor = deg % 30 == 0
-        val innerR = if (isMajor) radius - 5.dp.toPx() else radius - 2.5.dp.toPx()
-        val outerR = if (isMajor) radius + 4.dp.toPx() else radius + 2.dp.toPx()
-        drawLine(
-          color = palette.compassStroke,
-          start = Offset(cx + innerR * cosA, cy + innerR * sinA),
-          end = Offset(cx + outerR * cosA, cy + outerR * sinA),
-          strokeWidth = if (isMajor) 1.4.dp.toPx() else 0.8.dp.toPx(),
-        )
-        if (isMajor) {
-          val label = when (deg) {
-            0 -> "N"
-            90 -> "E"
-            180 -> "S"
-            270 -> "W"
-            else -> String.format(Locale.US, "%02d", deg / 10)
-          }
-          val isCardinal = deg % 90 == 0
-          val measured = textMeasurer.measure(
-            text = label,
-            style = TextStyle(
-              color = if (isCardinal) palette.metarAmber else palette.textPrimary,
-              fontSize = if (isCardinal) 11.sp else 9.5.sp,
-              fontWeight = if (isCardinal) FontWeight.ExtraBold else FontWeight.Medium,
-            ),
-          )
-          val labelR = radius + 12.5.dp.toPx()
-          drawText(
-            measured,
-            topLeft = Offset(
-              cx + labelR * cosA - measured.size.width / 2f,
-              cy + labelR * sinA - measured.size.height / 2f,
-            ),
-          )
+        val label = when (deg) {
+          0 -> "N"
+          90 -> "E"
+          180 -> "S"
+          270 -> "W"
+          else -> String.format(Locale.US, "%02d", deg / 10)
         }
+        val isCardinal = deg % 90 == 0
+        val measured = textMeasurer.measure(
+          text = label,
+          style = TextStyle(
+            color = if (isCardinal) palette.metarAmber else palette.textPrimary,
+            fontSize = if (isCardinal) 11.sp else 9.5.sp,
+            fontWeight = if (isCardinal) FontWeight.ExtraBold else FontWeight.Medium,
+          ),
+        )
+        val labelR = radius + 12.5.dp.toPx()
+        drawText(
+          measured,
+          topLeft = Offset(
+            cx + labelR * cosA - measured.size.width / 2f,
+            cy + labelR * sinA - measured.size.height / 2f,
+          ),
+        )
       }
 
       // Draw faint alternate runways if the airport has >1 runway pair
@@ -591,7 +624,7 @@ private fun DualRunwayCompassCanvas(
         )
 
         // Wind directional inward arrow
-        rotate(degrees = animatedWindDir, pivot = Offset(cx, cy)) {
+        rotate(degrees = animatedWindDir + fetchRotatePulse.value, pivot = Offset(cx, cy)) {
           val outerY = cy - radius * 0.90f
           val innerY = cy - radius * 0.42f
           drawLine(

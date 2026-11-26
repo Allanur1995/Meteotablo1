@@ -13,12 +13,13 @@ import okhttp3.Request
 import okhttp3.Response
 
 /**
- * Native Kotlin implementation of the UMAS `/cgi-bin/wdr` Python session flow:
- * 1. `POST <base>/cgi-bin/wdr` with form fields `user` & `pass` (preserving session cookies, no preemptive Basic Auth).
- * 2. Parse `<a href="...">` links whose visible text starts with `SATR` (METAR/SPECI) or `FTTR` (TAF).
- * 3. `GET` resolved bulletin URLs with the authenticated session cookies.
- * 4. Extract `METAR/SPECI/TAF <ICAO> ... =` reports for any requested airport (including all 7 TM stations:
- *    UTAM, UTAK, UTAA, UTAN, UTAT, UTAV, UTAE).
+ * Native Kotlin implementation of the UMAS `/cgi-bin/wdr` Python `WDRData` session flow:
+ * 1. `POST <base>/cgi-bin/wdr` with form fields `user` & `pass` and `Cache-Control: no-cache` headers.
+ * 2. Parse `<a href="...">` links matching `SATR` (METAR/SPECI) or `FTTR` (TAF), preferring `/DATA/METEO/`.
+ * 3. Rank candidates strictly by bulletin filename timestamp `_DDHHMM` (most recent date <= now+1h first).
+ * 4. `GET` newest bulletin URLs with session cookies + `no-cache` headers and KOI8-R/UTF-8 decoding.
+ * 5. Extract `METAR/SPECI/TAF <ICAO> ... =` (and `TAF <ICAO> NIL =`) for all requested airports
+ *    (`UTAA`, `UTAK`, `UTAM`, `UTAT`, `UTAV`, `UTAE`, `UTAN`).
  */
 class UmasWdrClient(
   private val cookieJar: CookieJar = SessionCookieJar(),
@@ -28,6 +29,8 @@ class UmasWdrClient(
     val name: String,
     val resolvedUrl: String,
     val order: Int,
+    val stampMillis: Long = Long.MIN_VALUE,
+    val isDataMeteoPath: Boolean = false,
   )
 
   data class WdrFetchResult(
@@ -54,7 +57,7 @@ class UmasWdrClient(
     .followRedirects(true)
     .followSslRedirects(true)
     .connectTimeout(15, TimeUnit.SECONDS)
-    .readTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
     .writeTimeout(15, TimeUnit.SECONDS)
     .build()
 
@@ -85,7 +88,16 @@ class UmasWdrClient(
         )
       }
 
-      if (CustomMeteoServerClient.isLoginFormHtml(postHtml)) {
+      val (satrLinks, fttrLinks) = extractSatrAndFttrLinks(postHtml, postUrl)
+      logs.add("WDR ссылки: SATR=${satrLinks.size}, FTTR=${fttrLinks.size}")
+      if (satrLinks.isNotEmpty()) {
+        logs.add("WDR SATR топ: ${satrLinks.take(3).joinToString { it.name }}")
+      }
+      if (fttrLinks.isNotEmpty()) {
+        logs.add("WDR FTTR топ: ${fttrLinks.take(3).joinToString { it.name }}")
+      }
+
+      if (satrLinks.isEmpty() && fttrLinks.isEmpty() && CustomMeteoServerClient.isLoginFormHtml(postHtml)) {
         return WdrFetchResult(
           rawMetar = null,
           rawTaf = null,
@@ -93,20 +105,19 @@ class UmasWdrClient(
           logs = logs,
           reachable = true,
           httpCode = postCode,
-          errorMessage = "WDR отклонил логин/пароль (показана форма входа)",
+          errorMessage = "WDR отклонил логин/пароль (показана форма входа на $hostLabel)",
         )
       }
 
-      val (satrLinks, fttrLinks) = extractSatrAndFttrLinks(postHtml, postUrl)
-      logs.add("WDR ссылки: SATR=${satrLinks.size}, FTTR=${fttrLinks.size}")
-
       var foundMetar = extractWeatherMessage(postHtml, cleanIcao, "METAR")
+        ?: CustomMeteoServerClient.extractMetarAndTaf(postHtml, cleanIcao).first
       var foundTaf = extractWeatherMessage(postHtml, cleanIcao, "TAF")
+        ?: CustomMeteoServerClient.extractMetarAndTaf(postHtml, cleanIcao).second
 
       val visited = mutableSetOf<String>()
 
-      // Prioritize SATR links (exact Python order: SATR[0] first, then remaining up to 12)
-      val orderedSatr = prioritizeLinksForStation(satrLinks, cleanIcao).take(12)
+      // Fetch newest _DDHHMM SATR link first (matching Python WDRData.newest_link), scanning fallbacks if needed
+      val orderedSatr = prioritizeLinksForStation(satrLinks, cleanIcao).take(24)
       for (link in orderedSatr) {
         if (!visited.add(link.resolvedUrl)) continue
         logs.add("WDR SATR GET ${link.name} -> ${link.resolvedUrl}")
@@ -125,11 +136,13 @@ class UmasWdrClient(
         }
       }
 
-      // Fetch FTTR links for TAF (FTTR[0] first, scanning up to 10)
+      // Fetch newest _DDHHMM FTTR/FCTR link first for TAF
+      var inspectedFttrCount = 0
       if (foundTaf.isNullOrBlank()) {
-        val orderedFttr = prioritizeLinksForStation(fttrLinks, cleanIcao).take(10)
+        val orderedFttr = prioritizeLinksForStation(fttrLinks, cleanIcao).take(30)
         for (link in orderedFttr) {
           if (!visited.add(link.resolvedUrl)) continue
+          inspectedFttrCount++
           logs.add("WDR FTTR GET ${link.name} -> ${link.resolvedUrl}")
           val (code, body) = getPage(link.resolvedUrl)
           logs.add("WDR HTTP $code <- ${link.name} (${body.length} символов)")
@@ -147,9 +160,24 @@ class UmasWdrClient(
         }
       }
 
+      if (!foundTaf.isNullOrBlank()) {
+        logs.add("WDR TAF OK ($cleanIcao): ${foundTaf.take(100)}")
+      } else {
+        val topFttr = fttrLinks.firstOrNull()?.name
+        logs.add(
+          "WDR TAF не найден ($cleanIcao): FTTR=${fttrLinks.size}, проверено=$inspectedFttrCount" +
+            (topFttr?.let { ", верхний: $it" } ?: ""),
+        )
+      }
+
       if (foundMetar.isNullOrBlank()) {
         val preview = stripHtmlPreserveLines(postHtml).replace(Regex("\\s+"), " ").take(120)
         logs.add("WDR: METAR для $cleanIcao не найден. Ответ: $preview")
+        val linkHint = if (satrLinks.isEmpty()) {
+          "ссылки SATR не найдены (ответ: ${preview.take(60)})"
+        } else {
+          "проверены SATR=${orderedSatr.size} (верхний: ${orderedSatr.first().name})"
+        }
         WdrFetchResult(
           rawMetar = null,
           rawTaf = foundTaf,
@@ -157,7 +185,7 @@ class UmasWdrClient(
           logs = logs,
           reachable = true,
           httpCode = postCode,
-          errorMessage = "На сервере $hostLabel (WDR) нет METAR для $cleanIcao",
+          errorMessage = "На $hostLabel (WDR) нет METAR для $cleanIcao: $linkHint",
         )
       } else {
         logs.add("WDR OK ($cleanIcao): $foundMetar")
@@ -202,6 +230,8 @@ class UmasWdrClient(
       }
 
       val (satrLinks, fttrLinks) = extractSatrAndFttrLinks(postHtml, postUrl)
+      val orderedSatr = prioritizeLinksForStation(satrLinks, cleanIcao)
+      val orderedFttr = prioritizeLinksForStation(fttrLinks, cleanIcao)
       val metars = linkedSetOf<String>()
       val tafs = linkedSetOf<String>()
 
@@ -211,7 +241,7 @@ class UmasWdrClient(
       }
 
       val visited = mutableSetOf<String>()
-      for (link in satrLinks.take(maxBulletins)) {
+      for (link in orderedSatr.take(maxBulletins)) {
         if (!visited.add(link.resolvedUrl)) continue
         val (code, body) = getPage(link.resolvedUrl)
         if (code in 200..299 && body.isNotBlank()) {
@@ -220,7 +250,7 @@ class UmasWdrClient(
           tafs.addAll(t)
         }
       }
-      for (link in fttrLinks.take(8)) {
+      for (link in orderedFttr.take(16)) {
         if (!visited.add(link.resolvedUrl)) continue
         val (code, body) = getPage(link.resolvedUrl)
         if (code in 200..299 && body.isNotBlank()) {
@@ -245,13 +275,15 @@ class UmasWdrClient(
     logs: MutableList<String>,
   ): Triple<HttpUrl, Int, String> {
     logs.add("WDR POST $wdrUrl (user=${config.username.ifBlank { "нет" }})")
-    val formBody = FormBody.Builder(Charsets.UTF_8)
+    val formBody = FormBody.Builder()
       .add("user", config.username)
       .add("pass", config.password)
       .build()
     val request = Request.Builder()
       .url(wdrUrl)
       .header("User-Agent", BROWSER_USER_AGENT)
+      .header("Cache-Control", "no-cache")
+      .header("Pragma", "no-cache")
       .header("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8")
       .post(formBody)
       .build()
@@ -268,6 +300,8 @@ class UmasWdrClient(
     val request = Request.Builder()
       .url(url)
       .header("User-Agent", BROWSER_USER_AGENT)
+      .header("Cache-Control", "no-cache")
+      .header("Pragma", "no-cache")
       .header("Accept", "text/html,text/plain,*/*;q=0.8")
       .get()
       .build()
@@ -296,22 +330,39 @@ class UmasWdrClient(
       return String(bytes, metaCharset)
     }
 
-    val utf8 = String(bytes, Charsets.UTF_8)
-    return if (utf8.contains('\uFFFD')) {
-      runCatching { String(bytes, Charset.forName("windows-1251")) }.getOrDefault(utf8)
-    } else {
-      utf8
+    // Strict UTF-8 check: if valid UTF-8 use UTF-8; otherwise decode as KOI8-R (per Python WDRData)
+    val strictUtf8 = runCatching {
+      Charsets.UTF_8.newDecoder()
+        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        .decode(java.nio.ByteBuffer.wrap(bytes))
+        .toString()
+    }.getOrNull()
+    if (strictUtf8 != null) {
+      return strictUtf8
     }
+
+    return runCatching { String(bytes, Charset.forName("KOI8-R")) }
+      .recoverCatching { String(bytes, Charset.forName("windows-1251")) }
+      .getOrElse { String(bytes, Charsets.UTF_8) }
   }
 
   companion object {
-    val TURKMEN_AIRPORT_ICAOS = setOf("UTAM", "UTAK", "UTAA", "UTAN", "UTAT", "UTAV", "UTAE")
+    val TURKMEN_AIRPORT_ICAOS = setOf("UTAA", "UTAK", "UTAM", "UTAT", "UTAV", "UTAE", "UTAN")
 
-    private const val BROWSER_USER_AGENT = "Mozilla/5.0 (compatible; Meteotablo/1.0)"
+    private const val BROWSER_USER_AGENT = "Mozilla/5.0"
     private val anchorRegex = Regex("<a\\b([^>]*)>([\\s\\S]*?)</a>", RegexOption.IGNORE_CASE)
     private val hrefDqRegex = Regex("\\bhref\\s*=\\s*\"([^\"]*)\"", RegexOption.IGNORE_CASE)
     private val hrefSqRegex = Regex("\\bhref\\s*=\\s*'([^']*)'", RegexOption.IGNORE_CASE)
     private val hrefBareRegex = Regex("\\bhref\\s*=\\s*([^\\s>]+)", RegexOption.IGNORE_CASE)
+    private val stampRegex = Regex("_(\\d{6})(?:\\.[A-Za-z0-9]+)?(?:$|[^\\d])")
+    private val wmoTafHeaderRegex = Regex("\\b(?:FT|FC)[A-Z0-9]{2}(?:UT|TR)[A-Z0-9]{0,2}\\b")
+    private val wmoMetarHeaderRegex = Regex("\\b(?:SA|SP)[A-Z0-9]{2}(?:UT|TR)[A-Z0-9]{0,2}\\b")
+    private val tafContextRegex = Regex("\\b(?:TAF|FTTR|FCTR|FT[A-Z0-9]{2}|FC[A-Z0-9]{2})\\b", RegexOption.IGNORE_CASE)
+    private val nextReportBoundaryRegex = Regex(
+      "(?:^|\\n)\\s*(?:METAR|SPECI|TAF|ZCZC|NNNN|(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?[A-Z]{4}\\s+(?:\\d{6}Z?\\s+\\d{4}/\\d{4}|\\d{6}Z|(?:NIL|CNL)\\b))",
+      RegexOption.IGNORE_CASE,
+    )
 
     fun resolveWdrUrl(rawServerUrl: String): HttpUrl? {
       val normalized = ServerConfig.normalizeServerUrl(rawServerUrl)
@@ -332,14 +383,60 @@ class UmasWdrClient(
     }
 
     /**
-     * Parses links exactly like the Python script:
-     * `name = link.get_text(strip=True)`
-     * `href = link.get("href", "")`
-     * keeping links whose text starts with `SATR` or `FTTR`.
+     * Port of Python `WDRData.message_datetime(href)`:
+     * Extracts `_DDHHMM` at the end of the bulletin filename and resolves it across
+     * `(0, 1, 2)` months back so `candidate <= now + 1 hour`.
+     */
+    fun parseBulletinTimestampMillis(
+      urlOrHref: String,
+      nowMillis: Long = System.currentTimeMillis(),
+    ): Long {
+      val pathOnly = urlOrHref.substringBefore('?').substringBefore('#')
+      val filename = pathOnly.substringAfterLast('/')
+      val match = stampRegex.find(filename) ?: stampRegex.find(urlOrHref) ?: return Long.MIN_VALUE
+      val stamp = match.groupValues[1]
+      val day = stamp.substring(0, 2).toIntOrNull() ?: return Long.MIN_VALUE
+      val hour = stamp.substring(2, 4).toIntOrNull() ?: return Long.MIN_VALUE
+      val minute = stamp.substring(4, 6).toIntOrNull() ?: return Long.MIN_VALUE
+      if (day !in 1..31 || hour !in 0..23 || minute !in 0..59) return Long.MIN_VALUE
+
+      val utcTz = java.util.TimeZone.getTimeZone("UTC")
+      val baseCal = java.util.Calendar.getInstance(utcTz).apply {
+        timeInMillis = nowMillis
+      }
+      val baseYear = baseCal.get(java.util.Calendar.YEAR)
+      val baseMonth = baseCal.get(java.util.Calendar.MONTH) // 0-indexed
+
+      for (offset in 0..2) {
+        var month = baseMonth - offset
+        var year = baseYear
+        while (month < 0) {
+          month += 12
+          year -= 1
+        }
+        val candidate = java.util.Calendar.getInstance(utcTz).apply {
+          isLenient = false
+          clear()
+          set(year, month, day, hour, minute, 0)
+          set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val candidateMillis = runCatching { candidate.timeInMillis }.getOrNull() ?: continue
+        if (candidateMillis <= nowMillis + 6L * 3_600_000L) {
+          return candidateMillis
+        }
+      }
+      return Long.MIN_VALUE
+    }
+
+    /**
+     * Parses `<a href="...">` links matching `SATR`/`SPTR` or `FTTR`/`FCTR` in either anchor text or href
+     * (`(a.get_text(" ", strip=True) + " " + href).upper()`). When `/DATA/METEO/` links are
+     * present on the UMAS directory page, restricts to `/DATA/METEO/` exactly like Python `WDRData`.
      */
     fun extractSatrAndFttrLinks(
       html: String,
       baseUrl: HttpUrl,
+      nowMillis: Long = System.currentTimeMillis(),
     ): Pair<List<WdrLink>, List<WdrLink>> {
       val satr = mutableListOf<WdrLink>()
       val fttr = mutableListOf<WdrLink>()
@@ -354,34 +451,66 @@ class UmasWdrClient(
           continue
         }
         val resolved = baseUrl.resolve(href)?.toString() ?: continue
-        val link = WdrLink(name = text, resolvedUrl = resolved, order = order++)
+        val combinedUpper = "$text $href $resolved".uppercase()
+        val isDataMeteo = href.uppercase().contains("/DATA/METEO/") ||
+          resolved.uppercase().contains("/DATA/METEO/")
+        val stampMillis = parseBulletinTimestampMillis(resolved, nowMillis)
+          .takeIf { it != Long.MIN_VALUE }
+          ?: parseBulletinTimestampMillis(text, nowMillis).takeIf { it != Long.MIN_VALUE }
+          ?: parseBulletinTimestampMillis(href, nowMillis)
+        val displayName = text.ifBlank { resolved.substringAfterLast('/') }
+        val link = WdrLink(
+          name = displayName,
+          resolvedUrl = resolved,
+          order = order++,
+          stampMillis = stampMillis,
+          isDataMeteoPath = isDataMeteo,
+        )
+        val isSatrOrSptr = combinedUpper.contains("SATR") ||
+          combinedUpper.contains("SPTR") ||
+          wmoMetarHeaderRegex.containsMatchIn(combinedUpper)
+        val isFttrOrFctr = combinedUpper.contains("FTTR") ||
+          combinedUpper.contains("FCTR") ||
+          wmoTafHeaderRegex.containsMatchIn(combinedUpper)
         when {
-          text.startsWith("SATR", ignoreCase = true) -> satr.add(link)
-          text.startsWith("FTTR", ignoreCase = true) -> fttr.add(link)
+          isFttrOrFctr -> fttr.add(link)
+          isSatrOrSptr -> satr.add(link)
         }
       }
 
-      return satr.distinctBy { it.resolvedUrl } to fttr.distinctBy { it.resolvedUrl }
+      val distinctSatr = satr.distinctBy { it.resolvedUrl }
+      val distinctFttr = fttr.distinctBy { it.resolvedUrl }
+      return distinctSatr to distinctFttr
     }
 
     /**
-     * Orders links so station-specific ones come first, preserving original HTML order
-     * (where `messages[kind][0]` in Python is the newest bulletin at the top of the table)
-     * as the tie-breaker rather than reversing it.
+     * Orders bulletin links by newest `_DDHHMM` timestamp first (matching Python `max(..., key=message_datetime)`),
+     * then `/DATA/METEO/` paths, then `FTTR`/`SATR` priority over secondary types, then station-specific URL/name matches, then HTML order.
      */
     fun prioritizeLinksForStation(links: List<WdrLink>, icao: String): List<WdrLink> {
       if (links.size <= 1) return links
       val upper = icao.trim().uppercase()
       return links.sortedWith(
-        compareByDescending<WdrLink> {
-          it.name.contains(upper, ignoreCase = true) || it.resolvedUrl.contains(upper, ignoreCase = true)
-        }.thenBy { it.order },
+        compareByDescending<WdrLink> { it.stampMillis }
+          .thenByDescending { it.isDataMeteoPath }
+          .thenByDescending {
+            it.name.contains("FTTR", ignoreCase = true) ||
+              it.resolvedUrl.contains("FTTR", ignoreCase = true) ||
+              it.name.contains("SATR", ignoreCase = true) ||
+              it.resolvedUrl.contains("SATR", ignoreCase = true)
+          }
+          .thenByDescending {
+            it.name.contains(upper, ignoreCase = true) || it.resolvedUrl.contains(upper, ignoreCase = true)
+          }
+          .thenBy { it.order },
       )
     }
 
     /**
-     * Direct port of Python `extract_weather(text, kind)` extended to work cleanly on both single
-     * and collective multi-airport bulletins (`UTAM, UTAK, UTAA, UTAN, UTAT, UTAV, UTAE`) and HTML pages.
+     * Direct port of Python `extract_report(text, kind, code)` supporting METAR/SPECI,
+     * TAF, `TAF <ICAO> NIL =`, `TAF <ICAO> CNL =`, AMD/COR/RTD modifiers before or after ICAO,
+     * collective multi-airport bulletins (`UTAA, UTAK, UTAM, UTAT, UTAV, UTAE, UTAN`),
+     * and stripping accidental double `TAF TAF` / `METAR METAR` prefixes.
      */
     fun extractWeatherMessage(
       rawText: String,
@@ -391,40 +520,65 @@ class UmasWdrClient(
       val cleanIcao = Regex.escape(icao.trim().uppercase())
       val normalized = stripHtmlPreserveLines(rawText).replace("\r", "")
 
-      val patterns = if (kind.equals("METAR", ignoreCase = true)) {
+      val isMetar = kind.equals("METAR", ignoreCase = true)
+      val patterns = if (isMetar) {
         listOf(
-          // Exact Python regex extended with SPECI & optional COR/RTD/AMD modifiers
-          Regex("(?m)^\\s*(?:METAR|SPECI)(?:\\s+(?:COR|RTD|AMD|CC[A-Z]))?\\s+$cleanIcao\\b"),
-          // Also match METAR/SPECI mid-line if multiple reports share a paragraph
-          Regex("\\b(?:METAR|SPECI)(?:\\s+(?:COR|RTD|AMD|CC[A-Z]))?\\s+$cleanIcao\\b"),
+          Regex("\\b(?:METAR|SPECI)(?:\\s+(?:COR|RTD|AMD|CC[A-Z]))*\\s+$cleanIcao\\b", RegexOption.IGNORE_CASE),
+          Regex("(?:^|=|\\n)\\s*(?:(?:COR|RTD|CC[A-Z])\\s+)?$cleanIcao\\s+\\d{6}Z(?!\\s+\\d{4}/\\d{4}\\b)", RegexOption.IGNORE_CASE),
         )
       } else {
-        listOf(
-          // Exact Python TAF regex + modifiers
-          Regex("(?m)^\\s*TAF(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+$cleanIcao\\b"),
-          // Collective TAF bulletins where header line has `TAF` alone and station line starts with ICAO DDHHMMZ DDHH/DDHH
-          Regex("(?m)^\\s*$cleanIcao\\s+\\d{6}Z\\s+\\d{4}/\\d{4}\\b"),
-        )
+        buildList {
+          add(
+            Regex(
+              "\\bTAF(?:\\s+TAF)?(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))*\\s+$cleanIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\b",
+              RegexOption.IGNORE_CASE,
+            ),
+          )
+          add(
+            Regex(
+              "(?:^|=|\\n)\\s*(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?$cleanIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?\\s+\\d{6}Z?\\s+(?:\\d{4}/\\d{4}|\\d{6}|\\d{4})\\b",
+              RegexOption.IGNORE_CASE,
+            ),
+          )
+          if (tafContextRegex.containsMatchIn(normalized)) {
+            add(
+              Regex(
+                "(?:^|=|\\n)\\s*(?:(?:AMD|COR|RTD|CC[A-Z])\\s+)?$cleanIcao(?:\\s+(?:AMD|COR|RTD|CC[A-Z]))?(?:\\s+\\d{6}Z?)?\\s+(?:NIL|CNL)\\b",
+                RegexOption.IGNORE_CASE,
+              ),
+            )
+          }
+        }
       }
 
       for (pattern in patterns) {
         val match = pattern.find(normalized) ?: continue
-        val start = match.range.first
-        val end = normalized.indexOf('=', startIndex = match.range.last + 1)
-        val rawSlice = if (end != -1) {
-          normalized.substring(start, end)
-        } else {
-          // If no '=' terminator, fall back to next station/report boundary or end of line block
-          val tail = normalized.substring(start)
-          val nextBoundary = Regex("\\n\\s*(?:METAR|SPECI|TAF|[A-Z]{4}\\s+\\d{6}Z|NNNN)\\b")
-            .find(tail, startIndex = 1)
-          if (nextBoundary != null) tail.substring(0, nextBoundary.range.first) else tail
+        var start = match.range.first
+        while (start <= match.range.last && (normalized[start] == '=' || normalized[start].isWhitespace())) {
+          start++
         }
+        val searchFrom = (match.range.last + 1).coerceAtMost(normalized.length)
+        val eqIdx = normalized.indexOf('=', startIndex = searchFrom)
+        val nextBoundaryIdx = nextReportBoundaryRegex.find(normalized, startIndex = searchFrom)?.range?.first ?: -1
+        val end = listOf(eqIdx, nextBoundaryIdx).filter { it >= 0 }.minOrNull() ?: normalized.length
+        if (end <= start) continue
 
-        var singleLine = rawSlice.replace(Regex("\\s+"), " ").trim().trimEnd('=')
-        if (!kind.equals("METAR", ignoreCase = true) &&
-          !singleLine.startsWith("TAF", ignoreCase = true)
+        val rawSlice = normalized.substring(start, end)
+        var singleLine = rawSlice
+          .replace(Regex("\\s+"), " ")
+          .trim()
+          .trimStart('=')
+          .trimEnd('=')
+          .trim()
+          .replace(Regex("^TAF\\s+TAF\\b", RegexOption.IGNORE_CASE), "TAF")
+          .replace(Regex("^METAR\\s+METAR\\b", RegexOption.IGNORE_CASE), "METAR")
+
+        if (isMetar &&
+          !singleLine.startsWith("METAR", ignoreCase = true) &&
+          !singleLine.startsWith("SPECI", ignoreCase = true)
         ) {
+          singleLine = "METAR $singleLine"
+        } else if (!isMetar && !singleLine.startsWith("TAF", ignoreCase = true)) {
           singleLine = "TAF $singleLine"
         }
         if (singleLine.isNotBlank()) return singleLine

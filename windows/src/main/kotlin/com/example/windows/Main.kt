@@ -25,6 +25,7 @@ fun main() {
       autoFetch = true,
       unitPreferencesStorage = DesktopUnitPreferencesStorage(),
       weatherHistoryStorage = DesktopWeatherHistoryStorage(),
+      recentSearchesStorage = DesktopRecentSearchesStorage(),
     )
     controllerRef = controller
     DesktopSplashLauncher.showAndLaunch {

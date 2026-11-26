@@ -22,6 +22,7 @@ object SolarCalculator {
     longitude: Double,
     utcOffsetHours: Int,
     calendar: Calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC")),
+    appendZuluSuffix: Boolean = false,
   ): SunTimes {
     val year = calendar.get(Calendar.YEAR)
     val month = calendar.get(Calendar.MONTH) + 1
@@ -30,10 +31,11 @@ object SolarCalculator {
     val dayOfYear = dayOfYear(year, month, day)
     val sunriseMinutes = calcEventMinutes(dayOfYear, latitude, longitude, utcOffsetHours, isSunrise = true)
     val sunsetMinutes = calcEventMinutes(dayOfYear, latitude, longitude, utcOffsetHours, isSunrise = false)
+    val suffix = if (appendZuluSuffix) "Z" else ""
 
     return SunTimes(
-      sunriseLocal = formatMinutes(sunriseMinutes),
-      sunsetLocal = formatMinutes(sunsetMinutes),
+      sunriseLocal = formatMinutes(sunriseMinutes).let { if (it == "--:--") it else "$it$suffix" },
+      sunsetLocal = formatMinutes(sunsetMinutes).let { if (it == "--:--") it else "$it$suffix" },
     )
   }
 

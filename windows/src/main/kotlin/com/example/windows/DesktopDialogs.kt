@@ -621,7 +621,7 @@ object DesktopDialogs {
       favoritesBar.revalidate()
       favoritesBar.repaint()
 
-      windRosePanel.updateData(st.weather.wind, st.windUnit, pal)
+      windRosePanel.updateData(st.weather.wind, st.windUnit, pal, st.metarFetchSeq)
       tableModel.rowCount = 0
       buildTableRows(st.station, st.weather, st.windUnit, st.pressureUnit).forEach { row ->
         tableModel.addRow(row)
@@ -923,8 +923,8 @@ object DesktopDialogs {
         frictionCoeff = stateSnap.weather.frictionCoeff,
         rvrMeters = stateSnap.weather.rvrReciprocalMeters,
       )
-      leftRose.updateData(primary, stateSnap.weather.wind, stateSnap.windUnit, pal)
-      rightRose.updateData(reciprocal, stateSnap.weather.wind, stateSnap.windUnit, pal)
+      leftRose.updateData(primary, stateSnap.weather.wind, stateSnap.windUnit, pal, stateSnap.metarFetchSeq)
+      rightRose.updateData(reciprocal, stateSnap.weather.wind, stateSnap.windUnit, pal, stateSnap.metarFetchSeq)
 
       val h1 = UnitConverter.convertWindFromKnots(primary.headwindKt, stateSnap.windUnit)
       val c1 = UnitConverter.convertWindFromKnots(primary.crosswindKt, stateSnap.windUnit)

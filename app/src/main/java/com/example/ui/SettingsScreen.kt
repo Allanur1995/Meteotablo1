@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -18,10 +20,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LightMode
@@ -40,27 +45,35 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AutoRefreshInterval
 import com.example.diagnostics.CrashReporter
 import com.example.domain.UnitConverter
+import com.example.model.AircraftTypePreset
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
 import com.example.model.DecodedWeather
@@ -69,10 +82,14 @@ import com.example.model.RunwayCalculation
 import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WindSpeedUnit
+import com.example.ui.components.RunwayOrientationWindVisualizer
+import com.example.ui.components.calculateRunwayWindComponents
 import com.example.ui.theme.LocalMeteoPalette
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
   station: AirportStation,
@@ -94,6 +111,7 @@ fun SettingsScreen(
   onToggleFullscreen: () -> Unit,
   onToggleAutoRefresh: (Boolean) -> Unit = {},
   onSelectAutoRefreshInterval: (Int) -> Unit = {},
+  onUpdateAlertConfig: (WeatherAlertConfig) -> Unit = {},
   onOpenServerSettings: () -> Unit,
   onOpenAlertsSettings: () -> Unit,
   onOpenThresholdConfig: () -> Unit = {},
@@ -532,6 +550,262 @@ fun SettingsScreen(
             }
           }
         }
+      }
+
+      // Section 3.2: Aircraft Type & Maximum Crosswind Threshold Panel
+      val calcComp = remember(primaryRunwayCalc.headingDeg, weather.wind) {
+        calculateRunwayWindComponents(primaryRunwayCalc.headingDeg, weather.wind)
+      }
+      val crossExceeded = alertConfig.isCrosswindExceeded(
+        crosswindKt = primaryRunwayCalc.crosswindKt,
+        gustCrosswindKt = calcComp.gustCrosswindKt,
+      )
+      var limitInputText by remember(alertConfig.maxCrosswindKt) {
+        mutableStateOf(alertConfig.maxCrosswindKt.toString())
+      }
+      var customAircraftText by remember(alertConfig.customAircraftName) {
+        mutableStateOf(alertConfig.customAircraftName)
+      }
+
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("settings_crosswind_limit_card")
+          .background(palette.panelSurface)
+          .border(
+            width = if (crossExceeded) 1.5.dp else 1.dp,
+            color = if (crossExceeded) palette.tailwindNegative else palette.border,
+          )
+          .padding(12.dp),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Flight,
+              contentDescription = "Лимит бокового ветра по типу ВС",
+              tint = if (crossExceeded) palette.tailwindNegative else palette.metarAmber,
+              modifier = Modifier.size(20.dp),
+            )
+            Column {
+              Text(
+                text = "Ограничение бокового ветра (Тип ВС)",
+                color = palette.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = "Предупреждение при превышении боковой составляющей для ${alertConfig.resolvedAircraftName()}",
+                color = palette.textSecondary,
+                fontSize = 11.5.sp,
+              )
+            }
+          }
+          Switch(
+            checked = alertConfig.crosswindWarningEnabled,
+            onCheckedChange = { enabled ->
+              onUpdateAlertConfig(alertConfig.copy(crosswindWarningEnabled = enabled))
+            },
+            modifier = Modifier.testTag("settings_crosswind_switch"),
+          )
+        }
+
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          AircraftTypePreset.entries.forEach { preset ->
+            val selected = alertConfig.aircraftTypeId == preset.id
+            val presetDisp = UnitConverter.formatWindSpeedValue(preset.defaultMaxCrosswindKt, windUnit)
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .heightIn(min = 42.dp)
+                .testTag("settings_aircraft_preset_${preset.id}")
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (selected) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+                .border(
+                  width = if (selected) 1.5.dp else 1.dp,
+                  color = if (selected) palette.metarAmber else palette.border,
+                  shape = RoundedCornerShape(4.dp),
+                )
+                .clickable {
+                  val nextLimit = if (preset == AircraftTypePreset.CUSTOM) {
+                    alertConfig.maxCrosswindKt
+                  } else {
+                    preset.defaultMaxCrosswindKt
+                  }
+                  onUpdateAlertConfig(
+                    alertConfig.copy(
+                      aircraftTypeId = preset.id,
+                      maxCrosswindKt = nextLimit,
+                    ),
+                  )
+                }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+              Text(
+                text = if (preset == AircraftTypePreset.CUSTOM) {
+                  preset.displayName
+                } else {
+                  "${preset.displayName} (${presetDisp} ${windUnit.label})"
+                },
+                color = if (selected) palette.metarAmber else palette.textPrimary,
+                fontSize = 11.5.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+              )
+            }
+          }
+        }
+
+        if (alertConfig.aircraftTypeId == AircraftTypePreset.CUSTOM.id) {
+          OutlinedTextField(
+            value = customAircraftText,
+            onValueChange = { raw ->
+              customAircraftText = raw.take(28)
+              onUpdateAlertConfig(alertConfig.copy(customAircraftName = customAircraftText))
+            },
+            label = { Text("Название вашего ВС", fontSize = 11.sp) },
+            singleLine = true,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_custom_aircraft_input"),
+          )
+        }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          OutlinedButton(
+            onClick = {
+              val next = (alertConfig.maxCrosswindKt - 2).coerceIn(5, 60)
+              onUpdateAlertConfig(alertConfig.copy(maxCrosswindKt = next))
+            },
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("settings_crosswind_minus"),
+          ) {
+            Text("-2 kt", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+          }
+
+          OutlinedTextField(
+            value = limitInputText,
+            onValueChange = { raw ->
+              val digits = raw.filter { it.isDigit() }.take(2)
+              limitInputText = digits
+              val parsed = digits.toIntOrNull()
+              if (parsed != null && parsed in 5..60) {
+                onUpdateAlertConfig(alertConfig.copy(maxCrosswindKt = parsed))
+              }
+            },
+            label = {
+              val eqDisp = UnitConverter.formatWindSpeedValue(alertConfig.maxCrosswindKt, windUnit)
+              Text("Макс. бок. ветер (kt · ≈ $eqDisp ${windUnit.label})", fontSize = 10.5.sp)
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("settings_crosswind_limit_input"),
+          )
+
+          OutlinedButton(
+            onClick = {
+              val next = (alertConfig.maxCrosswindKt + 2).coerceIn(5, 60)
+              onUpdateAlertConfig(alertConfig.copy(maxCrosswindKt = next))
+            },
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("settings_crosswind_plus"),
+          ) {
+            Text("+2 kt", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+          }
+        }
+
+        val currentCrossDisp = UnitConverter.convertWindFromKnots(primaryRunwayCalc.crosswindKt, windUnit)
+        val limitDisp = UnitConverter.convertWindFromKnots(alertConfig.maxCrosswindKt.toDouble(), windUnit)
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("settings_crosswind_preview_status")
+            .semantics(mergeDescendants = true) {}
+            .background(
+              if (crossExceeded) palette.tailwindNegative.copy(alpha = 0.14f) else palette.headwindPositive.copy(alpha = 0.10f),
+              RoundedCornerShape(4.dp),
+            )
+            .border(
+              1.dp,
+              if (crossExceeded) palette.tailwindNegative else palette.headwindPositive.copy(alpha = 0.55f),
+              RoundedCornerShape(4.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        ) {
+          Icon(
+            imageVector = if (crossExceeded) Icons.Filled.Warning else Icons.Filled.CheckCircle,
+            contentDescription = null,
+            tint = if (crossExceeded) palette.tailwindNegative else palette.headwindPositive,
+            modifier = Modifier.size(16.dp),
+          )
+          Text(
+            text = if (crossExceeded) {
+              String.format(
+                Locale.US,
+                "ПРЕВЫШЕНИЕ на ВПП %s: боковой %.1f %s > лимита %.0f %s (%s)",
+                primaryRunwayCalc.designator,
+                currentCrossDisp,
+                windUnit.label,
+                limitDisp,
+                windUnit.label,
+                alertConfig.resolvedAircraftName(),
+              )
+            } else if (!alertConfig.crosswindWarningEnabled) {
+              "Контроль ограничения бокового ветра отключён"
+            } else {
+              String.format(
+                Locale.US,
+                "В норме на ВПП %s: боковой %.1f %s ≤ лимита %.0f %s",
+                primaryRunwayCalc.designator,
+                currentCrossDisp,
+                windUnit.label,
+                limitDisp,
+                windUnit.label,
+              )
+            },
+            color = if (crossExceeded) palette.tailwindNegative else palette.headwindPositive,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        RunwayOrientationWindVisualizer(
+          runwayHeadingDeg = primaryRunwayCalc.headingDeg,
+          runwayDesignator = primaryRunwayCalc.designator,
+          wind = weather.wind,
+          windUnit = windUnit,
+          maxCrosswindKt = if (alertConfig.crosswindWarningEnabled) alertConfig.maxCrosswindKt else null,
+          aircraftLabel = alertConfig.resolvedAircraftName(),
+          onToggleUnit = {
+            val nextUnit = when (windUnit) {
+              WindSpeedUnit.KT -> WindSpeedUnit.MPS
+              WindSpeedUnit.MPS -> WindSpeedUnit.KPH
+              WindSpeedUnit.KPH -> WindSpeedUnit.KT
+            }
+            onSelectWindUnit(nextUnit)
+          },
+        )
       }
 
       // Section 3.5: Automatic Weather Refresh (5, 15, 30 min)

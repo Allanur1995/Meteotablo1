@@ -30,6 +30,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.SharedPreferencesFavoriteStorage
+import com.example.data.SharedPreferencesRecentSearchesStorage
 import com.example.data.SharedPreferencesServerConfigStorage
 import com.example.data.SharedPreferencesUnitPreferencesStorage
 import com.example.data.SharedPreferencesWeatherAlertStorage
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
               weatherNotifier = AndroidWeatherNotifier(applicationContext),
               weatherHistoryStorage = SharedPreferencesWeatherHistoryStorage(applicationContext),
               locationService = PlayServicesLocationService(applicationContext),
+              recentSearchesStorage = SharedPreferencesRecentSearchesStorage(applicationContext),
             ) as T
           }
         },

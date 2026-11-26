@@ -422,4 +422,57 @@ class DesktopSmokeTest {
       controller.shutdown()
     }
   }
+
+  @Test
+  fun `desktop recent searches storage persists last 5 ICAOs and wind rose pulses on fetch`() {
+    val tmpFile = File.createTempFile("meteotablo_win_recent", ".properties")
+    tmpFile.deleteOnExit()
+    tmpFile.delete()
+
+    val recentStorage = DesktopRecentSearchesStorage(tmpFile)
+    val controller1 = DesktopController(recentSearchesStorage = recentStorage, autoFetch = false)
+    try {
+      listOf("UTAM", "UTAA", "UTAK", "UTAN", "UTAT", "UTAV").forEach { icao ->
+        controller1.selectStation(icao)
+      }
+      controller1.selectStation("UTAA")
+      assertEquals(listOf("UTAA", "UTAV", "UTAT", "UTAN", "UTAK"), controller1.state.recentSearches)
+
+      val prevSeq = controller1.state.metarFetchSeq
+      controller1.applyCustomMetar("METAR UTAA 261000Z 27012KT CAVOK 22/07 Q1018", "TAF UTAA")
+      assertEquals(prevSeq + 1L, controller1.state.metarFetchSeq)
+
+      val rose = RunwayWindRosePanel {}
+      rose.updateData(
+        controller1.state.primaryRunwayCalc,
+        controller1.state.weather.wind,
+        controller1.state.windUnit,
+        DayDesktopPalette,
+        controller1.state.metarFetchSeq,
+      )
+      assertTrue(rose.pulseDeg < 0.0)
+      rose.setSize(280, 235)
+      val image = java.awt.image.BufferedImage(280, 235, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+      val g2 = image.createGraphics()
+      try {
+        rose.paint(g2)
+      } finally {
+        g2.dispose()
+      }
+      rose.removeNotify()
+    } finally {
+      controller1.shutdown()
+    }
+
+    val controller2 = DesktopController(recentSearchesStorage = DesktopRecentSearchesStorage(tmpFile), autoFetch = false)
+    try {
+      assertEquals(listOf("UTAA", "UTAV", "UTAT", "UTAN", "UTAK"), controller2.state.recentSearches)
+      controller2.clearRecentSearches()
+      assertTrue(controller2.state.recentSearches.isEmpty())
+      assertTrue(DesktopRecentSearchesStorage(tmpFile).loadRecentSearches().isEmpty())
+    } finally {
+      controller2.shutdown()
+    }
+  }
 }
+

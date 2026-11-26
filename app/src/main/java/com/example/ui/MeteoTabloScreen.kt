@@ -21,6 +21,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
+import com.example.domain.UnitConverter
 import com.example.domain.WeatherExportPayload
 import com.example.model.PressureUnit
 import com.example.model.UnitSystem
@@ -56,9 +60,11 @@ import com.example.ui.components.PressureConversionUtilityDialog
 import com.example.ui.components.RunwayColumnPanel
 import com.example.ui.components.StationAndMetarDialog
 import com.example.ui.components.WeatherAlertsDialog
+import com.example.ui.components.calculateRunwayWindComponents
 import com.example.ui.theme.LocalMeteoPalette
 import com.example.viewmodel.MeteoUiState
 import com.example.viewmodel.MeteoViewModel
+import java.util.Locale
 
 @Composable
 fun MeteoTabloScreen(
@@ -113,6 +119,7 @@ fun MeteoTabloScreen(
     onToggleVfrMonitoredAirport = viewModel::toggleVfrMonitoredAirport,
     onSetVfrMonitorAllFavorites = viewModel::setVfrMonitorAllFavorites,
     onCheckVfrNow = viewModel::checkVfrMinimumsNow,
+    onClearRecentSearches = viewModel::clearRecentSearches,
     modifier = modifier,
   )
 }
@@ -159,6 +166,7 @@ fun MeteoTabloContent(
   onToggleVfrMonitoredAirport: (String) -> Unit = {},
   onSetVfrMonitorAllFavorites: (Boolean) -> Unit = {},
   onCheckVfrNow: () -> Unit = {},
+  onClearRecentSearches: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -236,6 +244,7 @@ fun MeteoTabloContent(
       onToggleFullscreen = onToggleFullscreen,
       onToggleAutoRefresh = onToggleAutoRefresh,
       onSelectAutoRefreshInterval = onSelectAutoRefreshInterval,
+      onUpdateAlertConfig = onUpdateAlertConfig,
       onOpenServerSettings = {
         stationDialogInitialTab = 2
         showStationDialog = true
@@ -325,6 +334,7 @@ fun MeteoTabloContent(
       onOpenExportDialog = { showExportDialog = true },
       onOpenDecoder = { showDecoderScreen = true },
       onOpenPressureUtility = { showPressureUtility = true },
+      metarFetchSeq = uiState.metarFetchSeq,
       modifier = modifier,
     )
     if (showStationDialog) {
@@ -470,6 +480,8 @@ fun MeteoTabloContent(
           detectedLocationSummary = uiState.detectedLocationSummary,
           onDetectGpsLocation = onDetectGpsLocation,
           onFetchByCoordinates = onFetchByCoordinates,
+          recentSearches = uiState.recentSearches,
+          onClearRecentSearches = onClearRecentSearches,
         )
 
         MyAirportsBar(
@@ -566,6 +578,73 @@ fun MeteoTabloContent(
           }
         }
 
+        // Aircraft Maximum Crosswind Threshold Warning Banner
+        val activeWindComponents = remember(uiState.primaryRunwayCalc.headingDeg, uiState.weather.wind) {
+          calculateRunwayWindComponents(uiState.primaryRunwayCalc.headingDeg, uiState.weather.wind)
+        }
+        val crosswindExceeded = uiState.alertConfig.isCrosswindExceeded(
+          crosswindKt = uiState.primaryRunwayCalc.crosswindKt,
+          gustCrosswindKt = activeWindComponents.gustCrosswindKt,
+        )
+        val activeCrosswindLimitKt = if (uiState.alertConfig.crosswindWarningEnabled) {
+          uiState.alertConfig.maxCrosswindKt
+        } else {
+          null
+        }
+        AnimatedVisibility(visible = crosswindExceeded) {
+          val crossVal = UnitConverter.convertWindFromKnots(uiState.primaryRunwayCalc.crosswindKt, uiState.windUnit)
+          val limitVal = UnitConverter.convertWindFromKnots(uiState.alertConfig.maxCrosswindKt.toDouble(), uiState.windUnit)
+          val gustNote = activeWindComponents.gustCrosswindKt?.let { gKt ->
+            if (gKt > uiState.alertConfig.maxCrosswindKt + 0.05) {
+              String.format(Locale.US, " (порывы %.1f)", UnitConverter.convertWindFromKnots(gKt, uiState.windUnit))
+            } else {
+              ""
+            }
+          }.orEmpty()
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("crosswind_limit_warning_banner")
+              .background(palette.tailwindNegative.copy(alpha = 0.14f), RoundedCornerShape(3.dp))
+              .border(1.2.dp, palette.tailwindNegative, RoundedCornerShape(3.dp))
+              .padding(horizontal = 10.dp, vertical = 6.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Warning,
+              contentDescription = "Превышение бокового ветра",
+              tint = palette.tailwindNegative,
+            )
+            Text(
+              text = String.format(
+                Locale.US,
+                "ПРЕВЫШЕНИЕ БОКОВОГО ВЕТРА (%s · ВПП %s): %.1f%s %s > лимита %.0f %s",
+                uiState.alertConfig.resolvedAircraftName(),
+                uiState.primaryRunwayCalc.designator,
+                crossVal,
+                gustNote,
+                uiState.windUnit.label,
+                limitVal,
+                uiState.windUnit.label,
+              ),
+              color = palette.tailwindNegative,
+              fontSize = 11.5.sp,
+              fontWeight = FontWeight.ExtraBold,
+              modifier = Modifier.weight(1f),
+            )
+            Text(
+              text = "Лимиты",
+              color = palette.textPrimary,
+              fontSize = 11.5.sp,
+              fontWeight = FontWeight.Bold,
+              modifier = Modifier
+                .clickable { showSettings = true }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+          }
+        }
+
         // Main Instrument Board Container
         Column(
           verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 5.dp else 10.dp),
@@ -595,7 +674,9 @@ fun MeteoTabloContent(
                 onOpenStationDialog = { showStationDialog = true },
                 onToggleUnit = onToggleWindUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                maxCrosswindKt = activeCrosswindLimitKt,
                 compactMode = isCompactHeight,
+                metarFetchSeq = uiState.metarFetchSeq,
                 modifier = Modifier.weight(1.05f),
               )
 
@@ -624,7 +705,9 @@ fun MeteoTabloContent(
                 onOpenStationDialog = { showStationDialog = true },
                 onToggleUnit = onToggleWindUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                maxCrosswindKt = activeCrosswindLimitKt,
                 compactMode = isCompactHeight,
+                metarFetchSeq = uiState.metarFetchSeq,
                 modifier = Modifier.weight(1.05f),
               )
             }
@@ -643,6 +726,8 @@ fun MeteoTabloContent(
               onOpenStationDialog = { showStationDialog = true },
               onToggleUnit = onToggleWindUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              maxCrosswindKt = activeCrosswindLimitKt,
+              metarFetchSeq = uiState.metarFetchSeq,
             )
 
             RunwayColumnPanel(
@@ -658,6 +743,8 @@ fun MeteoTabloContent(
               onOpenStationDialog = { showStationDialog = true },
               onToggleUnit = onToggleWindUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              maxCrosswindKt = activeCrosswindLimitKt,
+              metarFetchSeq = uiState.metarFetchSeq,
             )
 
             CenterWeatherPanel(
@@ -685,6 +772,8 @@ fun MeteoTabloContent(
               windUnit = uiState.windUnit,
               onSelectRunwayPair = onSelectRunwayPair,
               onToggleUnit = onToggleWindUnit,
+              alertConfig = uiState.alertConfig,
+              metarFetchSeq = uiState.metarFetchSeq,
             )
           }
 

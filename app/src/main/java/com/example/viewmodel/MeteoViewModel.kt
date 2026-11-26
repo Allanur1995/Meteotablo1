@@ -15,6 +15,9 @@ import com.example.data.InMemoryWeatherAlertStorage
 import com.example.data.InMemoryWeatherHistoryStorage
 import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.InMemoryWindHistoryStorage
+import com.example.data.InMemoryRecentSearchesStorage
+import com.example.data.RecentSearchSerializer
+import com.example.data.RecentSearchesStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
 import com.example.data.UnitPreferences
@@ -73,6 +76,7 @@ data class MeteoUiState(
   val autoRefreshEnabled: Boolean = true,
   val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
   val favoriteIcaos: List<String> = emptyList(),
+  val recentSearches: List<String> = emptyList(),
   val savedPresets: List<SavedWeatherPreset> = emptyList(),
   val serverConfig: ServerConfig = ServerConfig(),
   val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
@@ -88,6 +92,7 @@ data class MeteoUiState(
   val historyStatusMessage: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
+  val metarFetchSeq: Long = 0L,
   val isDetectingLocation: Boolean = false,
   val detectedLocationSummary: String? = null,
   val isRefreshingMap: Boolean = false,
@@ -95,7 +100,7 @@ data class MeteoUiState(
   val mapStations: List<AirportStation> = AirportCatalog.presets,
   val mapWeatherByIcao: Map<String, DecodedWeather> = emptyMap(),
   val statusBanner: String? = null,
-  val liveLocalClock: String = "22:11",
+  val liveLocalClock: String = "--:--Z",
   val logs: List<LogEntry> = emptyList(),
 ) {
   val activeRunwayPair: RunwayPair
@@ -125,6 +130,7 @@ class MeteoViewModel(
   private val autoFetch: Boolean = true,
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
   private val locationService: LocationService = NoOpLocationService,
+  private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
 ) : ViewModel() {
 
   private val repository = AviationWeatherRepository()
@@ -153,6 +159,7 @@ class MeteoViewModel(
     val (primaryCalc, reciprocalCalc) = computeRunwayCalcs(pair, initialWeather)
 
     val initialFavorites = favoriteStorage.loadFavorites()
+    val initialRecentSearches = RecentSearchSerializer.normalizeIcaos(recentSearchesStorage.loadRecentSearches())
     val initialPresets = presetStorage.loadPresets()
     val initialServerConfig = serverConfigStorage.loadConfig()
     val initialAlertConfig = alertStorage.loadConfig()
@@ -177,6 +184,7 @@ class MeteoViewModel(
         autoRefreshEnabled = initialUnitPrefs.autoRefreshEnabled,
         autoRefreshIntervalMinutes = AutoRefreshInterval.fromMinutes(initialUnitPrefs.autoRefreshIntervalMinutes).minutes,
         favoriteIcaos = initialFavorites,
+        recentSearches = initialRecentSearches,
         savedPresets = initialPresets,
         serverConfig = initialServerConfig,
         alertConfig = initialAlertConfig,
@@ -218,9 +226,8 @@ class MeteoViewModel(
     viewModelScope.launch {
       while (true) {
         delay(15_000L)
-        val current = _uiState.value
-        val nowLocal = AviationWeatherParser.currentLocalTimeString(current.station.utcOffsetHours)
-        _uiState.update { it.copy(liveLocalClock = nowLocal) }
+        val nowUtc = AviationWeatherParser.currentUtcTimeString()
+        _uiState.update { it.copy(liveLocalClock = nowUtc) }
       }
     }
   }
@@ -639,12 +646,15 @@ class MeteoViewModel(
     val (pCalc, rCalc) = computeRunwayCalcs(pair, initialStationWeather)
     val nextHistory = currentHistory24hFor(station.icao)
     _uiState.update { state ->
+      val updatedRecent = RecentSearchSerializer.recordQuery(state.recentSearches, clean)
+      recentSearchesStorage.saveRecentSearches(updatedRecent)
       state.copy(
         station = station,
         selectedRunwayPairIndex = 0,
         weather = initialStationWeather,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
+        recentSearches = updatedRecent,
         windTrend = currentTrendFor(station.icao),
         weatherHistory24h = nextHistory,
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, nextHistory),
@@ -660,6 +670,16 @@ class MeteoViewModel(
     syncCrashStationContext()
     if (autoFetch) {
       fetchLiveForStation(station)
+    }
+  }
+
+  fun clearRecentSearches() {
+    recentSearchesStorage.saveRecentSearches(emptyList())
+    _uiState.update { state ->
+      state.copy(
+        recentSearches = emptyList(),
+        logs = appendLog(state.logs, "INFO", "История недавних поисков ICAO очищена"),
+      )
     }
   }
 
@@ -705,7 +725,7 @@ class MeteoViewModel(
         resolvedStationsByIcao[resolved.icao] = resolved
         val pair = resolved.runways.first()
         val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
-        val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
+        val nowUtc = AviationWeatherParser.currentUtcTimeString()
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHistory = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHistorySnapshot = snapshotAllHistory24h()
@@ -714,12 +734,20 @@ class MeteoViewModel(
           fetched.logMessages.forEach { msg ->
             updatedLogs = appendLog(updatedLogs, "GEO", msg)
           }
+          val updatedRecent = if (resolved.icao.length == 4 && resolved.icao.all { it.isLetter() }) {
+            RecentSearchSerializer.recordQuery(state.recentSearches, resolved.icao).also {
+              recentSearchesStorage.saveRecentSearches(it)
+            }
+          } else {
+            state.recentSearches
+          }
           state.copy(
             station = resolved,
             selectedRunwayPairIndex = 0,
             weather = fetched.weather,
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
+            recentSearches = updatedRecent,
             windTrend = nextTrend,
             weatherHistory24h = nextHistory,
             weatherHistoryByIcaoMap = allHistorySnapshot,
@@ -728,9 +756,10 @@ class MeteoViewModel(
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            metarFetchSeq = state.metarFetchSeq + 1L,
             isDetectingLocation = false,
             statusBanner = null,
-            liveLocalClock = nowLocal,
+            liveLocalClock = nowUtc,
             logs = updatedLogs,
           )
         }
@@ -807,7 +836,7 @@ class MeteoViewModel(
     )
     val pair = current.activeRunwayPair
     val (pCalc, rCalc) = computeRunwayCalcs(pair, parsed)
-    val nowLocal = AviationWeatherParser.currentLocalTimeString(current.station.utcOffsetHours)
+    val nowUtc = AviationWeatherParser.currentUtcTimeString()
     val nextTrend = recordWindObservation(current.station.icao, parsed)
     val nextHistory = recordWeatherHistory(current.station.icao, parsed)
     _uiState.update { state ->
@@ -820,7 +849,8 @@ class MeteoViewModel(
         weatherHistoryByIcaoMap = snapshotAllHistory24h(),
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(current.station.icao, nextHistory),
         mapWeatherByIcao = state.mapWeatherByIcao + (current.station.icao to parsed),
-        liveLocalClock = nowLocal,
+        metarFetchSeq = state.metarFetchSeq + 1L,
+        liveLocalClock = nowUtc,
         statusBanner = null,
         logs = appendLog(state.logs, "INFO", "Применён ручной METAR для ${current.station.icao}"),
       )
@@ -1086,7 +1116,7 @@ class MeteoViewModel(
         resolvedStationsByIcao[resolved.icao] = resolved
         val pair = resolved.runways.getOrElse(_uiState.value.selectedRunwayPairIndex) { resolved.runways.first() }
         val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
-        val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
+        val nowUtc = AviationWeatherParser.currentUtcTimeString()
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHistory = recordWeatherHistory(resolved.icao, fetched.weather)
         _uiState.update { state ->
@@ -1106,8 +1136,9 @@ class MeteoViewModel(
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            metarFetchSeq = state.metarFetchSeq + 1L,
             statusBanner = null,
-            liveLocalClock = nowLocal,
+            liveLocalClock = nowUtc,
             logs = updatedLogs,
           )
         }
@@ -1458,7 +1489,7 @@ class MeteoViewModel(
     level: String,
     message: String,
   ): List<LogEntry> {
-    val ts = AviationWeatherParser.currentLocalTimeString(_uiState.value.station.utcOffsetHours)
+    val ts = AviationWeatherParser.currentUtcTimeString()
     return (listOf(LogEntry(ts, level, message)) + existing).take(50)
   }
 }

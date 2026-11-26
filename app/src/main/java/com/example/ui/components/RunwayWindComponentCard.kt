@@ -1,5 +1,9 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -8,16 +12,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -32,11 +41,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -129,6 +150,338 @@ fun calculateRunwayWindComponents(
 }
 
 /**
+ * Graphical Canvas visualizer showing runway orientation relative to the live wind vector,
+ * orthogonal headwind/tailwind & crosswind decomposition vectors, and aircraft crosswind
+ * threshold warnings.
+ */
+@Composable
+fun RunwayOrientationWindVisualizer(
+  runwayHeadingDeg: Int,
+  wind: WindData,
+  windUnit: WindSpeedUnit = WindSpeedUnit.KT,
+  runwayDesignator: String? = null,
+  maxCrosswindKt: Int? = null,
+  aircraftLabel: String? = null,
+  onToggleUnit: (() -> Unit)? = null,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalMeteoPalette.current
+  val textMeasurer = rememberTextMeasurer()
+  val components = remember(runwayHeadingDeg, wind) {
+    calculateRunwayWindComponents(runwayHeadingDeg = runwayHeadingDeg, wind = wind)
+  }
+
+  val animatedHeading by animateFloatAsState(
+    targetValue = components.runwayHeadingDeg.toFloat(),
+    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+    label = "orientationRwyHeading",
+  )
+  val animatedWindDir by animateFloatAsState(
+    targetValue = (wind.directionDeg ?: 0).toFloat(),
+    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+    label = "orientationWindDir",
+  )
+
+  val limitExceeded = maxCrosswindKt != null && (
+    components.crosswindKt > maxCrosswindKt + 0.05 ||
+      (components.gustCrosswindKt != null && components.gustCrosswindKt > maxCrosswindKt + 0.05)
+    )
+
+  val crossValDisp = UnitConverter.convertWindFromKnots(components.crosswindKt, windUnit)
+  val limitValDisp = maxCrosswindKt?.let { UnitConverter.convertWindFromKnots(it.toDouble(), windUnit) }
+  val headingText = runwayDesignator?.let {
+    String.format(Locale.US, "ВПП %s (%03d°)", it, components.runwayHeadingDeg)
+  } ?: String.format(Locale.US, "Курс ВПП %03d°", components.runwayHeadingDeg)
+
+  val relAngleText = when {
+    components.isCalm -> "Штиль"
+    components.isVariable -> "Переменный (VRB)"
+    components.relativeAngleDeg != null -> {
+      val deg = components.relativeAngleDeg
+      when {
+        deg > 0 -> "Ветер справа +${deg}°"
+        deg < 0 -> "Ветер слева ${deg}°"
+        else -> "Строго встречный 0°"
+      }
+    }
+    else -> "--"
+  }
+
+  Column(
+    verticalArrangement = Arrangement.spacedBy(6.dp),
+    modifier = modifier
+      .fillMaxWidth()
+      .testTag("runway_orientation_visualizer")
+      .background(palette.fieldBackground, RoundedCornerShape(4.dp))
+      .border(
+        width = if (limitExceeded) 1.5.dp else 1.dp,
+        color = if (limitExceeded) palette.tailwindNegative else palette.borderStrong,
+        shape = RoundedCornerShape(4.dp),
+      )
+      .padding(8.dp),
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "ОРИЕНТАЦИЯ ВПП И ВЕТЕР · $headingText",
+          color = palette.textPrimary,
+          fontSize = 11.sp,
+          fontFamily = FontFamily.Monospace,
+          fontWeight = FontWeight.ExtraBold,
+        )
+        Text(
+          text = buildString {
+            append(relAngleText)
+            if (maxCrosswindKt != null && limitValDisp != null) {
+              val ac = aircraftLabel?.takeIf { it.isNotBlank() } ?: "ВС"
+              append(String.format(Locale.US, " · Лимит %s: %.0f %s", ac, limitValDisp, windUnit.label))
+            }
+          },
+          color = if (limitExceeded) palette.tailwindNegative else palette.textSecondary,
+          fontSize = 10.5.sp,
+          fontFamily = FontFamily.Monospace,
+          fontWeight = if (limitExceeded) FontWeight.Bold else FontWeight.Medium,
+        )
+      }
+      if (onToggleUnit != null) {
+        Text(
+          text = windUnit.label,
+          color = palette.metarAmber,
+          fontSize = 10.5.sp,
+          fontWeight = FontWeight.Bold,
+          modifier = Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(palette.secondaryFieldBackground)
+            .border(0.8.dp, palette.border, RoundedCornerShape(3.dp))
+            .clickable(onClick = onToggleUnit)
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        )
+      }
+    }
+
+    Box(
+      contentAlignment = Alignment.Center,
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 172.dp, max = 220.dp)
+        .aspectRatio(1.45f, matchHeightConstraintsFirst = true)
+        .clip(RoundedCornerShape(4.dp))
+        .background(palette.panelSurface)
+        .border(0.8.dp, palette.border, RoundedCornerShape(4.dp))
+        .semantics {
+          contentDescription = "$headingText, $relAngleText, боковой ветер ${String.format(Locale.US, "%.1f", crossValDisp)} ${windUnit.label}"
+        },
+    ) {
+      Canvas(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(10.dp)
+          .testTag("runway_orientation_canvas"),
+      ) {
+        if (size.width <= 1f || size.height <= 1f) return@Canvas
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val radius = (minOf(size.width, size.height) * 0.42f).coerceAtLeast(1f)
+
+        // Compass backdrop & radial rings
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(palette.secondaryFieldBackground, palette.panelSurface),
+            center = Offset(cx, cy),
+            radius = radius,
+          ),
+          radius = radius,
+          center = Offset(cx, cy),
+        )
+        drawCircle(
+          color = if (limitExceeded) palette.tailwindNegative.copy(alpha = 0.85f) else palette.compassStroke,
+          radius = radius,
+          center = Offset(cx, cy),
+          style = Stroke(width = 1.5.dp.toPx()),
+        )
+
+        // Draw crosswind limit ring scaled against 45 kt
+        if (maxCrosswindKt != null) {
+          val limitRatio = (maxCrosswindKt.toFloat() / 45f).coerceIn(0.18f, 0.92f)
+          drawCircle(
+            color = if (limitExceeded) palette.tailwindNegative.copy(alpha = 0.65f) else palette.metarAmber.copy(alpha = 0.45f),
+            radius = radius * limitRatio,
+            center = Offset(cx, cy),
+            style = Stroke(
+              width = 1.2.dp.toPx(),
+              pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f), 0f),
+            ),
+          )
+        }
+
+        // Compass 30° ticks & cardinal letters
+        for (deg in 0 until 360 step 30) {
+          val rad = (deg - 90.0) * PI / 180.0
+          val cosA = cos(rad).toFloat()
+          val sinA = sin(rad).toFloat()
+          drawLine(
+            color = palette.compassStroke.copy(alpha = 0.75f),
+            start = Offset(cx + (radius - 4.dp.toPx()) * cosA, cy + (radius - 4.dp.toPx()) * sinA),
+            end = Offset(cx + (radius + 3.dp.toPx()) * cosA, cy + (radius + 3.dp.toPx()) * sinA),
+            strokeWidth = 1.1.dp.toPx(),
+          )
+          val lbl = when (deg) {
+            0 -> "N"
+            90 -> "E"
+            180 -> "S"
+            270 -> "W"
+            else -> String.format(Locale.US, "%02d", deg / 10)
+          }
+          val measured = textMeasurer.measure(
+            text = lbl,
+            style = TextStyle(
+              color = if (deg % 90 == 0) palette.metarAmber else palette.textSecondary,
+              fontSize = 9.sp,
+              fontWeight = FontWeight.Bold,
+            ),
+          )
+          val lr = radius + 10.5.dp.toPx()
+          drawText(
+            measured,
+            topLeft = Offset(cx + lr * cosA - measured.size.width / 2f, cy + lr * sinA - measured.size.height / 2f),
+          )
+        }
+
+        // Oriented Runway Strip
+        rotate(degrees = animatedHeading, pivot = Offset(cx, cy)) {
+          val rw = radius * 0.22f
+          val rl = radius * 1.66f
+          val left = cx - rw / 2f
+          val top = cy - rl / 2f
+          drawRect(
+            color = palette.runwayFill,
+            topLeft = Offset(left, top),
+            size = Size(rw, rl),
+          )
+          drawRect(
+            color = palette.runwayStroke,
+            topLeft = Offset(left, top),
+            size = Size(rw, rl),
+            style = Stroke(width = 1.3.dp.toPx()),
+          )
+          drawLine(
+            color = palette.textPrimary.copy(alpha = 0.65f),
+            start = Offset(cx, top + 6.dp.toPx()),
+            end = Offset(cx, top + rl - 6.dp.toPx()),
+            strokeWidth = 1.1.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f), 0f),
+          )
+          // Runway heading triangle pointing toward runway departure end (up in rotated space)
+          val dirHead = Path().apply {
+            moveTo(cx, top + 4.dp.toPx())
+            lineTo(cx - 4.5.dp.toPx(), top + 12.dp.toPx())
+            lineTo(cx + 4.5.dp.toPx(), top + 12.dp.toPx())
+            close()
+          }
+          drawPath(dirHead, color = palette.headwindPositive)
+        }
+
+        // Wind Vector & Orthogonal Headwind / Crosswind Components
+        if (!wind.isCalm && !wind.isVariable && wind.directionDeg != null) {
+          val speedScale = (wind.speedKt.toFloat() / 40f).coerceIn(0.28f, 0.92f)
+          val windOriginDist = radius * speedScale
+          val windRad = (animatedWindDir - 90.0) * PI / 180.0
+          val ox = cx + windOriginDist * cos(windRad).toFloat()
+          val oy = cy + windOriginDist * sin(windRad).toFloat()
+
+          val rwyRad = (animatedHeading - 90.0) * PI / 180.0
+          val ux = cos(rwyRad).toFloat()
+          val uy = sin(rwyRad).toFloat()
+          val dot = (ox - cx) * ux + (oy - cy) * uy
+          val projX = cx + dot * ux
+          val projY = cy + dot * uy
+
+          // Longitudinal component line (headwind green / tailwind red)
+          val headColor = if (components.isTailwind) palette.tailwindNegative else palette.headwindPositive
+          drawLine(
+            color = headColor,
+            start = Offset(cx, cy),
+            end = Offset(projX, projY),
+            strokeWidth = 2.4.dp.toPx(),
+            cap = StrokeCap.Round,
+          )
+
+          // Crosswind component dashed vector from runway projection to wind vector tip
+          val xwColor = if (limitExceeded) palette.tailwindNegative else palette.metarAmber
+          drawLine(
+            color = xwColor,
+            start = Offset(projX, projY),
+            end = Offset(ox, oy),
+            strokeWidth = 2.2.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 3f), 0f),
+          )
+
+          // Main incoming wind arrow pointing inward toward aircraft/runway center
+          val arrowColor = if (limitExceeded) palette.tailwindNegative else palette.windArrow
+          rotate(degrees = animatedWindDir, pivot = Offset(cx, cy)) {
+            val outerY = cy - radius * 0.92f
+            val innerY = cy - radius * 0.36f
+            drawLine(
+              color = arrowColor,
+              start = Offset(cx, outerY),
+              end = Offset(cx, innerY - 6.dp.toPx()),
+              strokeWidth = 3.2.dp.toPx(),
+              cap = StrokeCap.Round,
+            )
+            val head = Path().apply {
+              moveTo(cx, innerY)
+              lineTo(cx - 5.5.dp.toPx(), innerY - 9.dp.toPx())
+              lineTo(cx + 5.5.dp.toPx(), innerY - 9.dp.toPx())
+              close()
+            }
+            drawPath(head, color = arrowColor)
+          }
+        }
+      }
+    }
+
+    if (limitExceeded && maxCrosswindKt != null && limitValDisp != null) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("visualizer_crosswind_warning")
+          .semantics(mergeDescendants = true) {}
+          .background(palette.tailwindNegative.copy(alpha = 0.14f), RoundedCornerShape(4.dp))
+          .border(1.dp, palette.tailwindNegative, RoundedCornerShape(4.dp))
+          .padding(horizontal = 8.dp, vertical = 5.dp),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Warning,
+          contentDescription = "Превышение ограничения бокового ветра",
+          tint = palette.tailwindNegative,
+          modifier = Modifier.size(15.dp),
+        )
+        Text(
+          text = String.format(
+            Locale.US,
+            "ПРЕВЫШЕНИЕ БОКОВОГО ВЕТРА (%s): %.1f %s > лимита %.0f %s",
+            aircraftLabel?.takeIf { it.isNotBlank() } ?: "ВС",
+            crossValDisp,
+            windUnit.label,
+            limitValDisp,
+            windUnit.label,
+          ),
+          color = palette.tailwindNegative,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.ExtraBold,
+        )
+      }
+    }
+  }
+}
+
+/**
  * Reusable Composable that calculates and displays crosswind and headwind/tailwind
  * components for a given runway heading based on the current METAR wind speed and direction.
  */
@@ -138,6 +491,7 @@ fun RunwayWindComponentsDisplay(
   wind: WindData,
   windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   runwayLabel: String? = null,
+  maxCrosswindKt: Int? = null,
   onToggleUnit: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
@@ -169,8 +523,12 @@ fun RunwayWindComponentsDisplay(
     components.signedCrosswindKt < -0.35 -> " · слева"
     else -> " · по оси"
   }
+  val limitExceeded = maxCrosswindKt != null && (
+    components.crosswindKt > maxCrosswindKt + 0.05 ||
+      (components.gustCrosswindKt != null && components.gustCrosswindKt > maxCrosswindKt + 0.05)
+    )
   val crossWarningColor = when {
-    components.crosswindKt >= 20.0 -> palette.tailwindNegative
+    limitExceeded || components.crosswindKt >= 20.0 -> palette.tailwindNegative
     components.crosswindKt >= 12.0 -> palette.metarAmber
     else -> palette.textPrimary
   }
@@ -193,7 +551,7 @@ fun RunwayWindComponentsDisplay(
       .fillMaxWidth()
       .testTag("runway_wind_components_display")
       .background(palette.fieldBackground, RoundedCornerShape(4.dp))
-      .border(1.dp, palette.border, RoundedCornerShape(4.dp))
+      .border(1.dp, if (limitExceeded) palette.tailwindNegative else palette.border, RoundedCornerShape(4.dp))
       .padding(8.dp),
   ) {
     Row(
@@ -300,6 +658,8 @@ fun InteractiveRunwayHeadingWindCard(
   defaultHeadingDeg: Int,
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
+  maxCrosswindKt: Int? = null,
+  aircraftLabel: String? = null,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -393,6 +753,16 @@ fun InteractiveRunwayHeadingWindCard(
       runwayHeadingDeg = activeHeading,
       wind = wind,
       windUnit = windUnit,
+      maxCrosswindKt = maxCrosswindKt,
+      onToggleUnit = onToggleUnit,
+    )
+
+    RunwayOrientationWindVisualizer(
+      runwayHeadingDeg = activeHeading,
+      wind = wind,
+      windUnit = windUnit,
+      maxCrosswindKt = maxCrosswindKt,
+      aircraftLabel = aircraftLabel,
       onToggleUnit = onToggleUnit,
     )
   }

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -18,7 +19,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,7 +60,9 @@ fun RunwayWindRose(
   wind: WindData,
   windUnit: WindSpeedUnit,
   onToggleUnit: () -> Unit,
+  maxCrosswindKt: Int? = null,
   compactMode: Boolean = false,
+  metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -71,11 +78,28 @@ fun RunwayWindRose(
     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
     label = "windDir",
   )
+  val fetchRotatePulse = remember { Animatable(0f) }
+  var lastFetchSeq by remember { mutableLongStateOf(metarFetchSeq) }
+  LaunchedEffect(metarFetchSeq) {
+    if (metarFetchSeq > 0L && metarFetchSeq != lastFetchSeq) {
+      lastFetchSeq = metarFetchSeq
+      fetchRotatePulse.snapTo(-9f)
+      fetchRotatePulse.animateTo(
+        targetValue = 0f,
+        animationSpec = spring(
+          dampingRatio = 0.52f,
+          stiffness = Spring.StiffnessMediumLow,
+        ),
+      )
+    }
+  }
 
   val crosswindVal = UnitConverter.convertWindFromKnots(calculation.crosswindKt, windUnit)
   val headwindVal = UnitConverter.convertWindFromKnots(calculation.headwindKt, windUnit)
   val speedMain = UnitConverter.formatWindSpeedValue(wind.speedKt, windUnit)
   val gustMain = wind.gustKt?.let { UnitConverter.formatWindSpeedValue(it, windUnit) }
+
+  val crosswindExceeded = maxCrosswindKt != null && calculation.crosswindKt > maxCrosswindKt + 0.05
 
   val windDirHeader = when {
     wind.isCalm -> "Штиль"
@@ -127,21 +151,31 @@ fun RunwayWindRose(
         contentAlignment = Alignment.Center,
         modifier = Modifier
           .widthIn(min = 48.dp)
-          .background(palette.fieldBackground, RoundedCornerShape(3.dp))
+          .background(
+            if (crosswindExceeded) palette.tailwindNegative.copy(alpha = 0.16f) else palette.fieldBackground,
+            RoundedCornerShape(3.dp),
+          )
+          .then(
+            if (crosswindExceeded) {
+              Modifier.border(1.dp, palette.tailwindNegative, RoundedCornerShape(3.dp))
+            } else {
+              Modifier
+            },
+          )
           .padding(horizontal = 6.dp, vertical = 2.dp),
       ) {
         Text(
           text = crosswindText,
-          color = palette.textPrimary,
+          color = if (crosswindExceeded) palette.tailwindNegative else palette.textPrimary,
           fontSize = 13.sp,
           fontWeight = FontWeight.Bold,
         )
       }
       Text(
-        text = "Бок.",
-        color = palette.textSecondary,
+        text = if (crosswindExceeded) "Бок.!" else "Бок.",
+        color = if (crosswindExceeded) palette.tailwindNegative else palette.textSecondary,
         fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
+        fontWeight = if (crosswindExceeded) FontWeight.Bold else FontWeight.Medium,
       )
     }
 
@@ -226,36 +260,41 @@ fun RunwayWindRose(
       )
 
       // Compass ticks every 10 deg, major every 30 deg + numeric labels
-      for (deg in 0 until 360 step 10) {
+      val dialPulseDeg = fetchRotatePulse.value * 0.6f
+      rotate(degrees = dialPulseDeg, pivot = Offset(cx, cy)) {
+        for (deg in 0 until 360 step 10) {
+          val rad = (deg - 90.0) * PI / 180.0
+          val cosA = cos(rad).toFloat()
+          val sinA = sin(rad).toFloat()
+          val isMajor = deg % 30 == 0
+          val innerR = if (isMajor) radius - 5.dp.toPx() else radius - 2.5.dp.toPx()
+          val outerR = if (isMajor) radius + 5.dp.toPx() else radius + 2.dp.toPx()
+
+          drawLine(
+            color = palette.compassStroke,
+            start = Offset(cx + innerR * cosA, cy + innerR * sinA),
+            end = Offset(cx + outerR * cosA, cy + outerR * sinA),
+            strokeWidth = if (isMajor) 1.5.dp.toPx() else 0.9.dp.toPx(),
+          )
+        }
+      }
+      for (deg in 0 until 360 step 30) {
         val rad = (deg - 90.0) * PI / 180.0
         val cosA = cos(rad).toFloat()
         val sinA = sin(rad).toFloat()
-        val isMajor = deg % 30 == 0
-        val innerR = if (isMajor) radius - 5.dp.toPx() else radius - 2.5.dp.toPx()
-        val outerR = if (isMajor) radius + 5.dp.toPx() else radius + 2.dp.toPx()
-
-        drawLine(
-          color = palette.compassStroke,
-          start = Offset(cx + innerR * cosA, cy + innerR * sinA),
-          end = Offset(cx + outerR * cosA, cy + outerR * sinA),
-          strokeWidth = if (isMajor) 1.5.dp.toPx() else 0.9.dp.toPx(),
+        val label = if (deg == 0) "36" else String.format(Locale.US, "%02d", deg / 10)
+        val measured = textMeasurer.measure(
+          text = label,
+          style = TextStyle(
+            color = palette.textPrimary,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+          ),
         )
-
-        if (isMajor) {
-          val label = if (deg == 0) "36" else String.format(Locale.US, "%02d", deg / 10)
-          val measured = textMeasurer.measure(
-            text = label,
-            style = TextStyle(
-              color = palette.textPrimary,
-              fontSize = 10.sp,
-              fontWeight = FontWeight.Medium,
-            ),
-          )
-          val labelR = radius + 14.dp.toPx()
-          val lx = cx + labelR * cosA - measured.size.width / 2f
-          val ly = cy + labelR * sinA - measured.size.height / 2f
-          drawText(measured, topLeft = Offset(lx, ly))
-        }
+        val labelR = radius + 14.dp.toPx()
+        val lx = cx + labelR * cosA - measured.size.width / 2f
+        val ly = cy + labelR * sinA - measured.size.height / 2f
+        drawText(measured, topLeft = Offset(lx, ly))
       }
 
       // Variable wind sector arc if dddVddd is reported
@@ -313,7 +352,7 @@ fun RunwayWindRose(
 
       // Orange wind direction arrow pointing INWARD from wind origin direction
       if (!wind.isCalm && !wind.isVariable && wind.directionDeg != null) {
-        rotate(degrees = animatedWindDir, pivot = Offset(cx, cy)) {
+        rotate(degrees = animatedWindDir + fetchRotatePulse.value, pivot = Offset(cx, cy)) {
           val outerTipY = cy - radius * 0.87f
           val innerTipY = cy - radius * 0.57f
           val shaftEndY = innerTipY + 10.dp.toPx()

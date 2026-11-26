@@ -258,3 +258,27 @@ class SharedPreferencesWeatherHistoryStorage(
   }
 }
 
+class SharedPreferencesRecentSearchesStorage(
+  context: Context,
+) : RecentSearchesStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadRecentSearches(): List<String> {
+    val raw = prefs.getString(KEY_RECENT_SEARCHES, "").orEmpty()
+    if (raw.isBlank()) return emptyList()
+    return RecentSearchSerializer.normalizeIcaos(raw.split(","))
+  }
+
+  override fun saveRecentSearches(icaos: List<String>) {
+    val clean = RecentSearchSerializer.normalizeIcaos(icaos)
+    prefs.edit().putString(KEY_RECENT_SEARCHES, clean.joinToString(",")).apply()
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_RECENT_SEARCHES = "recent_search_icao_codes"
+  }
+}
+
+

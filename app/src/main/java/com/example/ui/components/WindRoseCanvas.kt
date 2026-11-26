@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -21,7 +22,11 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +68,7 @@ fun WindRoseCanvas(
   onToggleUnit: () -> Unit,
   modifier: Modifier = Modifier,
   activeRunway: RunwayCalculation? = null,
+  metarFetchSeq: Long = 0L,
 ) {
   val palette = LocalMeteoPalette.current
   val textMeasurer = rememberTextMeasurer()
@@ -101,6 +107,21 @@ fun WindRoseCanvas(
     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
     label = "windRoseRunwayHeading",
   )
+  val fetchRotatePulse = remember { Animatable(0f) }
+  var lastFetchSeq by remember { mutableLongStateOf(metarFetchSeq) }
+  LaunchedEffect(metarFetchSeq) {
+    if (metarFetchSeq > 0L && metarFetchSeq != lastFetchSeq) {
+      lastFetchSeq = metarFetchSeq
+      fetchRotatePulse.snapTo(-9f)
+      fetchRotatePulse.animateTo(
+        targetValue = 0f,
+        animationSpec = spring(
+          dampingRatio = 0.52f,
+          stiffness = Spring.StiffnessMediumLow,
+        ),
+      )
+    }
+  }
 
   val speedDisplay = rawSpeed.roundToInt()
   val dirDisplay = when {
@@ -206,47 +227,51 @@ fun WindRoseCanvas(
       )
 
       // Degree ticks (every 10 deg, major every 30 deg) and compass labels
-      for (deg in 0 until 360 step 10) {
+      rotate(degrees = fetchRotatePulse.value * 0.6f, pivot = Offset(cx, cy)) {
+        for (deg in 0 until 360 step 10) {
+          val rad = (deg - 90.0) * PI / 180.0
+          val cosA = cos(rad).toFloat()
+          val sinA = sin(rad).toFloat()
+          val isMajor = deg % 30 == 0
+          val tickInner = if (isMajor) outerRadius - 6.dp.toPx() else outerRadius - 3.dp.toPx()
+          val tickOuter = if (isMajor) outerRadius + 4.dp.toPx() else outerRadius + 2.dp.toPx()
+
+          drawLine(
+            color = palette.compassStroke,
+            start = Offset(cx + tickInner * cosA, cy + tickInner * sinA),
+            end = Offset(cx + tickOuter * cosA, cy + tickOuter * sinA),
+            strokeWidth = if (isMajor) 1.5.dp.toPx() else 0.9.dp.toPx(),
+          )
+        }
+      }
+      for (deg in 0 until 360 step 30) {
         val rad = (deg - 90.0) * PI / 180.0
         val cosA = cos(rad).toFloat()
         val sinA = sin(rad).toFloat()
-        val isMajor = deg % 30 == 0
-        val tickInner = if (isMajor) outerRadius - 6.dp.toPx() else outerRadius - 3.dp.toPx()
-        val tickOuter = if (isMajor) outerRadius + 4.dp.toPx() else outerRadius + 2.dp.toPx()
-
-        drawLine(
-          color = palette.compassStroke,
-          start = Offset(cx + tickInner * cosA, cy + tickInner * sinA),
-          end = Offset(cx + tickOuter * cosA, cy + tickOuter * sinA),
-          strokeWidth = if (isMajor) 1.5.dp.toPx() else 0.9.dp.toPx(),
-        )
-
-        if (isMajor) {
-          val label = when (deg) {
-            0 -> "N"
-            90 -> "E"
-            180 -> "S"
-            270 -> "W"
-            else -> String.format(Locale.US, "%02d", deg / 10)
-          }
-          val isCardinal = deg % 90 == 0
-          val measured = textMeasurer.measure(
-            text = label,
-            style = TextStyle(
-              color = if (isCardinal) palette.metarAmber else palette.textPrimary,
-              fontSize = if (isCardinal) 11.5.sp else 10.sp,
-              fontWeight = if (isCardinal) FontWeight.ExtraBold else FontWeight.Medium,
-            ),
-          )
-          val labelR = outerRadius + 14.dp.toPx()
-          drawText(
-            measured,
-            topLeft = Offset(
-              cx + labelR * cosA - measured.size.width / 2f,
-              cy + labelR * sinA - measured.size.height / 2f,
-            ),
-          )
+        val label = when (deg) {
+          0 -> "N"
+          90 -> "E"
+          180 -> "S"
+          270 -> "W"
+          else -> String.format(Locale.US, "%02d", deg / 10)
         }
+        val isCardinal = deg % 90 == 0
+        val measured = textMeasurer.measure(
+          text = label,
+          style = TextStyle(
+            color = if (isCardinal) palette.metarAmber else palette.textPrimary,
+            fontSize = if (isCardinal) 11.5.sp else 10.sp,
+            fontWeight = if (isCardinal) FontWeight.ExtraBold else FontWeight.Medium,
+          ),
+        )
+        val labelR = outerRadius + 14.dp.toPx()
+        drawText(
+          measured,
+          topLeft = Offset(
+            cx + labelR * cosA - measured.size.width / 2f,
+            cy + labelR * sinA - measured.size.height / 2f,
+          ),
+        )
       }
 
       // Variable wind sector wedge (if METAR contains dddVddd)
@@ -325,18 +350,19 @@ fun WindRoseCanvas(
           ),
         )
       } else if (wind.directionDeg != null) {
+        val effectiveDir = animatedDir + fetchRotatePulse.value
         // Gust outer wedge/ring if gusts present
         if (rawGust > rawSpeed) {
           val gustR = hubRadius + usableSpan * animatedGustRatio.coerceAtLeast(0.22f)
           drawArc(
             color = palette.tailwindNegative.copy(alpha = 0.22f),
-            startAngle = animatedDir - 90f - 10f,
+            startAngle = effectiveDir - 90f - 10f,
             sweepAngle = 20f,
             useCenter = true,
             topLeft = Offset(cx - gustR, cy - gustR),
             size = Size(gustR * 2f, gustR * 2f),
           )
-          rotate(degrees = animatedDir, pivot = Offset(cx, cy)) {
+          rotate(degrees = effectiveDir, pivot = Offset(cx, cy)) {
             drawLine(
               color = palette.tailwindNegative,
               start = Offset(cx, cy - hubRadius),
@@ -351,14 +377,14 @@ fun WindRoseCanvas(
         val vectorR = hubRadius + usableSpan * animatedSpeedRatio.coerceAtLeast(0.20f)
         drawArc(
           color = palette.windArrow.copy(alpha = 0.24f),
-          startAngle = animatedDir - 90f - 12f,
+          startAngle = effectiveDir - 90f - 12f,
           sweepAngle = 24f,
           useCenter = true,
           topLeft = Offset(cx - vectorR, cy - vectorR),
           size = Size(vectorR * 2f, vectorR * 2f),
         )
 
-        rotate(degrees = animatedDir, pivot = Offset(cx, cy)) {
+        rotate(degrees = effectiveDir, pivot = Offset(cx, cy)) {
           // Outer origin pointer arrow (pointing inward toward center from wind origin)
           val shaftStartY = cy - vectorR
           val shaftEndY = cy - hubRadius - 4.dp.toPx()
@@ -456,6 +482,7 @@ fun WindRoseCard(
   onToggleUnit: () -> Unit,
   windTrend: WindTrendSummary? = null,
   activeRunway: RunwayCalculation? = null,
+  metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -486,6 +513,7 @@ fun WindRoseCard(
         windUnit = windUnit,
         onToggleUnit = onToggleUnit,
         activeRunway = activeRunway,
+        metarFetchSeq = metarFetchSeq,
         modifier = Modifier.weight(1f),
       )
 

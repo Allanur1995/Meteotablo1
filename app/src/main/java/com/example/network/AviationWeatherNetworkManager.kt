@@ -171,6 +171,44 @@ class AviationWeatherNetworkManager(
     )
   }
 
+  suspend fun fetchLatestTafOnly(
+    icao: String,
+    useAviationWeatherGov: Boolean = true,
+    useNoaaTgftp: Boolean = true,
+    logs: MutableList<String> = mutableListOf(),
+  ): String? {
+    val cleanIcao = icao.trim().uppercase(Locale.US)
+    var rawTaf: String? = null
+
+    if (useAviationWeatherGov) {
+      runCatching {
+        val resp = api.getTafs(ids = cleanIcao)
+        logs.add("aviationweather.gov TAF-добор HTTP ${resp.code()}")
+        if (resp.isSuccessful) {
+          rawTaf = resp.body().orEmpty().firstOrNull { !it.rawTaf.isNullOrBlank() }?.rawTaf?.trim()
+        }
+      }
+    }
+
+    if (rawTaf.isNullOrBlank() && useNoaaTgftp) {
+      val noaaTafUrl = "https://tgftp.nws.noaa.gov/data/forecasts/taf/stations/$cleanIcao.TXT"
+      runCatching {
+        val resp = api.fetchRawTextFeed(noaaTafUrl)
+        if (resp.isSuccessful) {
+          val lines = resp.body()?.string().orEmpty()
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !it.matches(Regex("\\d{4}/\\d{2}/\\d{2}.*")) }
+          if (lines.isNotEmpty()) {
+            rawTaf = lines.joinToString(" ")
+          }
+        }
+      }
+    }
+
+    return rawTaf?.takeIf { it.isNotBlank() }
+  }
+
   suspend fun fetchNearestByCoordinates(
     latitude: Double,
     longitude: Double,

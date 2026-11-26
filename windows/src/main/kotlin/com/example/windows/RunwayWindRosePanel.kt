@@ -20,6 +20,7 @@ import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import java.util.Locale
 import javax.swing.JPanel
+import javax.swing.Timer
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -33,6 +34,11 @@ class RunwayWindRosePanel(
   private var wind: WindData? = null
   private var windUnit: WindSpeedUnit = WindSpeedUnit.KT
   private var palette: DesktopPalette = DayDesktopPalette
+  private var lastFetchSeq: Long = 0L
+  internal var pulseDeg: Double = 0.0
+    private set
+  private var pulseStartMs: Long = 0L
+  private var pulseTimer: Timer? = null
 
   init {
     preferredSize = Dimension(280, 235)
@@ -45,18 +51,49 @@ class RunwayWindRosePanel(
     })
   }
 
+  override fun removeNotify() {
+    pulseTimer?.stop()
+    pulseTimer = null
+    super.removeNotify()
+  }
+
   fun updateData(
     calculation: RunwayCalculation,
     wind: WindData,
     windUnit: WindSpeedUnit,
     palette: DesktopPalette,
+    metarFetchSeq: Long = 0L,
   ) {
     this.calculation = calculation
     this.wind = wind
     this.windUnit = windUnit
     this.palette = palette
     background = palette.panelSurface
+    if (metarFetchSeq > 0L && metarFetchSeq != lastFetchSeq) {
+      lastFetchSeq = metarFetchSeq
+      triggerRotatePulse()
+    }
     repaint()
+  }
+
+  private fun triggerRotatePulse() {
+    pulseTimer?.stop()
+    pulseStartMs = System.currentTimeMillis()
+    pulseDeg = -9.0
+    val timer = Timer(16) { evt ->
+      val elapsed = (System.currentTimeMillis() - pulseStartMs).coerceAtLeast(0L)
+      val t = (elapsed / 420.0).coerceIn(0.0, 1.0)
+      if (t >= 1.0) {
+        pulseDeg = 0.0
+        (evt.source as? Timer)?.stop()
+        pulseTimer = null
+      } else {
+        pulseDeg = -9.0 * (1.0 - t) * cos(t * PI * 1.5)
+      }
+      repaint()
+    }
+    pulseTimer = timer
+    timer.start()
   }
 
   override fun paintComponent(g: Graphics) {
@@ -119,8 +156,9 @@ class RunwayWindRosePanel(
     g2.stroke = BasicStroke(1.6f)
     g2.drawOval((cx - radius).toInt(), (cy - radius).toInt(), (radius * 2).toInt(), (radius * 2).toInt())
 
+    val dialPulseRad = (pulseDeg * 0.6) * PI / 180.0
     for (deg in 0 until 360 step 10) {
-      val rad = (deg - 90.0) * PI / 180.0
+      val rad = (deg - 90.0) * PI / 180.0 + dialPulseRad
       val inner = if (deg % 30 == 0) radius * 0.90 else radius * 0.95
       val outer = if (deg % 30 == 0) tickOuter else radius
       g2.stroke = BasicStroke(if (deg % 30 == 0) 1.5f else 0.9f)
@@ -189,7 +227,7 @@ class RunwayWindRosePanel(
 
     // Wind arrow (direction wind is blowing FROM -> toward center)
     if (!w.isCalm && w.directionDeg != null) {
-      val fromRad = (w.directionDeg!! - 90.0) * PI / 180.0
+      val fromRad = (w.directionDeg!! + pulseDeg - 90.0) * PI / 180.0
       val startX = cx + cos(fromRad) * (radius * 0.96)
       val startY = cy + sin(fromRad) * (radius * 0.96)
       val endX = cx + cos(fromRad) * (radius * 0.46)

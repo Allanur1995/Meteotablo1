@@ -292,4 +292,28 @@ class DesktopUnitPreferencesStorage(
   }
 }
 
+class DesktopRecentSearchesStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.RecentSearchesStorage {
+
+  override fun loadRecentSearches(): List<String> {
+    val props = loadProps(configFile)
+    val raw = props.getProperty(KEY_RECENT_SEARCHES, "").orEmpty()
+    if (raw.isBlank()) return emptyList()
+    return com.example.data.RecentSearchSerializer.normalizeIcaos(raw.split(","))
+  }
+
+  override fun saveRecentSearches(icaos: List<String>) {
+    val clean = com.example.data.RecentSearchSerializer.normalizeIcaos(icaos)
+    val props = loadProps(configFile)
+    props.setProperty(KEY_RECENT_SEARCHES, clean.joinToString(","))
+    saveProps(configFile, props)
+  }
+
+  private companion object {
+    const val KEY_RECENT_SEARCHES = "recent_search_icao_codes"
+  }
+}
+
+
 

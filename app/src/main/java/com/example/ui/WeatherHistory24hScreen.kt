@@ -499,8 +499,8 @@ private fun WeatherHistoryEntryCard(
   val borderColor = if (hasAnyAlert) palette.tailwindNegative else palette.borderStrong
   val bgColor = if (hasAnyAlert) palette.tailwindNegative.copy(alpha = 0.06f) else palette.panelSurface
 
-  val localTimeStr = remember(entry.observedAtMillis, station.utcOffsetHours) {
-    formatLocalClock(entry.observedAtMillis, station.utcOffsetHours)
+  val utcTimeStr = remember(entry.observedAtMillis) {
+    formatUtcClock(entry.observedAtMillis)
   }
 
   val windVal = UnitConverter.formatWindSpeedValue(entry.windSpeedKt, windUnit)
@@ -556,7 +556,7 @@ private fun WeatherHistoryEntryCard(
           fontWeight = FontWeight.ExtraBold,
         )
         Text(
-          text = "$localTimeStr ${station.timezoneLabel}",
+          text = utcTimeStr,
           color = palette.textSecondary,
           fontSize = 11.5.sp,
           fontFamily = FontFamily.Monospace,
@@ -742,11 +742,9 @@ private fun HistoryActionPill(
   }
 }
 
-private fun formatLocalClock(utcMillis: Long, utcOffsetHours: Int): String {
-  val fmt = SimpleDateFormat("dd.MM HH:mm", Locale.US).apply {
-    val sign = if (utcOffsetHours >= 0) "+" else "-"
-    val absH = kotlin.math.abs(utcOffsetHours)
-    timeZone = TimeZone.getTimeZone("GMT$sign$absH")
+private fun formatUtcClock(utcMillis: Long): String {
+  val fmt = SimpleDateFormat("dd.MM HH:mm'Z'", Locale.US).apply {
+    timeZone = TimeZone.getTimeZone("UTC")
   }
   return fmt.format(Date(utcMillis))
 }

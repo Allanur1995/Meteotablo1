@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FlightTakeoff
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -69,6 +70,8 @@ fun AirportSearchBar(
   detectedLocationSummary: String? = null,
   onDetectGpsLocation: () -> Unit = {},
   onFetchByCoordinates: (Double, Double) -> Unit = { _, _ -> },
+  recentSearches: List<String> = emptyList(),
+  onClearRecentSearches: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -342,6 +345,84 @@ fun AirportSearchBar(
           fontWeight = FontWeight.Bold,
           maxLines = 1,
         )
+      }
+    }
+
+    AnimatedVisibility(visible = recentSearches.isNotEmpty()) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(palette.panelSurface)
+          .border(1.dp, palette.border)
+          .horizontalScroll(rememberScrollState())
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+          .testTag("recent_searches_row"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.History,
+          contentDescription = "Недавние запросы ICAO",
+          tint = palette.metarAmber,
+          modifier = Modifier.size(15.dp),
+        )
+        Text(
+          text = "Недавние:",
+          color = palette.textSecondary,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.SemiBold,
+        )
+        recentSearches.take(5).forEach { recentIcao ->
+          val isCurrent = recentIcao.equals(currentIcao, ignoreCase = true)
+          val cityLabel = AirportCatalog.findKnown(recentIcao)?.city
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("recent_search_chip_$recentIcao")
+              .clip(RoundedCornerShape(4.dp))
+              .background(
+                if (isCurrent) palette.buttonActiveBackground else palette.secondaryFieldBackground,
+              )
+              .border(
+                1.dp,
+                if (isCurrent) palette.metarAmber else palette.border,
+                RoundedCornerShape(4.dp),
+              )
+              .clickable { submit(recentIcao) }
+              .padding(horizontal = 10.dp, vertical = 6.dp),
+          ) {
+            Text(
+              text = recentIcao,
+              color = palette.metarAmber,
+              fontSize = 12.sp,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.ExtraBold,
+            )
+            if (!cityLabel.isNullOrBlank()) {
+              Text(
+                text = cityLabel,
+                color = palette.textPrimary,
+                fontSize = 11.sp,
+                maxLines = 1,
+              )
+            }
+          }
+        }
+        IconButton(
+          onClick = onClearRecentSearches,
+          modifier = Modifier
+            .size(48.dp)
+            .testTag("recent_searches_clear"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "Очистить недавние поиски",
+            tint = palette.textMuted,
+            modifier = Modifier.size(16.dp),
+          )
+        }
       }
     }
 

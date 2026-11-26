@@ -13,6 +13,9 @@ import com.example.data.InMemoryWeatherAlertStorage
 import com.example.data.InMemoryWeatherHistoryStorage
 import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.InMemoryWindHistoryStorage
+import com.example.data.InMemoryRecentSearchesStorage
+import com.example.data.RecentSearchSerializer
+import com.example.data.RecentSearchesStorage
 import com.example.data.ServerConfig
 import com.example.data.ServerConfigStorage
 import com.example.data.UnitPreferences
@@ -68,6 +71,7 @@ data class DesktopUiState(
   val autoRefreshEnabled: Boolean = true,
   val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
   val favoriteIcaos: List<String> = emptyList(),
+  val recentSearches: List<String> = emptyList(),
   val savedPresets: List<SavedWeatherPreset> = emptyList(),
   val serverConfig: ServerConfig = ServerConfig(),
   val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
@@ -84,12 +88,13 @@ data class DesktopUiState(
   val detectedLocationSummary: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
+  val metarFetchSeq: Long = 0L,
   val isRefreshingMap: Boolean = false,
   val loadingMapIcao: String? = null,
   val mapStations: List<AirportStation> = AirportCatalog.presets,
   val mapWeatherByIcao: Map<String, DecodedWeather> = emptyMap(),
   val statusBanner: String? = null,
-  val liveLocalClock: String = "--:--",
+  val liveLocalClock: String = "--:--Z",
   val logs: List<LogEntry> = emptyList(),
 ) {
   val activeRunwayPair: RunwayPair
@@ -121,6 +126,7 @@ class DesktopController(
   private val autoFetch: Boolean = true,
   private val unitPreferencesStorage: UnitPreferencesStorage = InMemoryUnitPreferencesStorage(),
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
+  private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
 ) {
   private val repository = AviationWeatherRepository()
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -151,6 +157,7 @@ class DesktopController(
     val pair = defaultStation.runways.first()
     val (pCalc, rCalc) = computeRunwayCalcs(pair, initialWeather)
     val initialFavorites = favoriteStorage.loadFavorites()
+    val initialRecentSearches = RecentSearchSerializer.normalizeIcaos(recentSearchesStorage.loadRecentSearches())
     val initialUnitPrefs = unitPreferencesStorage.loadPreferences()
     val initialHistory24h = currentHistory24hFor(defaultStation.icao)
     val initialAllHist = snapshotAllHistory24h()
@@ -168,6 +175,7 @@ class DesktopController(
       autoRefreshEnabled = initialUnitPrefs.autoRefreshEnabled,
       autoRefreshIntervalMinutes = AutoRefreshInterval.fromMinutes(initialUnitPrefs.autoRefreshIntervalMinutes).minutes,
       favoriteIcaos = initialFavorites,
+      recentSearches = initialRecentSearches,
       savedPresets = presetStorage.loadPresets(),
       serverConfig = serverConfigStorage.loadConfig(),
       alertConfig = alertStorage.loadConfig(),
@@ -190,8 +198,8 @@ class DesktopController(
 
     scheduler.scheduleAtFixedRate(
       {
-        val nowLocal = AviationWeatherParser.currentLocalTimeString(state.station.utcOffsetHours)
-        updateState { it.copy(liveLocalClock = nowLocal) }
+        val nowUtc = AviationWeatherParser.currentUtcTimeString()
+        updateState { it.copy(liveLocalClock = nowUtc) }
       },
       15,
       15,
@@ -407,24 +415,37 @@ class DesktopController(
     val (pCalc, rCalc) = computeRunwayCalcs(pair, emptyWeather)
     val nextHistory = currentHistory24hFor(station.icao)
     updateState { cur ->
+      val updatedRecent = RecentSearchSerializer.recordQuery(cur.recentSearches, clean)
+      recentSearchesStorage.saveRecentSearches(updatedRecent)
       cur.copy(
         station = station,
         selectedRunwayPairIndex = 0,
         weather = emptyWeather,
         primaryRunwayCalc = pCalc,
         reciprocalRunwayCalc = rCalc,
+        recentSearches = updatedRecent,
         windTrend = currentTrendFor(station.icao),
         weatherHistory24h = nextHistory,
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, nextHistory),
         historyStatusMessage = null,
         mapStations = buildMapStationList(station, cur.favoriteIcaos),
-        liveLocalClock = AviationWeatherParser.currentLocalTimeString(station.utcOffsetHours),
+        liveLocalClock = AviationWeatherParser.currentUtcTimeString(),
         statusBanner = null,
         logs = appendLog(cur.logs, "INFO", "Выбран аэропорт ${station.icao} (${station.name})", station),
       )
     }
     if (autoFetch) {
       fetchLiveForStation(station)
+    }
+  }
+
+  fun clearRecentSearches() {
+    recentSearchesStorage.saveRecentSearches(emptyList())
+    updateState { cur ->
+      cur.copy(
+        recentSearches = emptyList(),
+        logs = appendLog(cur.logs, "INFO", "История недавних поисков ICAO очищена", cur.station),
+      )
     }
   }
 
@@ -465,10 +486,17 @@ class DesktopController(
         updateState { cur ->
           val pair = resolved.runways.first()
           val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
-          val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
+          val nowUtc = AviationWeatherParser.currentUtcTimeString()
           var updatedLogs = cur.logs
           fetched.logMessages.forEach { msg ->
             updatedLogs = appendLog(updatedLogs, "GEO", msg, resolved)
+          }
+          val updatedRecent = if (resolved.icao.length == 4 && resolved.icao.all { it.isLetter() }) {
+            RecentSearchSerializer.recordQuery(cur.recentSearches, resolved.icao).also {
+              recentSearchesStorage.saveRecentSearches(it)
+            }
+          } else {
+            cur.recentSearches
           }
           cur.copy(
             station = resolved,
@@ -476,6 +504,7 @@ class DesktopController(
             weather = fetched.weather,
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
+            recentSearches = updatedRecent,
             windTrend = nextTrend,
             weatherHistory24h = nextHist,
             weatherHistoryByIcaoMap = allHist,
@@ -484,8 +513,9 @@ class DesktopController(
             mapStations = buildMapStationList(resolved, cur.favoriteIcaos),
             mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            metarFetchSeq = cur.metarFetchSeq + 1L,
             statusBanner = null,
-            liveLocalClock = nowLocal,
+            liveLocalClock = nowUtc,
             logs = updatedLogs,
           )
         }
@@ -650,7 +680,7 @@ class DesktopController(
       sourceLabel = "ручной ввод METAR",
     )
     val (pCalc, rCalc) = computeRunwayCalcs(cur.activeRunwayPair, parsed)
-    val nowLocal = AviationWeatherParser.currentLocalTimeString(cur.station.utcOffsetHours)
+    val nowUtc = AviationWeatherParser.currentUtcTimeString()
     val nextTrend = recordWindObservation(cur.station.icao, parsed)
     val nextHist = recordWeatherHistory(cur.station.icao, parsed)
     val allHist = snapshotAllHistory24h()
@@ -665,7 +695,8 @@ class DesktopController(
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(cur.station.icao, nextHist),
         mapStations = buildMapStationList(s.station, s.favoriteIcaos),
         mapWeatherByIcao = s.mapWeatherByIcao + (s.station.icao to parsed),
-        liveLocalClock = nowLocal,
+        metarFetchSeq = s.metarFetchSeq + 1L,
+        liveLocalClock = nowUtc,
         statusBanner = null,
         logs = appendLog(s.logs, "INFO", "Применён ручной METAR для ${cur.station.icao}", cur.station),
       )
@@ -949,7 +980,7 @@ class DesktopController(
         updateState { cur ->
           val pair = resolved.runways.getOrElse(cur.selectedRunwayPairIndex) { resolved.runways.first() }
           val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
-          val nowLocal = AviationWeatherParser.currentLocalTimeString(resolved.utcOffsetHours)
+          val nowUtc = AviationWeatherParser.currentUtcTimeString()
           var updatedLogs = cur.logs
           fetched.logMessages.forEach { msg ->
             updatedLogs = appendLog(updatedLogs, "NET", msg, resolved)
@@ -966,8 +997,9 @@ class DesktopController(
             mapStations = buildMapStationList(resolved, cur.favoriteIcaos),
             mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            metarFetchSeq = cur.metarFetchSeq + 1L,
             statusBanner = null,
-            liveLocalClock = nowLocal,
+            liveLocalClock = nowUtc,
             logs = updatedLogs,
           )
         }
@@ -1315,7 +1347,7 @@ class DesktopController(
     message: String,
     station: AirportStation,
   ): List<LogEntry> {
-    val ts = AviationWeatherParser.currentLocalTimeString(station.utcOffsetHours)
+    val ts = AviationWeatherParser.currentUtcTimeString()
     return (listOf(LogEntry(ts, level, message)) + existing).take(60)
   }
 }

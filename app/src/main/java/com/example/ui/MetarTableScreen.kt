@@ -108,6 +108,7 @@ fun MetarTableScreen(
   onOpenExportDialog: () -> Unit = {},
   onOpenDecoder: () -> Unit = {},
   onOpenPressureUtility: () -> Unit = {},
+  metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -651,6 +652,7 @@ fun MetarTableScreen(
         onToggleUnit = onToggleWindUnit,
         windTrend = windTrend,
         activeRunway = resolvedPrimaryRunway,
+        metarFetchSeq = metarFetchSeq,
       )
 
       // Dual Runway Wind Rose Visualization for Real-Time Headwind/Crosswind Analysis
@@ -663,6 +665,7 @@ fun MetarTableScreen(
         windUnit = windUnit,
         onSelectRunwayPair = onSelectRunwayPair,
         onToggleUnit = onToggleWindUnit,
+        metarFetchSeq = metarFetchSeq,
       )
 
       // Compact 24h QNH Trend Chart when available
@@ -699,7 +702,7 @@ fun MetarTableScreen(
           .padding(horizontal = 10.dp, vertical = 6.dp),
       ) {
         Text(
-          text = "Источник: ${weather.sourceLabel} · наблюдение ${weather.localObsTime} (${station.timezoneLabel}) · получено ${weather.receivedTimeLocal}",
+          text = "Источник: ${weather.sourceLabel} · наблюдение ${weather.observationTimeUtc} (UTC) · получено ${weather.receivedTimeLocal}",
           color = palette.textSecondary,
           fontSize = 11.sp,
         )
