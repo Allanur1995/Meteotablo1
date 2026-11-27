@@ -19,6 +19,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
@@ -929,12 +930,16 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
-    // Open Server dialog and verify the diagnostic "Проверить IP-сервер" button exists
+    // Open Server dialog and verify auto-login panel and test button exist while IP/login/pass inputs are hidden
     composeTestRule.onNodeWithTag("toolbar_settings_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("settings_open_server_button").performScrollTo().performClick()
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("server_auto_auth_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("server_test_connection_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("server_url_input").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("server_user_input").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("server_pass_input").assertDoesNotExist()
     composeTestRule.onNodeWithText("Закрыть").performClick()
     composeTestRule.onNodeWithTag("settings_back_button").performClick()
     composeTestRule.waitForIdle()
@@ -1252,6 +1257,12 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
+    // My Airports is separated from the main board into a dedicated screen
+    composeTestRule.onNodeWithTag("my_airports_bar").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("toolbar_my_airports_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_screen").assertIsDisplayed()
+
     composeTestRule.onNodeWithTag("my_airports_bar").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("my_airport_chip_UTAM").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("my_airport_chip_UTAA").performScrollTo().performClick()
@@ -1296,6 +1307,10 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_my_airports_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_screen").assertIsDisplayed()
 
     // Search local ICAO database by city/prefix ("EG") and select EGLL from autocomplete list
     composeTestRule.onNodeWithTag("my_airports_search_input").performScrollTo().performTextInput("EG")
@@ -1476,6 +1491,10 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_my_airports_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_airports_screen").assertIsDisplayed()
 
     composeTestRule.onNodeWithTag("my_airports_plot_toggle").performScrollTo().performClick()
     composeTestRule.waitForIdle()
@@ -1691,6 +1710,12 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
 
+    // D3.js trends dashboard is on its own dedicated screen, not on the main board
+    composeTestRule.onNodeWithTag("d3_trends_dashboard").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("toolbar_d3_trends_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("d3_trends_screen").assertIsDisplayed()
+
     composeTestRule.onNodeWithTag("d3_trends_dashboard").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("d3_airport_chip_UTAA").performScrollTo().performClick()
     composeTestRule.waitForIdle()
@@ -1833,9 +1858,8 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("aviation_performance_card").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("aviation_performance_card").assertTextContains("DA ", substring = true)
-    composeTestRule.onNodeWithTag("aviation_performance_card").assertTextContains("PA ", substring = true)
+    // PA/DA performance card is removed from main board for dispatchers
+    composeTestRule.onNodeWithTag("aviation_performance_card").assertDoesNotExist()
   }
 
   @Test
@@ -2109,6 +2133,134 @@ class ExampleRobolectricTest {
 
     composeTestRule.onNodeWithTag("wind_rose_canvas").assertIsDisplayed()
     composeTestRule.onNodeWithTag("wind_center_box_35L").assertIsDisplayed()
+  }
+
+  @Test
+  fun `room weather cache persists latest METAR and skips placeholder reports offline`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.example.local.MeteoDatabase::class.java,
+    ).allowMainThreadQueries().build()
+    try {
+      val repo = com.example.local.RoomWeatherCacheRepository(db.cachedWeatherDao())
+      val utam = AirportCatalog.findOrDefault("UTAM")
+      val valid = kotlinx.coroutines.runBlocking {
+        val placeholder = AviationWeatherParser.parse(
+          rawMetarInput = "METAR UTAM --:--Z //////KT //// ////// // Q////",
+          rawTafInput = "TAF UTAM — нет данных",
+          station = utam,
+          sourceLabel = "нет данных",
+        )
+        repo.saveWeather(utam, placeholder, 1000L)
+        assertTrue(repo.getAllCachedWeather().isEmpty())
+
+        val validWx = AviationWeatherParser.parse(
+          rawMetarInput = "METAR UTAM 270800Z 31012G22KT 9999 SCT035 19/06 Q1021 R35L/CLRD70 NOSIG",
+          rawTafInput = "TAF UTAM 270500Z 2706/2806 31012KT CAVOK",
+          station = utam,
+          sourceLabel = "ведомственный сервер",
+        )
+        repo.saveWeather(utam, validWx, 2000L)
+
+        val loaded = repo.getCachedWeather("utam")
+        assertTrue(loaded != null)
+        assertEquals("UTAM", loaded!!.station.icao)
+        assertEquals(validWx.rawMetar, loaded.rawMetar)
+        assertEquals(validWx.rawTaf, loaded.rawTaf)
+        assertEquals(2000L, loaded.cachedAtMillis)
+        validWx
+      }
+
+      // Reload ViewModel backed by Room repository -> preloads offline cached METAR cleanly
+      val vm = MeteoViewModel(
+        weatherCacheRepository = repo,
+        autoFetch = false,
+      )
+      val deadline = System.currentTimeMillis() + 3000L
+      while (!vm.uiState.value.weather.rawMetar.contains("270800Z") && System.currentTimeMillis() < deadline) {
+        Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        Thread.sleep(20)
+      }
+      Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+      assertEquals(valid.rawMetar, vm.uiState.value.weather.rawMetar)
+      assertTrue(vm.uiState.value.isOfflineCachedWeather)
+    } finally {
+      db.close()
+    }
+  }
+
+  @Test
+  fun `crosswind calculator dialog computes custom wind and resets back to live METAR`() {
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAM") // 35L = 345 deg
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAM 270900Z 34510KT CAVOK 20/05 Q1018",
+      rawTaf = "TAF UTAM",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_crosswind_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("crosswind_calculator_dialog").assertIsDisplayed()
+
+    // Enter pure 90-degree crosswind relative to 270° heading: set heading=270, windDir=360, windSpeed=20 kt
+    composeTestRule.onNodeWithTag("custom_runway_heading_input").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("custom_runway_heading_input").performTextReplacement("270")
+    composeTestRule.onNodeWithTag("custom_wind_dir_input").performScrollTo().performTextReplacement("360")
+    composeTestRule.onNodeWithTag("custom_wind_speed_input").performScrollTo().performTextReplacement("20")
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("rwy_component_crosswind_box").assertTextContains("20.0 kt", substring = true)
+
+    // Reset back to METAR wind (34510KT -> smaller crosswind against 270°)
+    composeTestRule.onNodeWithTag("custom_wind_reset_metar_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("rwy_component_crosswind_box").assertTextContains("9.7 kt", substring = true)
+
+    composeTestRule.onNodeWithTag("crosswind_dialog_close_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("crosswind_calculator_dialog").assertDoesNotExist()
+  }
+
+  @Test
+  fun `toolbar share button opens Android native share chooser with METAR summary`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    Shadows.shadowOf(app).clearNextStartedActivities()
+
+    val vm = MeteoViewModel(autoFetch = false)
+    vm.selectStation("UTAA")
+    vm.applyCustomMetar(
+      rawMetar = "METAR UTAA 270900Z 12014KT CAVOK 24/08 Q1019 NOSIG",
+      rawTaf = "TAF UTAA 270800Z 2709/2809 12012KT CAVOK",
+    )
+
+    composeTestRule.setContent {
+      MeteoTabloTheme(isNightMode = false) {
+        MeteoTabloScreen(viewModel = vm, onFullscreenChanged = {})
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("toolbar_share_button").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    val launched = Shadows.shadowOf(app).nextStartedActivity
+    assertTrue("Expected ACTION_CHOOSER share intent", launched != null)
+    assertEquals(android.content.Intent.ACTION_CHOOSER, launched!!.action)
+    @Suppress("DEPRECATION")
+    val innerIntent = launched.getParcelableExtra<android.content.Intent>(android.content.Intent.EXTRA_INTENT)
+    assertTrue(innerIntent != null)
+    assertEquals(android.content.Intent.ACTION_SEND, innerIntent!!.action)
+    val sharedText = innerIntent.getStringExtra(android.content.Intent.EXTRA_TEXT).orEmpty()
+    assertTrue(sharedText.contains("UTAA"))
+    assertTrue(sharedText.contains("12014KT"))
   }
 }
 

@@ -12,6 +12,7 @@ import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryUnitPreferencesStorage
 import com.example.data.InMemoryWeatherAlertStorage
+import com.example.data.InMemoryWeatherCacheRepository
 import com.example.data.InMemoryWeatherHistoryStorage
 import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.InMemoryWindHistoryStorage
@@ -23,6 +24,7 @@ import com.example.data.ServerConfigStorage
 import com.example.data.UnitPreferences
 import com.example.data.UnitPreferencesStorage
 import com.example.data.WeatherAlertStorage
+import com.example.data.WeatherCacheRepository
 import com.example.data.WeatherHistoryStorage
 import com.example.data.WeatherPresetStorage
 import com.example.data.WindHistoryStorage
@@ -99,6 +101,7 @@ data class MeteoUiState(
   val loadingMapIcao: String? = null,
   val mapStations: List<AirportStation> = AirportCatalog.presets,
   val mapWeatherByIcao: Map<String, DecodedWeather> = emptyMap(),
+  val isOfflineCachedWeather: Boolean = false,
   val statusBanner: String? = null,
   val liveLocalClock: String = "--:--Z",
   val logs: List<LogEntry> = emptyList(),
@@ -131,9 +134,9 @@ class MeteoViewModel(
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
   private val locationService: LocationService = NoOpLocationService,
   private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
+  private val weatherCacheRepository: WeatherCacheRepository = InMemoryWeatherCacheRepository(),
+  private val repository: AviationWeatherRepository = AviationWeatherRepository(),
 ) : ViewModel() {
-
-  private val repository = AviationWeatherRepository()
   private val weatherSnapshots: MutableMap<String, FavoriteWeatherSnapshot> =
     alertStorage.loadSnapshots().toMutableMap()
   private val windHistoryByIcao: MutableMap<String, List<WindHistoryEntry>> =
@@ -215,10 +218,50 @@ class MeteoViewModel(
     syncCrashStationContext()
 
     startClockTicker()
+    preloadCachedWeather()
     if (autoFetch) {
       fetchLiveForStation(defaultStation)
       scheduleAutoRefreshLoop()
       startFavoriteMonitorLoop()
+    }
+  }
+
+  private fun preloadCachedWeather() {
+    viewModelScope.launch {
+      val cachedAll = runCatching { weatherCacheRepository.getAllCachedWeather() }.getOrDefault(emptyMap())
+      if (cachedAll.isEmpty()) return@launch
+      val decodedMap = LinkedHashMap<String, DecodedWeather>()
+      cachedAll.forEach { (icao, rec) ->
+        resolvedStationsByIcao.putIfAbsent(icao, rec.station)
+        decodedMap[icao] = rec.toDecodedWeather(isOfflineFallback = false)
+      }
+      _uiState.update { state ->
+        val mergedMap = decodedMap + state.mapWeatherByIcao
+        val activeRec = cachedAll[state.station.icao]
+        val shouldApplyActive = activeRec != null && state.weather.observationTimeUtc == "--:--Z"
+        if (shouldApplyActive && activeRec != null) {
+          val activeDecoded = activeRec.toDecodedWeather(isOfflineFallback = false)
+          val pair = activeRec.station.runways.getOrElse(state.selectedRunwayPairIndex) {
+            activeRec.station.runways.first()
+          }
+          val (pCalc, rCalc) = computeRunwayCalcs(pair, activeDecoded)
+          state.copy(
+            station = activeRec.station,
+            weather = activeDecoded,
+            primaryRunwayCalc = pCalc,
+            reciprocalRunwayCalc = rCalc,
+            isOfflineCachedWeather = !autoFetch,
+            mapStations = buildMapStationList(activeRec.station, state.favoriteIcaos),
+            mapWeatherByIcao = mergedMap,
+            logs = appendLog(state.logs, "INFO", "Загружен локальный кэш Room для ${activeRec.station.icao}"),
+          )
+        } else {
+          state.copy(
+            mapStations = buildMapStationList(state.station, state.favoriteIcaos),
+            mapWeatherByIcao = mergedMap,
+          )
+        }
+      }
     }
   }
 
@@ -610,7 +653,7 @@ class MeteoViewModel(
     _uiState.update { state ->
       state.copy(
         serverConfig = normalized,
-        logs = appendLog(state.logs, "NET", "Сохранены настройки сервера (${normalized.resolvedMode().displayName}): ${normalized.url}"),
+        logs = appendLog(state.logs, "NET", "Сохранены настройки источников (${normalized.resolvedMode().displayName})"),
       )
     }
     if (fetchNow) {
@@ -660,6 +703,7 @@ class MeteoViewModel(
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(station.icao, nextHistory),
         historyStatusMessage = null,
         mapStations = buildMapStationList(station, state.favoriteIcaos),
+        isOfflineCachedWeather = false,
         liveLocalClock = initialStationWeather.receivedTimeLocal,
         statusBanner = null,
         logs = appendLog(state.logs, "INFO", "Выбран аэропорт ${station.icao} (${station.name})"),
@@ -668,6 +712,34 @@ class MeteoViewModel(
     activeFetchJob?.cancel()
     historyFetchJob?.cancel()
     syncCrashStationContext()
+    if (cachedWeather == null) {
+      viewModelScope.launch {
+        val cachedRec = runCatching { weatherCacheRepository.getCachedWeather(clean) }.getOrNull()
+        if (cachedRec != null) {
+          resolvedStationsByIcao[clean] = cachedRec.station
+          _uiState.update { cur ->
+            val decoded = cachedRec.toDecodedWeather(isOfflineFallback = !autoFetch)
+            val updatedMap = cur.mapWeatherByIcao + (clean to decoded)
+            if (cur.station.icao == clean && cur.weather.observationTimeUtc == "--:--Z") {
+              val pair = cachedRec.station.runways.getOrElse(cur.selectedRunwayPairIndex) {
+                cachedRec.station.runways.first()
+              }
+              val (pCalc, rCalc) = computeRunwayCalcs(pair, decoded)
+              cur.copy(
+                station = cachedRec.station,
+                weather = decoded,
+                primaryRunwayCalc = pCalc,
+                reciprocalRunwayCalc = rCalc,
+                isOfflineCachedWeather = !autoFetch,
+                mapWeatherByIcao = updatedMap,
+              )
+            } else {
+              cur.copy(mapWeatherByIcao = updatedMap)
+            }
+          }
+        }
+      }
+    }
     if (autoFetch) {
       fetchLiveForStation(station)
     }
@@ -729,6 +801,7 @@ class MeteoViewModel(
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHistory = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHistorySnapshot = snapshotAllHistory24h()
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         _uiState.update { state ->
           var updatedLogs = state.logs
           fetched.logMessages.forEach { msg ->
@@ -756,6 +829,7 @@ class MeteoViewModel(
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            isOfflineCachedWeather = false,
             metarFetchSeq = state.metarFetchSeq + 1L,
             isDetectingLocation = false,
             statusBanner = null,
@@ -767,13 +841,35 @@ class MeteoViewModel(
         evaluateFavoriteObservation(resolved, fetched.weather)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки погоды по координатам"
+        val currentIcao = _uiState.value.station.icao
+        val cachedFallback = runCatching { weatherCacheRepository.getCachedWeather(currentIcao) }.getOrNull()
         _uiState.update { state ->
-          state.copy(
-            isLoading = false,
-            isDetectingLocation = false,
-            statusBanner = msg,
-            logs = appendLog(state.logs, "ERR", msg),
-          )
+          if (cachedFallback != null) {
+            val cachedDecoded = cachedFallback.toDecodedWeather(isOfflineFallback = true)
+            val pair = cachedFallback.station.runways.getOrElse(state.selectedRunwayPairIndex) {
+              cachedFallback.station.runways.first()
+            }
+            val (pCalc, rCalc) = computeRunwayCalcs(pair, cachedDecoded)
+            state.copy(
+              station = cachedFallback.station,
+              weather = cachedDecoded,
+              primaryRunwayCalc = pCalc,
+              reciprocalRunwayCalc = rCalc,
+              isLoading = false,
+              isOfflineCachedWeather = true,
+              isDetectingLocation = false,
+              statusBanner = "Нет связи — показан сохранённый кэш (${cachedFallback.observationTimeUtc})",
+              logs = appendLog(state.logs, "WARN", "Оффлайн-кэш для $currentIcao: $msg"),
+            )
+          } else {
+            state.copy(
+              isLoading = false,
+              isOfflineCachedWeather = false,
+              isDetectingLocation = false,
+              statusBanner = msg,
+              logs = appendLog(state.logs, "ERR", msg),
+            )
+          }
         }
       }
     }
@@ -849,6 +945,7 @@ class MeteoViewModel(
         weatherHistoryByIcaoMap = snapshotAllHistory24h(),
         qnhTrend24h = WeatherHistoryAnalyzer.buildQnhTrend(current.station.icao, nextHistory),
         mapWeatherByIcao = state.mapWeatherByIcao + (current.station.icao to parsed),
+        isOfflineCachedWeather = false,
         metarFetchSeq = state.metarFetchSeq + 1L,
         liveLocalClock = nowUtc,
         statusBanner = null,
@@ -973,6 +1070,7 @@ class MeteoViewModel(
         val station = AirportCatalog.findOrDefault(icao)
         repository.fetchLiveWeather(station, _uiState.value.serverConfig).onSuccess { fetched ->
           resolvedStationsByIcao[fetched.resolvedStation.icao] = fetched.resolvedStation
+          runCatching { weatherCacheRepository.saveWeather(fetched.resolvedStation, fetched.weather) }
           val favTrend = recordWindObservation(fetched.resolvedStation.icao, fetched.weather)
           val favHist = recordWeatherHistory(fetched.resolvedStation.icao, fetched.weather)
           val allHistSnapshot = snapshotAllHistory24h()
@@ -1114,6 +1212,7 @@ class MeteoViewModel(
       result.onSuccess { fetched ->
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val pair = resolved.runways.getOrElse(_uiState.value.selectedRunwayPairIndex) { resolved.runways.first() }
         val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
         val nowUtc = AviationWeatherParser.currentUtcTimeString()
@@ -1136,6 +1235,7 @@ class MeteoViewModel(
             mapStations = buildMapStationList(resolved, state.favoriteIcaos),
             mapWeatherByIcao = state.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            isOfflineCachedWeather = false,
             metarFetchSeq = state.metarFetchSeq + 1L,
             statusBanner = null,
             liveLocalClock = nowUtc,
@@ -1153,12 +1253,33 @@ class MeteoViewModel(
             "source_mode" to _uiState.value.serverConfig.resolvedMode().name,
           ),
         )
+        val cachedFallback = runCatching { weatherCacheRepository.getCachedWeather(station.icao) }.getOrNull()
         _uiState.update { state ->
-          state.copy(
-            isLoading = false,
-            statusBanner = msg,
-            logs = appendLog(state.logs, "ERR", msg),
-          )
+          if (cachedFallback != null && state.station.icao.equals(station.icao, ignoreCase = true)) {
+            val cachedDecoded = cachedFallback.toDecodedWeather(isOfflineFallback = true)
+            val pair = cachedFallback.station.runways.getOrElse(state.selectedRunwayPairIndex) {
+              cachedFallback.station.runways.first()
+            }
+            val (pCalc, rCalc) = computeRunwayCalcs(pair, cachedDecoded)
+            state.copy(
+              station = cachedFallback.station,
+              weather = cachedDecoded,
+              primaryRunwayCalc = pCalc,
+              reciprocalRunwayCalc = rCalc,
+              isLoading = false,
+              isOfflineCachedWeather = true,
+              mapWeatherByIcao = state.mapWeatherByIcao + (cachedFallback.station.icao to cachedDecoded),
+              statusBanner = "Нет интернета/ответа сервера — показан кэш Room от ${cachedFallback.observationTimeUtc}",
+              logs = appendLog(state.logs, "WARN", "Оффлайн-кэш Room (${station.icao}): $msg"),
+            )
+          } else {
+            state.copy(
+              isLoading = false,
+              isOfflineCachedWeather = false,
+              statusBanner = msg,
+              logs = appendLog(state.logs, "ERR", msg),
+            )
+          }
         }
       }
     }
@@ -1393,6 +1514,7 @@ class MeteoViewModel(
       repository.fetchLiveWeather(target, _uiState.value.serverConfig).onSuccess { fetched ->
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHistSnapshot = snapshotAllHistory24h()
@@ -1448,6 +1570,7 @@ class MeteoViewModel(
           loadedCount++
           resolvedStationsByIcao[icao] = fetched.resolvedStation
           updatedWeather[icao] = fetched.weather
+          runCatching { weatherCacheRepository.saveWeather(fetched.resolvedStation, fetched.weather) }
           recordWindObservation(icao, fetched.weather)
           recordWeatherHistory(icao, fetched.weather)
           evaluateFavoriteObservation(fetched.resolvedStation, fetched.weather)

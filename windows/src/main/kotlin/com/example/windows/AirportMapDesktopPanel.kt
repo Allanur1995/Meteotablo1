@@ -364,13 +364,18 @@ class AirportMapDesktopPanel(
       val isFav = st.icao in state.favoriteIcaos
       val chip = JButton(if (isFav) "★ ${st.icao}" else st.icao).apply {
         font = Font("Segoe UI", if (isSel) Font.BOLD else Font.PLAIN, 11)
-        isFocusPainted = false
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        background = if (isSel) pal.buttonActiveBackground else pal.fieldBackground
-        foreground = if (isFav && !isSel) pal.metarAmber else pal.textPrimary
-        border = BorderFactory.createCompoundBorder(
-          BorderFactory.createLineBorder(if (isSel) pal.metarAmber else pal.border, if (isSel) 2 else 1),
-          BorderFactory.createEmptyBorder(3, 8, 3, 8),
+        if (isFav && !isSel) {
+          putClientProperty("preserveForeground", true)
+          foreground = pal.metarAmber
+        } else {
+          putClientProperty("preserveForeground", false)
+        }
+        DesktopThemeHelper.styleButton(
+          btn = this,
+          pal = pal,
+          isActive = isSel,
+          accentBorder = if (isSel) pal.metarAmber else null,
+          padding = java.awt.Insets(3, 8, 3, 8),
         )
         addActionListener { selectPin(st.icao) }
       }
@@ -401,24 +406,22 @@ class AirportMapDesktopPanel(
     val pal = state.palette
     layerButtons.forEach { (style, btn) ->
       val active = style == activeLayer
-      btn.background = if (active) pal.buttonActiveBackground else pal.buttonBackground
-      btn.foreground = pal.textPrimary
-      btn.isFocusPainted = false
-      btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-      btn.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(if (active) pal.metarAmber else pal.border, if (active) 2 else 1),
-        BorderFactory.createEmptyBorder(4, 8, 4, 8),
+      DesktopThemeHelper.styleButton(
+        btn = btn,
+        pal = pal,
+        isActive = active,
+        accentBorder = if (active) pal.metarAmber else null,
+        padding = java.awt.Insets(4, 8, 4, 8),
       )
     }
     regionButtons.forEach { (preset, btn) ->
       val active = preset == activeRegion
-      btn.background = if (active) pal.buttonActiveBackground else pal.buttonBackground
-      btn.foreground = pal.textPrimary
-      btn.isFocusPainted = false
-      btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-      btn.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(if (active) pal.borderStrong else pal.border, 1),
-        BorderFactory.createEmptyBorder(4, 8, 4, 8),
+      DesktopThemeHelper.styleButton(
+        btn = btn,
+        pal = pal,
+        isActive = active,
+        accentBorder = if (active) pal.borderStrong else null,
+        padding = java.awt.Insets(4, 8, 4, 8),
       )
     }
   }
@@ -456,6 +459,7 @@ class AirportMapDesktopPanel(
 
     val isFav = station.icao in state.favoriteIcaos
     summaryFavoriteBtn.text = if (isFav) "★" else "☆"
+    summaryFavoriteBtn.putClientProperty("preserveForeground", true)
     summaryFavoriteBtn.foreground = if (isFav) pal.metarAmber else pal.textMuted
     styleSecondaryButton(summaryFavoriteBtn, pal)
 
@@ -465,11 +469,12 @@ class AirportMapDesktopPanel(
     styleSecondaryButton(summaryRefreshBtn, pal)
 
     openOnBoardBtn.text = "Открыть ${station.icao} на табло →"
-    openOnBoardBtn.background = pal.metarAmber
-    openOnBoardBtn.foreground = Color.WHITE
-    openOnBoardBtn.isFocusPainted = false
-    openOnBoardBtn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-    openOnBoardBtn.border = BorderFactory.createEmptyBorder(8, 12, 8, 12)
+    DesktopThemeHelper.styleAccentButton(
+      btn = openOnBoardBtn,
+      bg = pal.metarAmber,
+      fg = Color.WHITE,
+      padding = java.awt.Insets(8, 12, 8, 12),
+    )
 
     summaryTileBoxes.forEach { box ->
       box.background = pal.fieldBackground
@@ -534,13 +539,10 @@ class AirportMapDesktopPanel(
   }
 
   private fun styleSecondaryButton(btn: JButton, pal: DesktopPalette) {
-    btn.background = pal.buttonBackground
-    btn.foreground = pal.textPrimary
-    btn.isFocusPainted = false
-    btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-    btn.border = BorderFactory.createCompoundBorder(
-      BorderFactory.createLineBorder(pal.border, 1),
-      BorderFactory.createEmptyBorder(5, 10, 5, 10),
+    DesktopThemeHelper.styleButton(
+      btn = btn,
+      pal = pal,
+      padding = java.awt.Insets(5, 10, 5, 10),
     )
   }
 

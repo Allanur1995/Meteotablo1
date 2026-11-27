@@ -3,9 +3,10 @@ package com.example.windows
 import com.example.data.AirportCatalog
 import com.example.data.DataSourceMode
 import com.example.domain.AirportMapProjection
-import com.example.domain.AviationPerformanceCalculator
 import com.example.domain.FlightCategory
 import com.example.domain.UnitConverter
+import com.example.domain.WeatherExportPayload
+import com.example.domain.WeatherReportFormatter
 import com.example.domain.WindTrendAnalyzer
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
@@ -31,6 +32,8 @@ import java.awt.GridBagLayout
 import java.awt.GridLayout
 import java.awt.Insets
 import java.awt.RenderingHints
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.awt.geom.Path2D
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -48,6 +51,7 @@ import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JScrollPane
 import javax.swing.JTextField
 import javax.swing.SwingConstants
 import javax.swing.event.DocumentEvent
@@ -57,6 +61,7 @@ enum class DesktopCenterView {
   BOARD,
   MAP,
   TRENDS,
+  MY_AIRPORTS,
 }
 
 class MeteoDesktopFrame(
@@ -83,12 +88,15 @@ class MeteoDesktopFrame(
   private val unitSystemButton = JButton("Imperial")
   private val windUnitButton = JButton("kt")
   private val pressureUnitButton = JButton("гПа")
+  private val myAirportsButton = JButton("Мои")
   private val mapButton = JButton("Карта")
   private val trendsButton = JButton("Графики 24ч")
   private val dualRoseButton = JButton("ВПП Роза")
+  private val crosswindButton = JButton("Бок. ветер")
   private val decoderButton = JButton("Декодер")
   private val pressureConvButton = JButton("QNH/QFE")
   private val tableButton = JButton("Таблица")
+  private val shareButton = JButton("Поделиться")
   private val exportButton = JButton("Экспорт")
   private val alertsButton = JButton("Оповещ.")
   private val logButton = JButton("Лог")
@@ -111,9 +119,15 @@ class MeteoDesktopFrame(
   private val recentSearchesClearBtn = JButton("×")
   private val searchSuggestionsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
 
-  // Quick-access My Airports favorites bar
-  private val myAirportsBar = JPanel(BorderLayout(6, 2))
-  private val myAirportsChipsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 2))
+  // Dedicated My Airports panel (moved off the main board)
+  private val myAirportsViewPanel = JPanel(BorderLayout(8, 8))
+  private val myAirportsBackBtn = JButton("← На табло")
+  private val myAirportsOpenMapBtn = JButton("Карта")
+  private val myAirportsToggleCurrentBtn = JButton("★ В мои")
+  private val myAirportsAddIcaoField = JTextField(6)
+  private val myAirportsAddFavBtn = JButton("+ ICAO")
+  private val myAirportsChipsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 8))
+  private var myAirportsChipsScroll: JScrollPane? = null
 
   // Weather Alert Banner
   private val alertBannerPanel = JPanel(BorderLayout(8, 4))
@@ -177,7 +191,6 @@ class MeteoDesktopFrame(
   private val qnhField = createReadonlyField()
   private val qfeField = createReadonlyField()
   private val sunField = createReadonlyField()
-  private val perfField = createReadonlyField()
   private val sourceField = createReadonlyField()
   private val windTrendPanel = WindTrendSparklinePanel()
 
@@ -231,7 +244,7 @@ class MeteoDesktopFrame(
       metarUtcLabel.font = Font("Consolas", Font.BOLD, 13)
       metarUtcLabel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
       sourceModeCombo.font = Font("Segoe UI", Font.BOLD, 11)
-      sourceModeCombo.toolTipText = "Источник данных: IP-сервер и/или Интернет-сайты"
+      sourceModeCombo.toolTipText = "Источник данных: ведомственный метеосервер и/или Интернет-сайты"
       autoRefreshBadgeButton.font = Font("Consolas", Font.BOLD, 11)
       autoRefreshBadgeButton.toolTipText = "Автообновление 5 / 15 / 30 мин (нажмите для настройки)"
       add(metarUtcLabel)
@@ -251,12 +264,15 @@ class MeteoDesktopFrame(
     toolsStripPanel.add(unitSystemButton)
     toolsStripPanel.add(windUnitButton)
     toolsStripPanel.add(pressureUnitButton)
+    toolsStripPanel.add(myAirportsButton)
     toolsStripPanel.add(mapButton)
     toolsStripPanel.add(trendsButton)
     toolsStripPanel.add(dualRoseButton)
+    toolsStripPanel.add(crosswindButton)
     toolsStripPanel.add(decoderButton)
     toolsStripPanel.add(pressureConvButton)
     toolsStripPanel.add(tableButton)
+    toolsStripPanel.add(shareButton)
     toolsStripPanel.add(exportButton)
     toolsStripPanel.add(alertsButton)
     toolsStripPanel.add(logButton)
@@ -330,14 +346,31 @@ class MeteoDesktopFrame(
     searchBarPanel.add(searchInputWrap, BorderLayout.CENTER)
     searchBarPanel.add(searchSouthStack, BorderLayout.SOUTH)
 
-    // Quick-access My Airports Favorites Bar
-    val myAirportsPrefix = JLabel("★ Мои аэропорты:").apply {
-      font = Font("Segoe UI", Font.BOLD, 11)
+    // Dedicated My Airports View Panel
+    val myAirportsHeaderLeft = JPanel(FlowLayout(FlowLayout.LEFT, 8, 2)).apply {
+      isOpaque = false
+      add(myAirportsBackBtn)
+      add(JLabel("★ Мои аэропорты").apply { font = Font("Segoe UI", Font.BOLD, 15) })
     }
-    myAirportsChipsPanel.isOpaque = false
-    myAirportsBar.border = BorderFactory.createEmptyBorder(3, 10, 3, 10)
-    myAirportsBar.add(myAirportsPrefix, BorderLayout.WEST)
-    myAirportsBar.add(myAirportsChipsPanel, BorderLayout.CENTER)
+    val myAirportsHeaderRight = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 2)).apply {
+      isOpaque = false
+      myAirportsAddIcaoField.font = Font("Consolas", Font.BOLD, 12)
+      myAirportsAddIcaoField.toolTipText = "Введите 4-буквенный ICAO (напр. UTAA)"
+      add(JLabel("ICAO:"))
+      add(myAirportsAddIcaoField)
+      add(myAirportsAddFavBtn)
+      add(myAirportsToggleCurrentBtn)
+      add(myAirportsOpenMapBtn)
+    }
+    val myAirportsTopBar = JPanel(BorderLayout(8, 4)).apply {
+      isOpaque = false
+      add(myAirportsHeaderLeft, BorderLayout.WEST)
+      add(myAirportsHeaderRight, BorderLayout.EAST)
+    }
+    myAirportsChipsScroll = JScrollPane(myAirportsChipsPanel)
+    myAirportsViewPanel.border = BorderFactory.createEmptyBorder(10, 12, 10, 12)
+    myAirportsViewPanel.add(myAirportsTopBar, BorderLayout.NORTH)
+    myAirportsViewPanel.add(myAirportsChipsScroll!!, BorderLayout.CENTER)
 
     // Weather Alert Banner
     alertBannerPanel.border = BorderFactory.createEmptyBorder(5, 10, 5, 10)
@@ -364,8 +397,6 @@ class MeteoDesktopFrame(
       add(toolbarPanel)
       add(Box.createVerticalStrut(4))
       add(searchBarPanel)
-      add(Box.createVerticalStrut(3))
-      add(myAirportsBar)
       add(Box.createVerticalStrut(3))
       add(alertBannerPanel)
       add(bannerPanel)
@@ -410,7 +441,7 @@ class MeteoDesktopFrame(
       add(clockRow, BorderLayout.NORTH)
       add(stationSubtitleLabel, BorderLayout.SOUTH)
     }
-    val telemetryGrid = JPanel(GridLayout(11, 2, 6, 4)).apply {
+    val telemetryGrid = JPanel(GridLayout(10, 2, 6, 4)).apply {
       isOpaque = false
       border = BorderFactory.createEmptyBorder(4, 6, 4, 6)
       add(JLabel("Видимость:")); add(visField)
@@ -422,7 +453,6 @@ class MeteoDesktopFrame(
       add(JLabel("QNH:")); add(qnhField)
       add(JLabel("QFE:")); add(qfeField)
       add(JLabel("Восх. / Зак. (UTC):")); add(sunField)
-      add(JLabel("DA / PA / RH:")); add(perfField)
       add(JLabel("Источник:")); add(sourceField)
     }
     centerPanel.border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
@@ -446,6 +476,7 @@ class MeteoDesktopFrame(
     centerDeckPanel.add(boardPanel, DesktopCenterView.BOARD.name)
     centerDeckPanel.add(mapPanel, DesktopCenterView.MAP.name)
     centerDeckPanel.add(trendsPanel, DesktopCenterView.TRENDS.name)
+    centerDeckPanel.add(myAirportsViewPanel, DesktopCenterView.MY_AIRPORTS.name)
     centerCardLayout.show(centerDeckPanel, DesktopCenterView.BOARD.name)
     rootPanel.add(centerDeckPanel, BorderLayout.CENTER)
 
@@ -561,6 +592,24 @@ class MeteoDesktopFrame(
     }
     windUnitButton.addActionListener { controller.toggleWindUnit() }
     pressureUnitButton.addActionListener { controller.togglePressureUnit() }
+    myAirportsButton.addActionListener {
+      setCenterView(
+        if (currentCenterView == DesktopCenterView.MY_AIRPORTS) DesktopCenterView.BOARD
+        else DesktopCenterView.MY_AIRPORTS,
+      )
+    }
+    myAirportsBackBtn.addActionListener { setCenterView(DesktopCenterView.BOARD) }
+    myAirportsOpenMapBtn.addActionListener { setCenterView(DesktopCenterView.MAP) }
+    myAirportsToggleCurrentBtn.addActionListener { controller.toggleFavorite() }
+    myAirportsAddFavBtn.addActionListener {
+      val code = myAirportsAddIcaoField.text.trim().uppercase()
+      if (code.length == 4 && code.all { it.isLetter() }) {
+        controller.addFavorite(code, selectAfterAdd = true)
+        myAirportsAddIcaoField.text = ""
+      }
+    }
+    myAirportsAddIcaoField.addActionListener { myAirportsAddFavBtn.doClick() }
+
     mapButton.addActionListener {
       setCenterView(if (currentCenterView == DesktopCenterView.MAP) DesktopCenterView.BOARD else DesktopCenterView.MAP)
     }
@@ -574,9 +623,27 @@ class MeteoDesktopFrame(
       }
     }
     dualRoseButton.addActionListener { DesktopDialogs.showDualWindRoseDialog(this, controller) }
+    crosswindButton.addActionListener { DesktopDialogs.showCrosswindCalculatorDialog(this, controller) }
     decoderButton.addActionListener { DesktopDialogs.showDecoderDialog(this, controller) }
     pressureConvButton.addActionListener { DesktopDialogs.showPressureConverterDialog(this, controller) }
     tableButton.addActionListener { DesktopDialogs.showMetarTableDialog(this, controller) }
+    shareButton.addActionListener {
+      val st = controller.state
+      val payload = WeatherExportPayload(
+        station = st.station,
+        weather = st.weather,
+        primaryRunwayCalc = st.primaryRunwayCalc,
+        reciprocalRunwayCalc = st.reciprocalRunwayCalc,
+        windUnit = st.windUnit,
+        pressureUnit = st.pressureUnit,
+        windTrend = st.windTrend,
+        qnhTrend24h = st.qnhTrend24h,
+        weatherHistory24h = st.weatherHistory24h,
+      )
+      val summary = WeatherReportFormatter.buildTextSummary(payload)
+      Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(summary), null)
+      controller.showStatusMessage("Сводка ${st.station.icao} скопирована в буфер для отправки")
+    }
     exportButton.addActionListener { DesktopDialogs.showExportDialog(this, controller) }
     alertsButton.addActionListener { DesktopDialogs.showAlertsDialog(this, controller) }
     logButton.addActionListener { DesktopDialogs.showLogDialog(this, controller) }
@@ -649,6 +716,7 @@ class MeteoDesktopFrame(
       DesktopCenterView.BOARD -> Unit
       DesktopCenterView.MAP -> mapPanel.applyState(controller.state)
       DesktopCenterView.TRENDS -> trendsPanel.applyState(controller.state)
+      DesktopCenterView.MY_AIRPORTS -> rebuildMyAirportsBar(controller.state)
     }
   }
 
@@ -689,13 +757,10 @@ class MeteoDesktopFrame(
     matches.forEach { st ->
       val chip = JButton("${st.icao} · ${st.city}").apply {
         font = Font("Segoe UI", Font.BOLD, 11)
-        isFocusPainted = false
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        background = pal.fieldBackground
-        foreground = pal.textPrimary
-        border = BorderFactory.createCompoundBorder(
-          BorderFactory.createLineBorder(pal.border, 1),
-          BorderFactory.createEmptyBorder(3, 8, 3, 8),
+        DesktopThemeHelper.styleButton(
+          btn = this,
+          pal = pal,
+          padding = Insets(3, 8, 3, 8),
         )
         addActionListener {
           controller.selectStation(st.icao)
@@ -715,12 +780,31 @@ class MeteoDesktopFrame(
 
   private fun rebuildMyAirportsBar(state: DesktopUiState) {
     val pal = state.palette
+    myAirportsViewPanel.background = pal.panelSurface
+    myAirportsViewPanel.border = BorderFactory.createCompoundBorder(
+      BorderFactory.createLineBorder(pal.border, 1),
+      BorderFactory.createEmptyBorder(10, 12, 10, 12),
+    )
+    myAirportsChipsPanel.background = pal.panelSurface
+    myAirportsChipsScroll?.background = pal.panelSurface
+    myAirportsChipsScroll?.viewport?.background = pal.panelSurface
+    myAirportsChipsScroll?.border = BorderFactory.createLineBorder(pal.border, 1)
+    myAirportsAddIcaoField.background = pal.fieldBackground
+    myAirportsAddIcaoField.foreground = pal.textPrimary
+    myAirportsAddIcaoField.caretColor = pal.textPrimary
+    myAirportsAddIcaoField.border = BorderFactory.createCompoundBorder(
+      BorderFactory.createLineBorder(pal.border, 1),
+      BorderFactory.createEmptyBorder(3, 6, 3, 6),
+    )
+    myAirportsToggleCurrentBtn.text = if (state.isCurrentStationFavorite) "★ Убрать ${state.station.icao}" else "☆ В мои ${state.station.icao}"
+    applyLabelTheme(myAirportsViewPanel, pal)
+
     myAirportsChipsPanel.removeAll()
     val favs = state.favoriteIcaos
     if (favs.isEmpty()) {
       myAirportsChipsPanel.add(
-        JLabel("Нажмите ☆ чтобы закрепить аэропорты").apply {
-          font = Font("Segoe UI", Font.PLAIN, 11)
+        JLabel("Список «Мои аэропорты» пуст. Введите код ICAO справа и нажмите «+ ICAO» или ☆ на панели.").apply {
+          font = Font("Segoe UI", Font.PLAIN, 12)
           foreground = pal.textMuted
         },
       )
@@ -728,31 +812,47 @@ class MeteoDesktopFrame(
       favs.forEach { icao ->
         val selected = icao.equals(state.station.icao, ignoreCase = true)
         val city = AirportCatalog.findKnown(icao)?.city
-        val label = if (city != null) "$icao · $city" else icao
+        val label = if (city != null) "★ $icao · $city" else "★ $icao"
+        val chipGroup = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0)).apply {
+          isOpaque = false
+        }
         val chip = JButton(label).apply {
-          font = Font("Segoe UI", Font.BOLD, 11)
-          isFocusPainted = false
-          cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-          background = if (selected) pal.buttonActiveBackground else pal.fieldBackground
-          foreground = if (selected) pal.accentCyan else pal.textPrimary
-          border = BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(if (selected) pal.accentCyan else pal.border, if (selected) 2 else 1),
-            BorderFactory.createEmptyBorder(2, 8, 2, 8),
+          font = Font("Segoe UI", Font.BOLD, 12)
+          if (selected) {
+            putClientProperty("preserveForeground", true)
+            foreground = pal.accentCyan
+          } else {
+            putClientProperty("preserveForeground", false)
+          }
+          DesktopThemeHelper.styleButton(
+            btn = this,
+            pal = pal,
+            isActive = selected,
+            accentBorder = if (selected) pal.accentCyan else null,
+            padding = Insets(6, 12, 6, 12),
           )
           addActionListener {
             controller.selectStation(icao)
-            if (currentCenterView == DesktopCenterView.TRENDS) {
-              controller.selectD3TrendAirport(icao)
-            } else if (currentCenterView == DesktopCenterView.MAP) {
-              mapPanel.selectPin(icao)
-            }
+            setCenterView(DesktopCenterView.BOARD)
           }
         }
-        myAirportsChipsPanel.add(chip)
+        val rmBtn = JButton("×").apply {
+          font = Font("Segoe UI", Font.BOLD, 12)
+          toolTipText = "Удалить $icao из избранного"
+          DesktopThemeHelper.styleButton(
+            btn = this,
+            pal = pal,
+            padding = Insets(6, 7, 6, 7),
+          )
+          addActionListener { controller.removeFavorite(icao) }
+        }
+        chipGroup.add(chip)
+        chipGroup.add(rmBtn)
+        myAirportsChipsPanel.add(chipGroup)
       }
     }
-    myAirportsBar.revalidate()
-    myAirportsBar.repaint()
+    myAirportsViewPanel.revalidate()
+    myAirportsViewPanel.repaint()
   }
 
   private fun rebuildRecentSearchesBar(state: DesktopUiState) {
@@ -766,13 +866,18 @@ class MeteoDesktopFrame(
       val label = if (city != null) "$icao · $city" else icao
       val chip = JButton(label).apply {
         font = Font("Segoe UI", Font.BOLD, 11)
-        isFocusPainted = false
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        background = if (selected) pal.buttonActiveBackground else pal.fieldBackground
-        foreground = if (selected) pal.metarAmber else pal.textPrimary
-        border = BorderFactory.createCompoundBorder(
-          BorderFactory.createLineBorder(if (selected) pal.metarAmber else pal.border, if (selected) 2 else 1),
-          BorderFactory.createEmptyBorder(2, 8, 2, 8),
+        if (selected) {
+          putClientProperty("preserveForeground", true)
+          foreground = pal.metarAmber
+        } else {
+          putClientProperty("preserveForeground", false)
+        }
+        DesktopThemeHelper.styleButton(
+          btn = this,
+          pal = pal,
+          isActive = selected,
+          accentBorder = if (selected) pal.metarAmber else null,
+          padding = Insets(2, 8, 2, 8),
         )
         addActionListener {
           controller.selectStation(icao)
@@ -807,11 +912,6 @@ class MeteoDesktopFrame(
         BorderFactory.createLineBorder(pal.border, 1),
         BorderFactory.createEmptyBorder(5, 10, 5, 10),
       )
-      myAirportsBar.background = pal.panelSurface
-      myAirportsBar.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(pal.border, 1),
-        BorderFactory.createEmptyBorder(3, 10, 3, 10),
-      )
       listOf(searchField, latField, lonField).forEach { tf ->
         tf.background = pal.fieldBackground
         tf.foreground = pal.textPrimary
@@ -824,7 +924,9 @@ class MeteoDesktopFrame(
       detectedLocationLabel.text = state.detectedLocationSummary?.let { "Гео: $it" }.orEmpty()
       detectedLocationLabel.foreground = pal.accentCyan
       applyLabelTheme(searchBarPanel, pal)
-      applyLabelTheme(myAirportsBar, pal)
+      DesktopThemeHelper.styleComboBox(stationCombo, pal)
+      DesktopThemeHelper.styleComboBox(sourceModeCombo, pal)
+      DesktopThemeHelper.styleComboBox(leftRunwayCombo, pal)
       rebuildRecentSearchesBar(state)
       rebuildMyAirportsBar(state)
 
@@ -987,18 +1089,12 @@ class MeteoDesktopFrame(
       }
       qfeField.text = w.qfeMmHg?.let { "$it мм / ${w.qfeHpa ?: "--"} гПа" } ?: "--"
       sunField.text = "${w.sunriseLocal} / ${w.sunsetLocal}"
-      val perf = AviationPerformanceCalculator.calculate(state.station, w)
-      val paText = perf.pressureAltitudeFeet?.let { "${it}ft" } ?: "--"
-      val daText = perf.densityAltitudeFeet?.let { "${it}ft" } ?: "--"
-      val isaText = perf.isaDeviationC?.let { if (it >= 0) "+${it}°" else "${it}°" } ?: "--"
-      val rhText = perf.relativeHumidityPercent?.let { "$it%" } ?: "--"
-      perfField.text = "DA $daText · PA $paText · МСА $isaText · RH $rhText · ${perf.advisorySummary()}"
       sourceField.text = w.sourceLabel
       windTrendPanel.updateData(state.windTrend, state.windUnit, pal)
 
       listOf(
         visField, cloudsField, ceilingField, weatherField,
-        tempField, dewField, qnhField, qfeField, sunField, perfField, sourceField,
+        tempField, dewField, qnhField, qfeField, sunField, sourceField,
         leftHeadwindField, leftCrosswindField, rightHeadwindField, rightCrosswindField,
       ).forEach { tf ->
         tf.background = pal.fieldBackground
@@ -1007,11 +1103,6 @@ class MeteoDesktopFrame(
           BorderFactory.createLineBorder(pal.border, 1),
           BorderFactory.createEmptyBorder(2, 6, 2, 6),
         )
-      }
-      if (perf.icingRiskWarning || perf.fogRiskWarning) {
-        perfField.foreground = pal.tailwindNegative
-      } else if (perf.highDensityAltitudeWarning) {
-        perfField.foreground = pal.metarAmber
       }
       applyLabelTheme(centerPanel, pal)
       applyLabelTheme(boardPanel, pal)
@@ -1034,48 +1125,48 @@ class MeteoDesktopFrame(
     val pal = state.palette
     val standardButtons = listOf(
       titleButton, favoriteButton, autoRefreshBadgeButton, refreshButton, nightButton,
-      unitSystemButton, windUnitButton, pressureUnitButton, mapButton, trendsButton,
-      dualRoseButton, decoderButton, pressureConvButton, tableButton, exportButton,
+      unitSystemButton, windUnitButton, pressureUnitButton, myAirportsButton, mapButton, trendsButton,
+      dualRoseButton, crosswindButton, decoderButton, pressureConvButton, tableButton, shareButton, exportButton,
       alertsButton, logButton, presetsButton, serverButton,
       coordToggleBtn, coordFetchBtn,
       searchClearBtn, recentSearchesClearBtn, alertBannerOpenBtn, alertBannerOkBtn, bannerOkBtn,
+      myAirportsBackBtn, myAirportsOpenMapBtn, myAirportsToggleCurrentBtn, myAirportsAddFavBtn,
     )
     standardButtons.forEach { btn ->
-      btn.isFocusPainted = false
-      btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-      btn.background = pal.buttonBackground
-      btn.foreground = pal.textPrimary
-      btn.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(pal.border, 1),
-        BorderFactory.createEmptyBorder(4, 8, 4, 8),
+      btn.putClientProperty("preserveForeground", false)
+      DesktopThemeHelper.styleButton(
+        btn = btn,
+        pal = pal,
+        padding = Insets(4, 8, 4, 8),
       )
     }
+    favoriteButton.putClientProperty("preserveForeground", true)
     favoriteButton.foreground = if (state.isCurrentStationFavorite) pal.metarAmber else pal.textMuted
+    autoRefreshBadgeButton.putClientProperty("preserveForeground", true)
     autoRefreshBadgeButton.foreground = if (state.autoRefreshEnabled) pal.accentCyan else pal.textMuted
+    alertsButton.putClientProperty("preserveForeground", true)
     alertsButton.foreground = if (state.unreadAlertCount > 0) pal.tailwindNegative else pal.textPrimary
+
     if (currentCenterView == DesktopCenterView.MAP) {
-      mapButton.background = pal.buttonActiveBackground
-      mapButton.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(pal.metarAmber, 2),
-        BorderFactory.createEmptyBorder(4, 8, 4, 8),
-      )
+      DesktopThemeHelper.styleButton(mapButton, pal, isActive = true, accentBorder = pal.metarAmber, padding = Insets(4, 8, 4, 8))
     }
     if (currentCenterView == DesktopCenterView.TRENDS) {
-      trendsButton.background = pal.buttonActiveBackground
-      trendsButton.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(pal.accentCyan, 2),
-        BorderFactory.createEmptyBorder(4, 8, 4, 8),
-      )
+      DesktopThemeHelper.styleButton(trendsButton, pal, isActive = true, accentBorder = pal.accentCyan, padding = Insets(4, 8, 4, 8))
+    }
+    if (currentCenterView == DesktopCenterView.MY_AIRPORTS) {
+      DesktopThemeHelper.styleButton(myAirportsButton, pal, isActive = true, accentBorder = pal.accentCyan, padding = Insets(4, 8, 4, 8))
     }
     if (coordEntryPanel.isVisible) {
-      coordToggleBtn.background = pal.buttonActiveBackground
+      coordToggleBtn.putClientProperty("preserveForeground", true)
       coordToggleBtn.foreground = pal.accentCyan
+      DesktopThemeHelper.styleButton(coordToggleBtn, pal, isActive = true, padding = Insets(4, 8, 4, 8))
     }
-    searchSubmitBtn.isFocusPainted = false
-    searchSubmitBtn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-    searchSubmitBtn.background = pal.metarAmber
-    searchSubmitBtn.foreground = Color.WHITE
-    searchSubmitBtn.border = BorderFactory.createEmptyBorder(5, 12, 5, 12)
+    DesktopThemeHelper.styleAccentButton(
+      btn = searchSubmitBtn,
+      bg = pal.metarAmber,
+      fg = Color.WHITE,
+      padding = Insets(5, 12, 5, 12),
+    )
   }
 
   private fun updateRunwayPanel(

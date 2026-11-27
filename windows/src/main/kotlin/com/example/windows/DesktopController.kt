@@ -10,6 +10,7 @@ import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryUnitPreferencesStorage
 import com.example.data.InMemoryWeatherAlertStorage
+import com.example.data.InMemoryWeatherCacheRepository
 import com.example.data.InMemoryWeatherHistoryStorage
 import com.example.data.InMemoryWeatherPresetStorage
 import com.example.data.InMemoryWindHistoryStorage
@@ -21,9 +22,13 @@ import com.example.data.ServerConfigStorage
 import com.example.data.UnitPreferences
 import com.example.data.UnitPreferencesStorage
 import com.example.data.WeatherAlertStorage
+import com.example.data.WeatherCacheRepository
 import com.example.data.WeatherHistoryStorage
 import com.example.data.WeatherPresetStorage
 import com.example.data.WindHistoryStorage
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
 import com.example.domain.AviationWeatherParser
 import com.example.domain.UnitConverter
 import com.example.domain.WeatherChangeDetector
@@ -88,6 +93,7 @@ data class DesktopUiState(
   val detectedLocationSummary: String? = null,
   val isCheckingFavorites: Boolean = false,
   val isLoading: Boolean = false,
+  val isOfflineCachedWeather: Boolean = false,
   val metarFetchSeq: Long = 0L,
   val isRefreshingMap: Boolean = false,
   val loadingMapIcao: String? = null,
@@ -127,6 +133,7 @@ class DesktopController(
   private val unitPreferencesStorage: UnitPreferencesStorage = InMemoryUnitPreferencesStorage(),
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
   private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
+  private val weatherCacheRepository: WeatherCacheRepository = InMemoryWeatherCacheRepository(),
 ) {
   private val repository = AviationWeatherRepository()
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -206,9 +213,54 @@ class DesktopController(
       TimeUnit.SECONDS,
     )
 
+    preloadCachedWeather()
+
     if (autoFetch) {
       rescheduleAutoRefreshLoop()
       fetchLiveForStation(defaultStation)
+    }
+  }
+
+  private fun preloadCachedWeather() {
+    scope.launch {
+      val cachedMap = runCatching { weatherCacheRepository.getAllCachedWeather() }.getOrDefault(emptyMap())
+      if (cachedMap.isEmpty()) return@launch
+      val decodedByIcao = cachedMap.mapValues { (_, record) ->
+        resolvedStationsByIcao.putIfAbsent(record.station.icao, record.station)
+        val cachedLabel = if (record.sourceLabel.contains("кэш", ignoreCase = true)) {
+          record.sourceLabel
+        } else {
+          "кэш (${record.sourceLabel})"
+        }
+        AviationWeatherParser.parse(
+          rawMetarInput = record.rawMetar,
+          rawTafInput = record.rawTaf,
+          station = resolvedStationsByIcao[record.station.icao] ?: record.station,
+          sourceLabel = cachedLabel,
+        )
+      }
+      updateState { cur ->
+        val mergedMap = decodedByIcao + cur.mapWeatherByIcao
+        val isPlaceholder = cur.weather.observationTimeUtc == "--:--Z" ||
+          cur.weather.rawMetar.contains("--:--Z") ||
+          cur.weather.rawMetar.contains("нет данных", ignoreCase = true) ||
+          cur.weather.rawMetar.isBlank()
+        val cachedCur = decodedByIcao[cur.station.icao]
+        if (isPlaceholder && cachedCur != null) {
+          val resolved = resolvedStationsByIcao[cur.station.icao] ?: cur.station
+          val (pCalc, rCalc) = computeRunwayCalcs(resolved.runways.getOrElse(cur.selectedRunwayPairIndex) { resolved.runways.first() }, cachedCur)
+          cur.copy(
+            station = resolved,
+            weather = cachedCur,
+            primaryRunwayCalc = pCalc,
+            reciprocalRunwayCalc = rCalc,
+            isOfflineCachedWeather = true,
+            mapWeatherByIcao = mergedMap,
+          )
+        } else {
+          cur.copy(mapWeatherByIcao = mergedMap)
+        }
+      }
     }
   }
 
@@ -480,6 +532,7 @@ class DesktopController(
       result.onSuccess { fetched ->
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHist = snapshotAllHistory24h()
@@ -513,6 +566,7 @@ class DesktopController(
             mapStations = buildMapStationList(resolved, cur.favoriteIcaos),
             mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            isOfflineCachedWeather = false,
             metarFetchSeq = cur.metarFetchSeq + 1L,
             statusBanner = null,
             liveLocalClock = nowUtc,
@@ -522,12 +576,33 @@ class DesktopController(
         evaluateFavoriteObservation(resolved, fetched.weather)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки погоды по координатам"
+        val fallbackRecord = runCatching { weatherCacheRepository.getCachedWeather(state.station.icao) }.getOrNull()
         updateState { cur ->
-          cur.copy(
-            isLoading = false,
-            statusBanner = msg,
-            logs = appendLog(cur.logs, "ERR", msg, cur.station),
-          )
+          if (fallbackRecord != null) {
+            val cachedWeather = AviationWeatherParser.parse(
+              rawMetarInput = fallbackRecord.rawMetar,
+              rawTafInput = fallbackRecord.rawTaf,
+              station = cur.station,
+              sourceLabel = "офлайн-кэш (${formatCacheTimestamp(fallbackRecord.cachedAtMillis)})",
+            )
+            val pair = cur.station.runways.getOrElse(cur.selectedRunwayPairIndex) { cur.station.runways.first() }
+            val (pCalc, rCalc) = computeRunwayCalcs(pair, cachedWeather)
+            cur.copy(
+              weather = cachedWeather,
+              primaryRunwayCalc = pCalc,
+              reciprocalRunwayCalc = rCalc,
+              isLoading = false,
+              isOfflineCachedWeather = true,
+              statusBanner = "Нет связи с сервером — показан последний кэш от ${formatCacheTimestamp(fallbackRecord.cachedAtMillis)}",
+              logs = appendLog(cur.logs, "ERR", msg, cur.station),
+            )
+          } else {
+            cur.copy(
+              isLoading = false,
+              statusBanner = msg,
+              logs = appendLog(cur.logs, "ERR", msg, cur.station),
+            )
+          }
         }
       }
     }
@@ -809,6 +884,7 @@ class DesktopController(
         repository.fetchLiveWeather(station, state.serverConfig).onSuccess { fetched ->
           val resolved = fetched.resolvedStation
           resolvedStationsByIcao[resolved.icao] = resolved
+          runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
           val favTrend = recordWindObservation(resolved.icao, fetched.weather)
           val favHist = recordWeatherHistory(resolved.icao, fetched.weather)
           val allHist = snapshotAllHistory24h()
@@ -911,12 +987,16 @@ class DesktopController(
     updateState { cur ->
       cur.copy(
         serverConfig = normalized,
-        logs = appendLog(cur.logs, "NET", "Сохранены настройки сервера (${normalized.resolvedMode().displayName}): ${normalized.url}", cur.station),
+        logs = appendLog(cur.logs, "NET", "Сохранены настройки сервера (${normalized.resolvedMode().displayName})", cur.station),
       )
     }
     if (fetchNow) {
       fetchLiveForStation(state.station)
     }
+  }
+
+  fun showStatusMessage(message: String) {
+    updateState { it.copy(statusBanner = message) }
   }
 
   fun dismissBanner() {
@@ -969,11 +1049,36 @@ class DesktopController(
 
   private fun fetchLiveForStation(station: AirportStation) {
     scope.launch {
-      updateState { it.copy(isLoading = true, statusBanner = null) }
+      val preCachedRecord = runCatching { weatherCacheRepository.getCachedWeather(station.icao) }.getOrNull()
+      if (preCachedRecord != null) {
+        val preCachedWeather = AviationWeatherParser.parse(
+          rawMetarInput = preCachedRecord.rawMetar,
+          rawTafInput = preCachedRecord.rawTaf,
+          station = station,
+          sourceLabel = "кэш (${formatCacheTimestamp(preCachedRecord.cachedAtMillis)})",
+        )
+        updateState { cur ->
+          if (!cur.station.icao.equals(station.icao, ignoreCase = true)) return@updateState cur
+          val shouldPreload = cur.weather.rawMetar.contains("--:--Z") || cur.weather.rawMetar.isBlank()
+          val pair = cur.station.runways.getOrElse(cur.selectedRunwayPairIndex) { cur.station.runways.first() }
+          val (pCalc, rCalc) = computeRunwayCalcs(pair, preCachedWeather)
+          cur.copy(
+            weather = if (shouldPreload) preCachedWeather else cur.weather,
+            primaryRunwayCalc = if (shouldPreload) pCalc else cur.primaryRunwayCalc,
+            reciprocalRunwayCalc = if (shouldPreload) rCalc else cur.reciprocalRunwayCalc,
+            isLoading = true,
+            isOfflineCachedWeather = if (shouldPreload) true else cur.isOfflineCachedWeather,
+            statusBanner = null,
+          )
+        }
+      } else {
+        updateState { it.copy(isLoading = true, statusBanner = null) }
+      }
       val result = repository.fetchLiveWeather(station, state.serverConfig)
       result.onSuccess { fetched ->
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHist = snapshotAllHistory24h()
@@ -997,6 +1102,7 @@ class DesktopController(
             mapStations = buildMapStationList(resolved, cur.favoriteIcaos),
             mapWeatherByIcao = cur.mapWeatherByIcao + (resolved.icao to fetched.weather),
             isLoading = false,
+            isOfflineCachedWeather = false,
             metarFetchSeq = cur.metarFetchSeq + 1L,
             statusBanner = null,
             liveLocalClock = nowUtc,
@@ -1006,12 +1112,34 @@ class DesktopController(
         evaluateFavoriteObservation(resolved, fetched.weather)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки METAR"
+        val fallbackRecord = preCachedRecord ?: runCatching { weatherCacheRepository.getCachedWeather(station.icao) }.getOrNull()
         updateState { cur ->
-          cur.copy(
-            isLoading = false,
-            statusBanner = msg,
-            logs = appendLog(cur.logs, "ERR", msg, cur.station),
-          )
+          if (fallbackRecord != null && cur.station.icao.equals(station.icao, ignoreCase = true)) {
+            val cachedWeather = AviationWeatherParser.parse(
+              rawMetarInput = fallbackRecord.rawMetar,
+              rawTafInput = fallbackRecord.rawTaf,
+              station = cur.station,
+              sourceLabel = "офлайн-кэш (${formatCacheTimestamp(fallbackRecord.cachedAtMillis)})",
+            )
+            val pair = cur.station.runways.getOrElse(cur.selectedRunwayPairIndex) { cur.station.runways.first() }
+            val (pCalc, rCalc) = computeRunwayCalcs(pair, cachedWeather)
+            val cacheBanner = "Нет интернета/ответа сервера — показан кэш от ${formatCacheTimestamp(fallbackRecord.cachedAtMillis)}"
+            cur.copy(
+              weather = cachedWeather,
+              primaryRunwayCalc = pCalc,
+              reciprocalRunwayCalc = rCalc,
+              isLoading = false,
+              isOfflineCachedWeather = true,
+              statusBanner = cacheBanner,
+              logs = appendLog(cur.logs, "ERR", "$msg -> загружен кэш ${station.icao}", cur.station),
+            )
+          } else {
+            cur.copy(
+              isLoading = false,
+              statusBanner = msg,
+              logs = appendLog(cur.logs, "ERR", msg, cur.station),
+            )
+          }
         }
       }
     }
@@ -1244,6 +1372,7 @@ class DesktopController(
       repository.fetchLiveWeather(target, state.serverConfig).onSuccess { fetched ->
         val resolved = fetched.resolvedStation
         resolvedStationsByIcao[resolved.icao] = resolved
+        runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
         val nextHist = recordWeatherHistory(resolved.icao, fetched.weather)
         val allHist = snapshotAllHistory24h()
@@ -1293,6 +1422,7 @@ class DesktopController(
         res.onSuccess { fetched ->
           loadedCount++
           resolvedStationsByIcao[icao] = fetched.resolvedStation
+          runCatching { weatherCacheRepository.saveWeather(fetched.resolvedStation, fetched.weather) }
           updatedWeather[icao] = fetched.weather
           recordWindObservation(icao, fetched.weather)
           recordWeatherHistory(icao, fetched.weather)
@@ -1339,6 +1469,14 @@ class DesktopController(
     }
     combined[activeStation.icao] = resolvedStationsByIcao[activeStation.icao] ?: activeStation
     return combined.values.toList()
+  }
+
+  private fun formatCacheTimestamp(epochMillis: Long): String {
+    if (epochMillis <= 0L) return "--:--Z"
+    val fmt = SimpleDateFormat("dd.MM HH:mm'Z'", Locale.US).apply {
+      timeZone = TimeZone.getTimeZone("UTC")
+    }
+    return fmt.format(Date(epochMillis))
   }
 
   private fun appendLog(

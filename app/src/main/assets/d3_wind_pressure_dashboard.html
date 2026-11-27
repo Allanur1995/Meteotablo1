@@ -83,6 +83,9 @@
             windAreaBottom: 'rgba(255, 152, 26, 0.02)',
             gustLine: '#FF5252',
             qnhLine: '#38BDF8',
+            visLine: '#10B981',
+            visAreaTop: 'rgba(16, 185, 129, 0.24)',
+            visAreaBottom: 'rgba(16, 185, 129, 0.02)',
             isaLine: 'rgba(52, 211, 153, 0.55)',
             tooltipBg: 'rgba(13, 21, 32, 0.94)',
             tooltipBorder: '#FF981A',
@@ -100,6 +103,9 @@
           windAreaBottom: 'rgba(217, 119, 6, 0.02)',
           gustLine: '#DC2626',
           qnhLine: '#0284C7',
+          visLine: '#059669',
+          visAreaTop: 'rgba(5, 150, 105, 0.20)',
+          visAreaBottom: 'rgba(5, 150, 105, 0.02)',
           isaLine: 'rgba(5, 150, 105, 0.55)',
           tooltipBg: 'rgba(248, 250, 252, 0.95)',
           tooltipBorder: '#D97706',
@@ -137,6 +143,7 @@
           .style('color', pal.text)
           .style('border-color', pal.tooltipBorder);
 
+        const mode = payload.mode === 'WIND_QNH' ? 'WIND_QNH' : 'WIND_VIS';
         const points = (payload.points || [])
           .map(p => ({
             date: new Date(p.ts),
@@ -144,7 +151,10 @@
             timeUtc: p.timeUtc || '',
             wind: typeof p.wind === 'number' ? p.wind : null,
             gust: typeof p.gust === 'number' ? p.gust : null,
-            qnh: typeof p.qnh === 'number' ? p.qnh : null
+            qnh: typeof p.qnh === 'number' ? p.qnh : null,
+            visMeters: typeof p.visMeters === 'number' ? p.visMeters : null,
+            visKm: typeof p.visKm === 'number' ? p.visKm : null,
+            cavok: Boolean(p.cavok)
           }))
           .sort((a, b) => a.ts - b.ts);
 
@@ -152,7 +162,7 @@
           root.append('div')
             .attr('class', 'empty-msg')
             .style('color', pal.muted)
-            .text('Нет архивных точек ветра и давления за 24ч для ' + (payload.icao || 'станции'));
+            .text('Нет архивных точек за 24ч для ' + (payload.icao || 'станции'));
           tooltip.style('opacity', 0);
           return;
         }
@@ -175,6 +185,13 @@
           .attr('x2', '0%').attr('y2', '100%');
         windGrad.append('stop').attr('offset', '0%').attr('stop-color', pal.windAreaTop);
         windGrad.append('stop').attr('offset', '100%').attr('stop-color', pal.windAreaBottom);
+
+        const visGrad = defs.append('linearGradient')
+          .attr('id', 'd3VisAreaGrad')
+          .attr('x1', '0%').attr('y1', '0%')
+          .attr('x2', '0%').attr('y2', '100%');
+        visGrad.append('stop').attr('offset', '0%').attr('stop-color', pal.visAreaTop);
+        visGrad.append('stop').attr('offset', '100%').attr('stop-color', pal.visAreaBottom);
 
         const g = svg.append('g')
           .attr('transform', `translate(${margin.left},${margin.top})`);
@@ -199,21 +216,27 @@
           .nice(4)
           .range([innerH, 0]);
 
-        // Right Y scale: Barometric Pressure QNH
+        // Right Y scale: Visibility (km) or Barometric Pressure QNH
         const qnhPoints = points.filter(p => p.qnh !== null);
-        const qnhVals = qnhPoints.map(p => p.qnh);
+        const visPoints = points.filter(p => p.visKm !== null);
         const isInHg = payload.pressureDecimals > 0;
-        let qMin = qnhVals.length ? d3.min(qnhVals) : (isInHg ? 29.70 : 1005);
-        let qMax = qnhVals.length ? d3.max(qnhVals) : (isInHg ? 30.20 : 1022);
-        const qPad = isInHg ? Math.max(0.06, (qMax - qMin) * 0.25) : Math.max(3, (qMax - qMin) * 0.25);
-        if (qMax - qMin < (isInHg ? 0.08 : 3)) {
-          qMin -= qPad;
-          qMax += qPad;
+        let yRightScale;
+        if (mode === 'WIND_VIS') {
+          yRightScale = d3.scaleLinear().domain([0, 10]).range([innerH, 0]);
         } else {
-          qMin -= qPad * 0.6;
-          qMax += qPad * 0.6;
+          const qnhVals = qnhPoints.map(p => p.qnh);
+          let qMin = qnhVals.length ? d3.min(qnhVals) : (isInHg ? 29.70 : 1005);
+          let qMax = qnhVals.length ? d3.max(qnhVals) : (isInHg ? 30.20 : 1022);
+          const qPad = isInHg ? Math.max(0.06, (qMax - qMin) * 0.25) : Math.max(3, (qMax - qMin) * 0.25);
+          if (qMax - qMin < (isInHg ? 0.08 : 3)) {
+            qMin -= qPad;
+            qMax += qPad;
+          } else {
+            qMin -= qPad * 0.6;
+            qMax += qPad * 0.6;
+          }
+          yRightScale = d3.scaleLinear().domain([qMin, qMax]).nice(4).range([innerH, 0]);
         }
-        const yQnh = d3.scaleLinear().domain([qMin, qMax]).nice(4).range([innerH, 0]);
 
         // Horizontal gridlines keyed to wind axis
         g.append('g')
@@ -228,16 +251,26 @@
           .attr('stroke', pal.grid);
         g.selectAll('.grid .domain').remove();
 
-        // Optional ISA 1013 hPa / 29.92 inHg reference line
-        const isaVal = isInHg ? 29.92 : 1013.25;
-        if (isaVal >= yQnh.domain()[0] && isaVal <= yQnh.domain()[1]) {
-          const isaY = yQnh(isaVal);
+        // Reference line: VFR 5 km (WIND_VIS) or ISA 1013 hPa (WIND_QNH)
+        if (mode === 'WIND_VIS') {
+          const vfrY = yRightScale(5.0);
           g.append('line')
             .attr('x1', 0).attr('x2', innerW)
-            .attr('y1', isaY).attr('y2', isaY)
+            .attr('y1', vfrY).attr('y2', vfrY)
             .attr('stroke', pal.isaLine)
             .attr('stroke-width', 1)
             .attr('stroke-dasharray', '6 4');
+        } else {
+          const isaVal = isInHg ? 29.92 : 1013.25;
+          if (isaVal >= yRightScale.domain()[0] && isaVal <= yRightScale.domain()[1]) {
+            const isaY = yRightScale(isaVal);
+            g.append('line')
+              .attr('x1', 0).attr('x2', innerW)
+              .attr('y1', isaY).attr('y2', isaY)
+              .attr('stroke', pal.isaLine)
+              .attr('stroke-width', 1)
+              .attr('stroke-dasharray', '6 4');
+          }
         }
 
         // Bottom time axis
@@ -258,16 +291,16 @@
         yLeftG.selectAll('path, line').attr('stroke', pal.axis);
         yLeftG.selectAll('text').attr('fill', pal.windLine);
 
-        // Right pressure axis
-        const yRightAxis = d3.axisRight(yQnh)
-          .ticks(4)
-          .tickFormat(d => isInHg ? Number(d).toFixed(2) : Math.round(d));
+        // Right axis (Visibility km or QNH)
+        const yRightAxis = mode === 'WIND_VIS'
+          ? d3.axisRight(yRightScale).ticks(5).tickFormat(d => `${d}км`)
+          : d3.axisRight(yRightScale).ticks(4).tickFormat(d => isInHg ? Number(d).toFixed(2) : Math.round(d));
         const yRightG = g.append('g')
           .attr('class', 'axis')
           .attr('transform', `translate(${innerW},0)`)
           .call(yRightAxis);
         yRightG.selectAll('path, line').attr('stroke', pal.axis);
-        yRightG.selectAll('text').attr('fill', pal.qnhLine);
+        yRightG.selectAll('text').attr('fill', mode === 'WIND_VIS' ? pal.visLine : pal.qnhLine);
 
         // Wind Area + Line
         const windAreaGen = d3.area()
@@ -311,21 +344,64 @@
             .attr('d', gustLineGen);
         }
 
-        // Barometric Pressure QNH Line
-        if (qnhPoints.length >= 2) {
-          const qnhLineGen = d3.line()
-            .x(d => xScale(d.date))
-            .y(d => yQnh(d.qnh))
-            .curve(d3.curveMonotoneX);
-          g.append('path')
-            .datum(qnhPoints)
-            .attr('fill', 'none')
-            .attr('stroke', pal.qnhLine)
-            .attr('stroke-width', 2.2)
-            .attr('d', qnhLineGen);
+        if (mode === 'WIND_VIS') {
+          if (visPoints.length >= 2) {
+            const visAreaGen = d3.area()
+              .x(d => xScale(d.date))
+              .y0(innerH)
+              .y1(d => yRightScale(d.visKm))
+              .curve(d3.curveMonotoneX);
+            const visLineGen = d3.line()
+              .x(d => xScale(d.date))
+              .y(d => yRightScale(d.visKm))
+              .curve(d3.curveMonotoneX);
+            g.append('path')
+              .datum(visPoints)
+              .attr('fill', 'url(#d3VisAreaGrad)')
+              .attr('d', visAreaGen);
+            g.append('path')
+              .datum(visPoints)
+              .attr('fill', 'none')
+              .attr('stroke', pal.visLine)
+              .attr('stroke-width', 2.2)
+              .attr('d', visLineGen);
+          }
+          g.selectAll('.vis-dot')
+            .data(visPoints)
+            .enter()
+            .append('circle')
+            .attr('cx', d => xScale(d.date))
+            .attr('cy', d => yRightScale(d.visKm))
+            .attr('r', 2.8)
+            .attr('fill', pal.visLine)
+            .attr('stroke', pal.dotBg)
+            .attr('stroke-width', 1);
+        } else {
+          if (qnhPoints.length >= 2) {
+            const qnhLineGen = d3.line()
+              .x(d => xScale(d.date))
+              .y(d => yRightScale(d.qnh))
+              .curve(d3.curveMonotoneX);
+            g.append('path')
+              .datum(qnhPoints)
+              .attr('fill', 'none')
+              .attr('stroke', pal.qnhLine)
+              .attr('stroke-width', 2.2)
+              .attr('d', qnhLineGen);
+          }
+          g.selectAll('.qnh-dot')
+            .data(qnhPoints)
+            .enter()
+            .append('circle')
+            .attr('cx', d => xScale(d.date))
+            .attr('cy', d => yRightScale(d.qnh))
+            .attr('r', 2.6)
+            .attr('fill', pal.qnhLine)
+            .attr('stroke', pal.dotBg)
+            .attr('stroke-width', 1);
         }
 
-        // Data point markers
+        // Wind data point markers
         g.selectAll('.wind-dot')
           .data(points.filter(p => p.wind !== null))
           .enter()
@@ -334,17 +410,6 @@
           .attr('cy', d => yWind(d.wind))
           .attr('r', 2.6)
           .attr('fill', pal.windLine)
-          .attr('stroke', pal.dotBg)
-          .attr('stroke-width', 1);
-
-        g.selectAll('.qnh-dot')
-          .data(qnhPoints)
-          .enter()
-          .append('circle')
-          .attr('cx', d => xScale(d.date))
-          .attr('cy', d => yQnh(d.qnh))
-          .attr('r', 2.6)
-          .attr('fill', pal.qnhLine)
           .attr('stroke', pal.dotBg)
           .attr('stroke-width', 1);
 
@@ -358,16 +423,25 @@
 
         const bisect = d3.bisector(d => d.date).left;
 
+        function fmtVis(pt) {
+          if (pt.cavok || (pt.visMeters !== null && pt.visMeters >= 10000)) return '≥10 км';
+          if (pt.visMeters === null) return '--';
+          if (pt.visMeters >= 1000) return `${(pt.visMeters / 1000).toFixed(1)} км`;
+          return `${pt.visMeters} м`;
+        }
+
         function showPoint(pt) {
           if (!pt) return;
           const xPos = xScale(pt.date);
           focusLine.attr('x1', xPos).attr('x2', xPos).style('opacity', 1);
           const wText = pt.wind !== null ? `${Math.round(pt.wind)} ${payload.windUnit}` : '--';
           const gText = pt.gust !== null ? ` (G${Math.round(pt.gust)})` : '';
-          const qText = pt.qnh !== null ? `${formatNum(pt.qnh, payload.pressureDecimals)} ${payload.pressureUnit}` : '--';
+          const rightText = mode === 'WIND_VIS'
+            ? `Вид. ${fmtVis(pt)}`
+            : `QNH ${pt.qnh !== null ? `${formatNum(pt.qnh, payload.pressureDecimals)} ${payload.pressureUnit}` : '--'}`;
           tooltip
             .style('opacity', 1)
-            .html(`<b>${pt.timeUtc}</b> · Ветер ${wText}${gText} · QNH ${qText}`);
+            .html(`<b>${pt.timeUtc}</b> · Ветер ${wText}${gText} · ${rightText}`);
         }
 
         g.append('rect')

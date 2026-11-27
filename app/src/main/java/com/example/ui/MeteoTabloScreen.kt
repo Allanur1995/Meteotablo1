@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,6 +44,7 @@ import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.domain.UnitConverter
 import com.example.domain.WeatherExportPayload
+import com.example.domain.WeatherReportFormatter
 import com.example.model.PressureUnit
 import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
@@ -49,13 +52,12 @@ import com.example.model.WeatherAlertSeverity
 import com.example.model.WindSpeedUnit
 import com.example.ui.components.AirportSearchBar
 import com.example.ui.components.CenterWeatherPanel
-import com.example.ui.components.D3SavedAirportTrendsDashboard
+import com.example.ui.components.CrosswindCalculatorDialog
 import com.example.ui.components.DualRunwayWindRosePanel
 import com.example.ui.components.ExportWeatherDialog
 import com.example.ui.components.LogViewerDialog
 import com.example.ui.components.MetarTafFooter
 import com.example.ui.components.MeteoTopToolbar
-import com.example.ui.components.MyAirportsBar
 import com.example.ui.components.PressureConversionUtilityDialog
 import com.example.ui.components.RunwayColumnPanel
 import com.example.ui.components.StationAndMetarDialog
@@ -170,6 +172,7 @@ fun MeteoTabloContent(
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
+  val context = LocalContext.current
   var showStationDialog by remember { mutableStateOf(false) }
   var stationDialogInitialTab by remember { mutableIntStateOf(0) }
   var showLogDialog by remember { mutableStateOf(false) }
@@ -183,6 +186,34 @@ fun MeteoTabloContent(
   var showDecoderScreen by remember { mutableStateOf(false) }
   var showPressureUtility by remember { mutableStateOf(false) }
   var showDualWindRose by remember { mutableStateOf(false) }
+  var showMyAirportsScreen by remember { mutableStateOf(false) }
+  var showD3TrendsScreen by remember { mutableStateOf(false) }
+  var showCrosswindCalculator by remember { mutableStateOf(false) }
+
+  fun launchWeatherShareSheet() {
+    val payload = WeatherExportPayload(
+      station = uiState.station,
+      weather = uiState.weather,
+      primaryRunwayCalc = uiState.primaryRunwayCalc,
+      reciprocalRunwayCalc = uiState.reciprocalRunwayCalc,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      windTrend = uiState.windTrend,
+      qnhTrend24h = uiState.qnhTrend24h,
+      weatherHistory24h = uiState.weatherHistory24h,
+    )
+    val summaryText = WeatherReportFormatter.buildTextSummary(payload)
+    runCatching {
+      val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "METEO ${uiState.station.icao} (${uiState.weather.observationTimeUtc})")
+        putExtra(Intent.EXTRA_TEXT, summaryText)
+      }
+      context.startActivity(
+        Intent.createChooser(shareIntent, "Поделиться сводкой ${uiState.station.icao}"),
+      )
+    }
+  }
 
   if (showDecoderScreen) {
     MetarTafDecoderScreen(
@@ -382,6 +413,51 @@ fun MeteoTabloContent(
       onToggleFavorite = onToggleFavorite,
       modifier = modifier,
     )
+  } else if (showMyAirportsScreen) {
+    MyAirportsScreen(
+      currentStation = uiState.station,
+      favoriteIcaos = uiState.favoriteIcaos,
+      weatherByIcao = uiState.mapWeatherByIcao,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      isNightMode = uiState.isNightMode,
+      isFullscreen = uiState.isFullscreen,
+      onSelectStation = onSelectStation,
+      onToggleCurrentAirport = { onToggleFavorite(uiState.station.icao) },
+      onAddAirport = onAddFavorite,
+      onRemoveAirport = onRemoveFavorite,
+      onOpenMap = {
+        showMyAirportsScreen = false
+        showMapScreen = true
+        onRefreshMapWeather()
+      },
+      onBack = { showMyAirportsScreen = false },
+      modifier = modifier,
+    )
+  } else if (showD3TrendsScreen) {
+    D3TrendsScreen(
+      currentStation = uiState.station,
+      currentWeather = uiState.weather,
+      favoriteIcaos = uiState.favoriteIcaos,
+      selectedD3Icao = uiState.selectedD3TrendIcao,
+      weatherHistoryByIcao = uiState.weatherHistoryByIcaoMap,
+      mapWeatherByIcao = uiState.mapWeatherByIcao,
+      windUnit = uiState.windUnit,
+      pressureUnit = uiState.pressureUnit,
+      isNightMode = uiState.isNightMode,
+      isFullscreen = uiState.isFullscreen,
+      loadingHistoryIcao = uiState.loadingHistoryIcao,
+      onSelectD3Airport = onSelectD3TrendAirport,
+      onRefreshD3AirportHistory = onLoad24hHistoryForIcao,
+      onOpenHistory24h = {
+        showD3TrendsScreen = false
+        showHistory24h = true
+        onLoad24hHistory(false)
+      },
+      onOpenExportDialog = { showExportDialog = true },
+      onBack = { showD3TrendsScreen = false },
+      modifier = modifier,
+    )
   } else {
 
   val safeModifier = if (uiState.isFullscreen) {
@@ -465,6 +541,15 @@ fun MeteoTabloContent(
           onOpenExportDialog = { showExportDialog = true },
           onOpenDecoder = { showDecoderScreen = true },
           onOpenPressureUtility = { showPressureUtility = true },
+          onOpenMyAirports = { showMyAirportsScreen = true },
+          onOpenD3Trends = {
+            showD3TrendsScreen = true
+            val trendIcao = uiState.selectedD3TrendIcao.ifBlank { uiState.station.icao }
+            onLoad24hHistoryForIcao(trendIcao)
+          },
+          onOpenCrosswindCalculator = { showCrosswindCalculator = true },
+          onShareWeather = { launchWeatherShareSheet() },
+          favoriteIcaos = uiState.favoriteIcaos,
           showDualWindRose = showDualWindRose,
           onToggleDualWindRose = { showDualWindRose = !showDualWindRose },
           compactMode = isCompactHeight,
@@ -482,20 +567,6 @@ fun MeteoTabloContent(
           onFetchByCoordinates = onFetchByCoordinates,
           recentSearches = uiState.recentSearches,
           onClearRecentSearches = onClearRecentSearches,
-        )
-
-        MyAirportsBar(
-          currentIcao = uiState.station.icao,
-          myAirports = uiState.favoriteIcaos,
-          weatherByIcao = uiState.mapWeatherByIcao,
-          windUnit = uiState.windUnit,
-          pressureUnit = uiState.pressureUnit,
-          onSelectStation = onSelectStation,
-          onToggleCurrentAirport = { onToggleFavorite(uiState.station.icao) },
-          onAddAirport = onAddFavorite,
-          onRemoveAirport = onRemoveFavorite,
-          isNightMode = uiState.isNightMode,
-          compactMode = isCompactHeight,
         )
 
         // Significant weather change alert banner for favorite stations
@@ -789,23 +860,6 @@ fun MeteoTabloContent(
             compactMode = isCompactHeight,
           )
         }
-
-        // D3.js 24h Wind Speed & Barometric Pressure Dashboard for Saved Airports
-        D3SavedAirportTrendsDashboard(
-          currentStation = uiState.station,
-          currentWeather = uiState.weather,
-          favoriteIcaos = uiState.favoriteIcaos,
-          selectedD3Icao = uiState.selectedD3TrendIcao,
-          weatherHistoryByIcao = uiState.weatherHistoryByIcaoMap,
-          mapWeatherByIcao = uiState.mapWeatherByIcao,
-          windUnit = uiState.windUnit,
-          pressureUnit = uiState.pressureUnit,
-          isNightMode = uiState.isNightMode,
-          loadingHistoryIcao = uiState.loadingHistoryIcao,
-          onSelectD3Airport = onSelectD3TrendAirport,
-          onRefreshD3AirportHistory = onLoad24hHistoryForIcao,
-          compactMode = isCompactHeight,
-        )
       }
     }
   }
@@ -898,6 +952,20 @@ fun MeteoTabloContent(
       boardPressureUnit = uiState.pressureUnit,
       onSelectBoardPressureUnit = onSelectPressureUnit,
       onDismiss = { showPressureUtility = false },
+    )
+  }
+
+  if (showCrosswindCalculator) {
+    val activeLimit = if (uiState.alertConfig.crosswindWarningEnabled) uiState.alertConfig.maxCrosswindKt else null
+    CrosswindCalculatorDialog(
+      station = uiState.station,
+      wind = uiState.weather.wind,
+      defaultHeadingDeg = uiState.primaryRunwayCalc.headingDeg,
+      windUnit = uiState.windUnit,
+      onToggleUnit = onToggleWindUnit,
+      maxCrosswindKt = activeLimit,
+      aircraftLabel = uiState.alertConfig.resolvedAircraftName(),
+      onDismiss = { showCrosswindCalculator = false },
     )
   }
 }

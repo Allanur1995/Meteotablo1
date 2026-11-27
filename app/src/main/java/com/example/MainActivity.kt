@@ -29,6 +29,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.SharedPreferencesAirportRunwaysStorage
+import com.example.data.SharedPreferencesAirportRunwaysStorage
 import com.example.data.SharedPreferencesFavoriteStorage
 import com.example.data.SharedPreferencesRecentSearchesStorage
 import com.example.data.SharedPreferencesServerConfigStorage
@@ -38,6 +40,8 @@ import com.example.data.SharedPreferencesWeatherHistoryStorage
 import com.example.data.SharedPreferencesWeatherPresetStorage
 import com.example.data.SharedPreferencesWindHistoryStorage
 import com.example.diagnostics.CrashReporter
+import com.example.local.MeteoDatabase
+import com.example.local.RoomWeatherCacheRepository
 import com.example.location.PlayServicesLocationService
 import com.example.notifications.AndroidWeatherNotifier
 import com.example.ui.MeteoTabloScreen
@@ -73,6 +77,10 @@ class MainActivity : ComponentActivity() {
               weatherHistoryStorage = SharedPreferencesWeatherHistoryStorage(applicationContext),
               locationService = PlayServicesLocationService(applicationContext),
               recentSearchesStorage = SharedPreferencesRecentSearchesStorage(applicationContext),
+              weatherCacheRepository = RoomWeatherCacheRepository(
+                MeteoDatabase.getInstance(applicationContext).cachedWeatherDao(),
+              ),
+              airportRunwaysStorage = SharedPreferencesAirportRunwaysStorage(applicationContext),
             ) as T
           }
         },

@@ -49,6 +49,7 @@ class WindPressure24hChartPanel(
   private val subtitleLabel = JLabel("", SwingConstants.LEFT).apply {
     font = Font("Consolas", Font.PLAIN, 11)
   }
+  private val modeToggleBtn = JButton("Режим: Ветер + Видимость")
   private val backBtn = JButton("← На табло")
   private val refreshBtn = JButton("Обновить 24ч")
   private val unitToggleBtn = JButton("Metric / Imperial")
@@ -58,14 +59,18 @@ class WindPressure24hChartPanel(
   private val windKpiValue = JLabel("--", SwingConstants.LEFT).apply {
     font = Font("Consolas", Font.BOLD, 14)
   }
+  private val visKpiValue = JLabel("--", SwingConstants.LEFT).apply {
+    font = Font("Consolas", Font.BOLD, 14)
+  }
   private val qnhKpiValue = JLabel("--", SwingConstants.LEFT).apply {
     font = Font("Consolas", Font.BOLD, 14)
   }
   private val countKpiValue = JLabel("--", SwingConstants.LEFT).apply {
     font = Font("Consolas", Font.BOLD, 14)
   }
-  private val kpiRow = JPanel(GridLayout(1, 3, 8, 4))
+  private val kpiRow = JPanel(GridLayout(1, 4, 8, 4))
   private val windKpiCard = JPanel(BorderLayout(2, 2))
+  private val visKpiCard = JPanel(BorderLayout(2, 2))
   private val qnhKpiCard = JPanel(BorderLayout(2, 2))
   private val countKpiCard = JPanel(BorderLayout(2, 2))
 
@@ -84,6 +89,8 @@ class WindPressure24hChartPanel(
 
   private var currentActiveIcao: String = "UTAM"
   private var currentUnitSystem: UnitSystem = UnitSystem.IMPERIAL
+  private var lastState: DesktopUiState? = null
+  private var showVisibilityMode: Boolean = true
 
   init {
     border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
@@ -95,6 +102,7 @@ class WindPressure24hChartPanel(
     }
     val actionRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 2)).apply {
       isOpaque = false
+      add(modeToggleBtn)
       add(unitToggleBtn)
       add(refreshBtn)
       add(exportBtn)
@@ -105,6 +113,8 @@ class WindPressure24hChartPanel(
 
     windKpiCard.add(JLabel("Ветер за 24ч").apply { font = Font("Segoe UI", Font.BOLD, 11) }, BorderLayout.NORTH)
     windKpiCard.add(windKpiValue, BorderLayout.CENTER)
+    visKpiCard.add(JLabel("Видимость").apply { font = Font("Segoe UI", Font.BOLD, 11) }, BorderLayout.NORTH)
+    visKpiCard.add(visKpiValue, BorderLayout.CENTER)
     qnhKpiCard.add(JLabel("Давление QNH").apply { font = Font("Segoe UI", Font.BOLD, 11) }, BorderLayout.NORTH)
     qnhKpiCard.add(qnhKpiValue, BorderLayout.CENTER)
     countKpiCard.add(JLabel("Наблюдений 24ч").apply { font = Font("Segoe UI", Font.BOLD, 11) }, BorderLayout.NORTH)
@@ -112,6 +122,7 @@ class WindPressure24hChartPanel(
 
     kpiRow.isOpaque = false
     kpiRow.add(windKpiCard)
+    kpiRow.add(visKpiCard)
     kpiRow.add(qnhKpiCard)
     kpiRow.add(countKpiCard)
 
@@ -133,6 +144,10 @@ class WindPressure24hChartPanel(
     backBtn.addActionListener { onBackToBoard() }
     refreshBtn.addActionListener { onRefreshHistory(currentActiveIcao) }
     exportBtn.addActionListener { onOpenExport() }
+    modeToggleBtn.addActionListener {
+      showVisibilityMode = !showVisibilityMode
+      lastState?.let { applyState(it) }
+    }
     unitToggleBtn.addActionListener {
       val next = if (currentUnitSystem == UnitSystem.METRIC) UnitSystem.IMPERIAL else UnitSystem.METRIC
       onSelectUnitSystem(next)
@@ -140,6 +155,7 @@ class WindPressure24hChartPanel(
   }
 
   fun applyState(state: DesktopUiState) {
+    lastState = state
     val pal = state.palette
     background = pal.bezelSurface
     headerPanel.background = pal.panelSurface
@@ -180,22 +196,26 @@ class WindPressure24hChartPanel(
 
     titleLabel.text = "24ч История METAR и Тренды · ${model.icao} (${model.city})"
     titleLabel.foreground = pal.textPrimary
-    subtitleLabel.text = "Ось слева: Ветер/Порывы (${state.windUnit.label}) · Ось справа: QNH (${state.pressureUnit.label}) · ${model.points.size} точек"
+    subtitleLabel.text = if (showVisibilityMode) {
+      "Ось слева: Ветер/Порывы (${state.windUnit.label}) · Ось справа: Видимость (км) · ${model.points.size} точек"
+    } else {
+      "Ось слева: Ветер/Порывы (${state.windUnit.label}) · Ось справа: QNH (${state.pressureUnit.label}) · ${model.points.size} точек"
+    }
     subtitleLabel.foreground = pal.textSecondary
 
     val isLoadingTarget = state.loadingHistoryIcao?.equals(activeIcao, ignoreCase = true) == true || state.isLoadingHistory
     refreshBtn.isEnabled = !isLoadingTarget
     refreshBtn.text = if (isLoadingTarget) "Загрузка..." else "Обновить 24ч"
+    modeToggleBtn.text = if (showVisibilityMode) "Тренд: Ветер + Видимость" else "Тренд: Ветер + QNH"
     unitToggleBtn.text = if (currentUnitSystem == UnitSystem.METRIC) "Metric (hPa, м/с)" else "Imperial (inHg, kt)"
 
-    listOf(backBtn, refreshBtn, unitToggleBtn, exportBtn).forEach { btn ->
-      btn.isFocusPainted = false
-      btn.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-      btn.background = pal.buttonBackground
-      btn.foreground = pal.textPrimary
-      btn.border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(pal.border, 1),
-        BorderFactory.createEmptyBorder(4, 10, 4, 10),
+    listOf(modeToggleBtn, backBtn, refreshBtn, unitToggleBtn, exportBtn).forEach { btn ->
+      DesktopThemeHelper.styleButton(
+        btn = btn,
+        pal = pal,
+        isActive = btn == modeToggleBtn && showVisibilityMode,
+        accentBorder = if (btn == modeToggleBtn && showVisibilityMode) pal.headwindPositive else null,
+        padding = java.awt.Insets(4, 10, 4, 10),
       )
     }
 
@@ -210,13 +230,18 @@ class WindPressure24hChartPanel(
       val isFav = icao in state.favoriteIcaos
       val chip = JButton(if (isFav) "★ $icao" else icao).apply {
         font = Font("Consolas", Font.BOLD, 12)
-        isFocusPainted = false
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        background = if (selected) pal.buttonActiveBackground else pal.secondaryFieldBackground
-        foreground = if (selected) pal.metarAmber else pal.textPrimary
-        border = BorderFactory.createCompoundBorder(
-          BorderFactory.createLineBorder(if (selected) pal.metarAmber else pal.border, if (selected) 2 else 1),
-          BorderFactory.createEmptyBorder(4, 10, 4, 10),
+        if (selected) {
+          putClientProperty("preserveForeground", true)
+          foreground = pal.metarAmber
+        } else {
+          putClientProperty("preserveForeground", false)
+        }
+        DesktopThemeHelper.styleButton(
+          btn = this,
+          pal = pal,
+          isActive = selected,
+          accentBorder = if (selected) pal.metarAmber else null,
+          padding = java.awt.Insets(4, 10, 4, 10),
         )
         addActionListener { onSelectAirport(icao) }
       }
@@ -225,7 +250,7 @@ class WindPressure24hChartPanel(
     airportChipsPanel.revalidate()
     airportChipsPanel.repaint()
 
-    listOf(windKpiCard, qnhKpiCard, countKpiCard).forEach { card ->
+    listOf(windKpiCard, visKpiCard, qnhKpiCard, countKpiCard).forEach { card ->
       card.background = pal.fieldBackground
       card.border = BorderFactory.createCompoundBorder(
         BorderFactory.createLineBorder(pal.border, 1),
@@ -235,15 +260,25 @@ class WindPressure24hChartPanel(
     }
     windKpiValue.text = model.formattedWindRange()
     windKpiValue.foreground = pal.metarAmber
+    visKpiValue.text = model.formattedVisibilityRange()
+    visKpiValue.foreground = pal.headwindPositive
     qnhKpiValue.text = "${model.formattedPressureRange()} · Δ ${model.formattedPressureDelta()}"
     qnhKpiValue.foreground = pal.accentCyan
     countKpiValue.text = "${entries.size} сводок (24ч)"
     countKpiValue.foreground = pal.textPrimary
 
-    chartCanvas.updateModel(model, pal)
+    chartCanvas.updateModel(model, pal, showVisibilityMode)
 
     historyTable.background = pal.fieldBackground
     historyTable.foreground = pal.textPrimary
+    historyTable.gridColor = pal.border
+    historyTable.selectionBackground = pal.buttonActiveBackground
+    historyTable.selectionForeground = pal.textPrimary
+    historyTable.tableHeader?.let { hdr ->
+      hdr.background = pal.secondaryFieldBackground
+      hdr.foreground = pal.textPrimary
+    }
+    (historyTable.parent as? javax.swing.JViewport)?.background = pal.panelSurface
     historyModel.rowCount = 0
     entries.sortedByDescending { it.observedAtMillis }.forEach { entry ->
       val spd = UnitConverter.formatWindSpeedValue(entry.windSpeedKt, state.windUnit)
@@ -275,6 +310,7 @@ private class DualAxisChartCanvas : JPanel() {
   private var model: D3TrendsDashboardModel? = null
   private var palette: DesktopPalette = DayDesktopPalette
   private var hoveredIndex: Int? = null
+  private var visibilityMode: Boolean = true
 
   init {
     preferredSize = Dimension(880, 290)
@@ -292,9 +328,10 @@ private class DualAxisChartCanvas : JPanel() {
     })
   }
 
-  fun updateModel(newModel: D3TrendsDashboardModel, newPalette: DesktopPalette) {
+  fun updateModel(newModel: D3TrendsDashboardModel, newPalette: DesktopPalette, showVisibility: Boolean) {
     model = newModel
     palette = newPalette
+    visibilityMode = showVisibility
     background = newPalette.fieldBackground
     border = BorderFactory.createLineBorder(newPalette.border, 1)
     repaint()
@@ -326,7 +363,7 @@ private class DualAxisChartCanvas : JPanel() {
       if (m == null || pts.isEmpty()) {
         g2.color = palette.textMuted
         g2.font = Font("Segoe UI", Font.PLAIN, 13)
-        val msg = "Нажмите «Обновить 24ч» для загрузки архивных сводок ветра и давления"
+        val msg = "Нажмите «Обновить 24ч» для загрузки архивных сводок ветра, видимости и давления"
         val fm = g2.fontMetrics
         g2.drawString(msg, ((width - fm.stringWidth(msg)) / 2).coerceAtLeast(16), height / 2)
         return
@@ -351,6 +388,8 @@ private class DualAxisChartCanvas : JPanel() {
       qMax += qPad * 0.6
       val qSpan = (qMax - qMin).coerceAtLeast(0.05)
 
+      val visColor = Color(0x10, 0xB9, 0x81)
+
       // Horizontal Grid + Axis Labels
       g2.font = Font("Consolas", Font.PLAIN, 10)
       for (i in 0..4) {
@@ -364,24 +403,38 @@ private class DualAxisChartCanvas : JPanel() {
         g2.color = palette.metarAmber
         g2.drawString("$windTick", 12, (y + 4).toInt())
 
-        val qTick = qMin + qSpan * ratio
-        val qStr = if (isInHg) String.format(Locale.US, "%.2f", qTick) else "${qTick.roundToInt()}"
-        g2.color = palette.accentCyan
-        g2.drawString(qStr, (right + 6).toInt(), (y + 4).toInt())
+        if (visibilityMode) {
+          val visTick = (10.0 * ratio)
+          g2.color = visColor
+          g2.drawString("${String.format(Locale.US, "%.1f", visTick)}км", (right + 6).toInt(), (y + 4).toInt())
+        } else {
+          val qTick = qMin + qSpan * ratio
+          val qStr = if (isInHg) String.format(Locale.US, "%.2f", qTick) else "${qTick.roundToInt()}"
+          g2.color = palette.accentCyan
+          g2.drawString(qStr, (right + 6).toInt(), (y + 4).toInt())
+        }
       }
 
-      // ISA Standard Pressure Dashed Reference
-      val isa = if (isInHg) 29.92 else 1013.25
-      if (isa in qMin..qMax) {
-        val isaY = (bottom - ((isa - qMin) / qSpan) * plotH).toFloat()
-        g2.color = Color(palette.headwindPositive.red, palette.headwindPositive.green, palette.headwindPositive.blue, 140)
+      if (visibilityMode) {
+        // VFR 5 km dashed reference
+        val vfrY = (bottom - 0.5f * plotH)
+        g2.color = Color(visColor.red, visColor.green, visColor.blue, 140)
         g2.stroke = BasicStroke(1.2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(6f, 4f), 0f)
-        g2.drawLine(left.toInt(), isaY.toInt(), right.toInt(), isaY.toInt())
+        g2.drawLine(left.toInt(), vfrY.toInt(), right.toInt(), vfrY.toInt())
+      } else {
+        val isa = if (isInHg) 29.92 else 1013.25
+        if (isa in qMin..qMax) {
+          val isaY = (bottom - ((isa - qMin) / qSpan) * plotH).toFloat()
+          g2.color = Color(palette.headwindPositive.red, palette.headwindPositive.green, palette.headwindPositive.blue, 140)
+          g2.stroke = BasicStroke(1.2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(6f, 4f), 0f)
+          g2.drawLine(left.toInt(), isaY.toInt(), right.toInt(), isaY.toInt())
+        }
       }
 
       fun xAt(i: Int): Float = if (pts.size == 1) (left + right) / 2f else left + (i.toFloat() / pts.lastIndex) * plotW
       fun yWind(v: Double): Float = (bottom - (v / maxWind).coerceIn(0.0, 1.0) * plotH).toFloat()
       fun yQnh(v: Double): Float = (bottom - ((v - qMin) / qSpan).coerceIn(0.0, 1.0) * plotH).toFloat()
+      fun yVis(km: Double): Float = (bottom - (km / 10.0).coerceIn(0.0, 1.0) * plotH).toFloat()
 
       // Wind Area + Line
       val areaPath = Path2D.Float()
@@ -428,18 +481,32 @@ private class DualAxisChartCanvas : JPanel() {
         g2.draw(gustPath)
       }
 
-      // QNH Pressure Line
-      val qnhIndices = pts.indices.filter { pts[it].pressureDisplay != null }
-      if (qnhIndices.size >= 2) {
-        val qPath = Path2D.Float()
-        qnhIndices.forEachIndexed { k, idx ->
-          val x = xAt(idx)
-          val y = yQnh(pts[idx].pressureDisplay!!)
-          if (k == 0) qPath.moveTo(x, y) else qPath.lineTo(x, y)
+      if (visibilityMode) {
+        val visIndices = pts.indices.filter { pts[it].visibilityKm != null }
+        if (visIndices.size >= 2) {
+          val visPath = Path2D.Float()
+          visIndices.forEachIndexed { k, idx ->
+            val x = xAt(idx)
+            val y = yVis(pts[idx].visibilityKm!!)
+            if (k == 0) visPath.moveTo(x, y) else visPath.lineTo(x, y)
+          }
+          g2.color = visColor
+          g2.stroke = BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+          g2.draw(visPath)
         }
-        g2.color = palette.accentCyan
-        g2.stroke = BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        g2.draw(qPath)
+      } else {
+        val qnhIndices = pts.indices.filter { pts[it].pressureDisplay != null }
+        if (qnhIndices.size >= 2) {
+          val qPath = Path2D.Float()
+          qnhIndices.forEachIndexed { k, idx ->
+            val x = xAt(idx)
+            val y = yQnh(pts[idx].pressureDisplay!!)
+            if (k == 0) qPath.moveTo(x, y) else qPath.lineTo(x, y)
+          }
+          g2.color = palette.accentCyan
+          g2.stroke = BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+          g2.draw(qPath)
+        }
       }
 
       // Dots & Time Labels
@@ -449,10 +516,18 @@ private class DualAxisChartCanvas : JPanel() {
         val yW = yWind(pt.windDisplay)
         g2.color = palette.metarAmber
         g2.fillOval((x - 3).toInt(), (yW - 3).toInt(), 6, 6)
-        pt.pressureDisplay?.let { q ->
-          val yQ = yQnh(q)
-          g2.color = palette.accentCyan
-          g2.fillOval((x - 3).toInt(), (yQ - 3).toInt(), 6, 6)
+        if (visibilityMode) {
+          pt.visibilityKm?.let { km ->
+            val yV = yVis(km)
+            g2.color = visColor
+            g2.fillOval((x - 3).toInt(), (yV - 3).toInt(), 6, 6)
+          }
+        } else {
+          pt.pressureDisplay?.let { q ->
+            val yQ = yQnh(q)
+            g2.color = palette.accentCyan
+            g2.fillOval((x - 3).toInt(), (yQ - 3).toInt(), 6, 6)
+          }
         }
         if (i % stepLabel == 0 || i == pts.lastIndex) {
           g2.color = palette.textMuted
@@ -467,8 +542,13 @@ private class DualAxisChartCanvas : JPanel() {
       g2.drawString("— Ветер (${m.windUnit.label})", left.toInt(), 16)
       g2.color = palette.tailwindNegative
       g2.drawString("-- Порывы", (left + 120).toInt(), 16)
-      g2.color = palette.accentCyan
-      g2.drawString("— QNH (${m.pressureUnit.label})", (left + 210).toInt(), 16)
+      if (visibilityMode) {
+        g2.color = visColor
+        g2.drawString("— Видимость (км)", (left + 210).toInt(), 16)
+      } else {
+        g2.color = palette.accentCyan
+        g2.drawString("— QNH (${m.pressureUnit.label})", (left + 210).toInt(), 16)
+      }
 
       // Hover Crosshair & Tooltip
       val hIdx = hoveredIndex?.takeIf { it in pts.indices }
@@ -479,11 +559,16 @@ private class DualAxisChartCanvas : JPanel() {
         g2.stroke = BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(3f, 3f), 0f)
         g2.drawLine(hx.toInt(), top.toInt(), hx.toInt(), bottom.toInt())
 
-        val qStr = pt.pressureDisplay?.let {
-          if (isInHg) String.format(Locale.US, "%.2f", it) else "${it.roundToInt()}"
-        } ?: "--"
         val gStr = pt.gustDisplay?.let { " (G${it.roundToInt()})" }.orEmpty()
-        val tip = "${pt.observationTimeUtc} · Ветер ${pt.windDisplay.roundToInt()} ${m.windUnit.label}$gStr · QNH $qStr ${m.pressureUnit.label}"
+        val rightTip = if (visibilityMode) {
+          "Вид. ${D3TrendsDashboardModel.formatVisibility(pt.visibilityMeters)}"
+        } else {
+          val qStr = pt.pressureDisplay?.let {
+            if (isInHg) String.format(Locale.US, "%.2f", it) else "${it.roundToInt()}"
+          } ?: "--"
+          "QNH $qStr ${m.pressureUnit.label}"
+        }
+        val tip = "${pt.observationTimeUtc} · Ветер ${pt.windDisplay.roundToInt()} ${m.windUnit.label}$gStr · $rightTip"
         g2.font = Font("Consolas", Font.BOLD, 11)
         val fm = g2.fontMetrics
         val boxW = fm.stringWidth(tip) + 16

@@ -258,7 +258,8 @@ class DesktopUnitPreferencesStorage(
     } ?: com.example.model.PressureUnit.HPA
     val autoRefreshEnabled = props.getProperty(KEY_AUTO_REFRESH_ENABLED, "true").toBooleanStrictOrNull() ?: true
     val intervalMin = com.example.data.AutoRefreshInterval.fromMinutes(
-      props.getProperty(KEY_AUTO_REFRESH_MINUTES, "15").toIntOrNull() ?: 15,
+      props.getProperty(KEY_AUTO_REFRESH_MINUTES, com.example.data.AutoRefreshInterval.ONE_MIN.minutes.toString()).toIntOrNull()
+        ?: com.example.data.AutoRefreshInterval.ONE_MIN.minutes,
     ).minutes
     val isNightMode = props.getProperty(KEY_NIGHT_MODE, "false").toBooleanStrictOrNull() ?: false
     return com.example.data.UnitPreferences(
@@ -314,6 +315,136 @@ class DesktopRecentSearchesStorage(
     const val KEY_RECENT_SEARCHES = "recent_search_icao_codes"
   }
 }
+
+class DesktopWeatherCacheStorage(
+  private val cacheFile: File = File(defaultDesktopConfigFile().parentFile, "weather_cache.properties"),
+) : com.example.data.WeatherCacheRepository {
+
+  private fun hasMeaningfulReport(weather: com.example.model.DecodedWeather): Boolean {
+    val metar = weather.rawMetar.trim()
+    val taf = weather.rawTaf.trim()
+    val validMetar = metar.isNotBlank() &&
+      !metar.contains("--:--Z") &&
+      !metar.contains("нет данных", ignoreCase = true)
+    val validTaf = taf.isNotBlank() &&
+      !taf.contains("--:--Z") &&
+      !taf.contains("нет данных", ignoreCase = true)
+    return validMetar || validTaf
+  }
+
+  override suspend fun getCachedWeather(icao: String): com.example.data.CachedWeatherRecord? {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4) return null
+    val props = loadProps(cacheFile)
+    val rawMetar = props.getProperty("$clean.metar", "") ?: return null
+    if (rawMetar.isBlank()) return null
+    val rawTaf = props.getProperty("$clean.taf", "").orEmpty()
+    val sourceLabel = props.getProperty("$clean.source", "локальный кэш").orEmpty()
+    val obsUtc = props.getProperty("$clean.obsUtc", "--:--Z").orEmpty()
+    val cachedAt = props.getProperty("$clean.cachedAt", "0")?.toLongOrNull() ?: 0L
+    val runways = com.example.data.RunwayPairSerializer.deserialize(
+      props.getProperty("$clean.runways", "").orEmpty(),
+      clean,
+    )
+    val fallbackStation = com.example.data.AirportCatalog.findOrDefault(clean)
+    val station = com.example.model.AirportStation(
+      icao = clean,
+      name = props.getProperty("$clean.name", fallbackStation.name).orEmpty(),
+      city = props.getProperty("$clean.city", fallbackStation.city).orEmpty(),
+      latitude = props.getProperty("$clean.lat", fallbackStation.latitude.toString())?.toDoubleOrNull()
+        ?: fallbackStation.latitude,
+      longitude = props.getProperty("$clean.lon", fallbackStation.longitude.toString())?.toDoubleOrNull()
+        ?: fallbackStation.longitude,
+      elevationMeters = props.getProperty("$clean.elev", fallbackStation.elevationMeters.toString())?.toIntOrNull()
+        ?: fallbackStation.elevationMeters,
+      utcOffsetHours = props.getProperty("$clean.utcOffset", fallbackStation.utcOffsetHours.toString())?.toIntOrNull()
+        ?: fallbackStation.utcOffsetHours,
+      timezoneLabel = props.getProperty("$clean.tzLabel", fallbackStation.timezoneLabel).orEmpty(),
+      runways = runways,
+    )
+    return com.example.data.CachedWeatherRecord(
+      station = station,
+      rawMetar = rawMetar,
+      rawTaf = rawTaf,
+      sourceLabel = sourceLabel,
+      observationTimeUtc = obsUtc,
+      cachedAtMillis = cachedAt,
+    )
+  }
+
+  override suspend fun getAllCachedWeather(): Map<String, com.example.data.CachedWeatherRecord> {
+    val props = loadProps(cacheFile)
+    val icaos = props.stringPropertyNames()
+      .mapNotNull { key -> key.substringBefore('.', "").takeIf { it.length == 4 } }
+      .toSet()
+    val out = linkedMapOf<String, com.example.data.CachedWeatherRecord>()
+    for (icao in icaos) {
+      getCachedWeather(icao)?.let { out[icao] = it }
+    }
+    return out
+  }
+
+  override suspend fun saveWeather(
+    station: com.example.model.AirportStation,
+    weather: com.example.model.DecodedWeather,
+    cachedAtMillis: Long,
+  ) {
+    if (!hasMeaningfulReport(weather)) return
+    val clean = station.icao.trim().uppercase()
+    if (clean.length != 4) return
+    val props = loadProps(cacheFile)
+    props.setProperty("$clean.metar", weather.rawMetar)
+    props.setProperty("$clean.taf", weather.rawTaf)
+    props.setProperty("$clean.source", weather.sourceLabel)
+    props.setProperty("$clean.obsUtc", weather.observationTimeUtc)
+    props.setProperty("$clean.cachedAt", cachedAtMillis.toString())
+    props.setProperty("$clean.name", station.name)
+    props.setProperty("$clean.city", station.city)
+    props.setProperty("$clean.lat", station.latitude.toString())
+    props.setProperty("$clean.lon", station.longitude.toString())
+    props.setProperty("$clean.elev", station.elevationMeters.toString())
+    props.setProperty("$clean.utcOffset", station.utcOffsetHours.toString())
+    props.setProperty("$clean.tzLabel", station.timezoneLabel)
+    props.setProperty("$clean.runways", com.example.data.RunwayPairSerializer.serialize(station.runways))
+    saveProps(cacheFile, props)
+  }
+}
+
+class DesktopAirportRunwaysStorage(
+  private val configFile: File = defaultDesktopConfigFile(),
+) : com.example.data.AirportRunwaysStorage {
+
+  override fun loadAll(): Map<String, List<com.example.model.RunwayPair>> {
+    val props = loadProps(configFile)
+    return com.example.data.AirportRunwaysSerializer.fromJson(props.getProperty(KEY_CUSTOM_RUNWAYS, null))
+  }
+
+  override fun saveForAirport(icao: String, runways: List<com.example.model.RunwayPair>) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4 || runways.isEmpty()) return
+    val current = loadAll().toMutableMap()
+    current[clean] = runways.toList()
+    val props = loadProps(configFile)
+    props.setProperty(KEY_CUSTOM_RUNWAYS, com.example.data.AirportRunwaysSerializer.toJson(current))
+    saveProps(configFile, props)
+  }
+
+  override fun clearForAirport(icao: String) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4) return
+    val current = loadAll().toMutableMap()
+    if (current.remove(clean) != null) {
+      val props = loadProps(configFile)
+      props.setProperty(KEY_CUSTOM_RUNWAYS, com.example.data.AirportRunwaysSerializer.toJson(current))
+      saveProps(configFile, props)
+    }
+  }
+
+  private companion object {
+    const val KEY_CUSTOM_RUNWAYS = "custom_airport_runways_json"
+  }
+}
+
 
 
 

@@ -65,6 +65,14 @@ import com.example.ui.theme.LocalMeteoPalette
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
+enum class D3TrendChartMode(
+  val id: String,
+  val label: String,
+) {
+  WIND_VIS("WIND_VIS", "Ветер + Видимость"),
+  WIND_QNH("WIND_QNH", "Ветер + QNH"),
+}
+
 @Composable
 fun D3SavedAirportTrendsDashboard(
   currentStation: AirportStation,
@@ -84,6 +92,7 @@ fun D3SavedAirportTrendsDashboard(
 ) {
   val palette = LocalMeteoPalette.current
   var isExpanded by remember { mutableStateOf(true) }
+  var chartMode by remember { mutableStateOf(D3TrendChartMode.WIND_VIS) }
 
   val airportTabs = remember(currentStation.icao, favoriteIcaos) {
     (favoriteIcaos + currentStation.icao)
@@ -122,8 +131,8 @@ fun D3SavedAirportTrendsDashboard(
       pressureUnit = pressureUnit,
     )
   }
-  val d3JsonPayload = remember(model, isNightMode) {
-    model.toD3JsonPayload(darkTheme = isNightMode)
+  val d3JsonPayload = remember(model, isNightMode, chartMode) {
+    model.toD3JsonPayload(darkTheme = isNightMode, mode = chartMode.id)
   }
   val isLoadingTarget = loadingHistoryIcao?.equals(activeIcao, ignoreCase = true) == true
 
@@ -158,7 +167,11 @@ fun D3SavedAirportTrendsDashboard(
         )
         Column {
           Text(
-            text = "D3.js · Ветер и давление QNH (24ч)",
+            text = if (chartMode == D3TrendChartMode.WIND_VIS) {
+              "D3.js · Ветер и видимость (24ч)"
+            } else {
+              "D3.js · Ветер и давление QNH (24ч)"
+            },
             color = palette.textPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
@@ -253,6 +266,39 @@ fun D3SavedAirportTrendsDashboard(
           }
         }
 
+        // Chart Mode Selector (Wind+Visibility / Wind+QNH)
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          D3TrendChartMode.entries.forEach { m ->
+            val selected = m == chartMode
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("d3_mode_${m.id}")
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (selected) palette.buttonActiveBackground else palette.secondaryFieldBackground)
+                .border(
+                  width = if (selected) 1.5.dp else 1.dp,
+                  color = if (selected) palette.metarAmber else palette.border,
+                  shape = RoundedCornerShape(4.dp),
+                )
+                .clickable { chartMode = m }
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+              Text(
+                text = m.label,
+                color = if (selected) palette.metarAmber else palette.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+              )
+            }
+          }
+        }
+
         // KPI Summary Cards
         Row(
           horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -268,7 +314,7 @@ fun D3SavedAirportTrendsDashboard(
               .padding(8.dp),
           ) {
             Text(
-              text = "Ветер за 24ч (${windUnit.label})",
+              text = "Ветер (${windUnit.label})",
               color = palette.textSecondary,
               fontSize = 10.5.sp,
               fontWeight = FontWeight.SemiBold,
@@ -276,7 +322,31 @@ fun D3SavedAirportTrendsDashboard(
             Text(
               text = model.formattedWindRange(),
               color = palette.metarAmber,
-              fontSize = 13.sp,
+              fontSize = 12.5.sp,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+
+          Column(
+            modifier = Modifier
+              .weight(1f)
+              .semantics(mergeDescendants = true) {}
+              .testTag("d3_kpi_visibility")
+              .background(palette.fieldBackground, RoundedCornerShape(4.dp))
+              .border(1.dp, palette.border, RoundedCornerShape(4.dp))
+              .padding(8.dp),
+          ) {
+            Text(
+              text = "Видимость",
+              color = palette.textSecondary,
+              fontSize = 10.5.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = model.formattedVisibilityRange(),
+              color = Color(0xFF10B981),
+              fontSize = 12.5.sp,
               fontFamily = FontFamily.Monospace,
               fontWeight = FontWeight.Bold,
             )
@@ -292,7 +362,7 @@ fun D3SavedAirportTrendsDashboard(
               .padding(8.dp),
           ) {
             Text(
-              text = "Давление QNH (${pressureUnit.label})",
+              text = "QNH (${pressureUnit.label})",
               color = palette.textSecondary,
               fontSize = 10.5.sp,
               fontWeight = FontWeight.SemiBold,
@@ -300,7 +370,7 @@ fun D3SavedAirportTrendsDashboard(
             Text(
               text = "${model.formattedPressureRange()} · Δ ${model.formattedPressureDelta()}",
               color = Color(0xFF38BDF8),
-              fontSize = 12.5.sp,
+              fontSize = 12.sp,
               fontFamily = FontFamily.Monospace,
               fontWeight = FontWeight.Bold,
             )
@@ -310,6 +380,7 @@ fun D3SavedAirportTrendsDashboard(
         // D3.js Chart Container with WebView + Safe Compose Canvas Fallback
         D3ChartCanvasHost(
           model = model,
+          chartMode = chartMode,
           d3JsonPayload = d3JsonPayload,
           compactMode = compactMode,
         )
@@ -322,6 +393,7 @@ fun D3SavedAirportTrendsDashboard(
 @Composable
 private fun D3ChartCanvasHost(
   model: D3TrendsDashboardModel,
+  chartMode: D3TrendChartMode,
   d3JsonPayload: String,
   compactMode: Boolean,
 ) {
@@ -381,6 +453,7 @@ private fun D3ChartCanvasHost(
     if (webViewInitFailed || !pageLoaded) {
       NativeWindPressureFallbackChart(
         model = model,
+        chartMode = chartMode,
         modifier = Modifier
           .fillMaxSize()
           .padding(10.dp)
@@ -393,11 +466,13 @@ private fun D3ChartCanvasHost(
 @Composable
 private fun NativeWindPressureFallbackChart(
   model: D3TrendsDashboardModel,
+  chartMode: D3TrendChartMode,
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
   val windColor = palette.metarAmber
   val qnhColor = Color(0xFF0284C7)
+  val visColor = Color(0xFF10B981)
 
   if (model.points.isEmpty()) {
     Box(
@@ -424,12 +499,21 @@ private fun NativeWindPressureFallbackChart(
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold,
       )
-      Text(
-        text = "QNH: ${model.formattedPressureRange()}",
-        color = qnhColor,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-      )
+      if (chartMode == D3TrendChartMode.WIND_VIS) {
+        Text(
+          text = "Видимость: ${model.formattedVisibilityRange()}",
+          color = visColor,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.Bold,
+        )
+      } else {
+        Text(
+          text = "QNH: ${model.formattedPressureRange()}",
+          color = qnhColor,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.Bold,
+        )
+      }
     }
     Spacer(modifier = Modifier.height(6.dp))
     Canvas(
@@ -484,26 +568,52 @@ private fun NativeWindPressureFallbackChart(
         drawCircle(color = windColor, radius = 5f, center = Offset(x, y))
       }
 
-      val qnhPath = Path()
-      var startedQnh = false
-      pts.forEachIndexed { idx, pt ->
-        val q = pt.pressureDisplay ?: return@forEachIndexed
-        val x = xAt(idx)
-        val y = (h * (1.0 - ((q - qMin) / qSpan).coerceIn(0.0, 1.0))).toFloat()
-        if (!startedQnh) {
-          qnhPath.moveTo(x, y)
-          startedQnh = true
-        } else {
-          qnhPath.lineTo(x, y)
+      if (chartMode == D3TrendChartMode.WIND_VIS) {
+        val visPath = Path()
+        var startedVis = false
+        var visCount = 0
+        pts.forEachIndexed { idx, pt ->
+          val visKm = pt.visibilityKm ?: return@forEachIndexed
+          visCount++
+          val x = xAt(idx)
+          val y = (h * (1.0 - (visKm / 10.0).coerceIn(0.0, 1.0))).toFloat()
+          if (!startedVis) {
+            visPath.moveTo(x, y)
+            startedVis = true
+          } else {
+            visPath.lineTo(x, y)
+          }
+          drawCircle(color = visColor, radius = 4.5f, center = Offset(x, y))
         }
-        drawCircle(color = qnhColor, radius = 4.5f, center = Offset(x, y))
-      }
-      if (qnhValues.size >= 2) {
-        drawPath(
-          path = qnhPath,
-          color = qnhColor,
-          style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
-        )
+        if (visCount >= 2) {
+          drawPath(
+            path = visPath,
+            color = visColor,
+            style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+          )
+        }
+      } else {
+        val qnhPath = Path()
+        var startedQnh = false
+        pts.forEachIndexed { idx, pt ->
+          val q = pt.pressureDisplay ?: return@forEachIndexed
+          val x = xAt(idx)
+          val y = (h * (1.0 - ((q - qMin) / qSpan).coerceIn(0.0, 1.0))).toFloat()
+          if (!startedQnh) {
+            qnhPath.moveTo(x, y)
+            startedQnh = true
+          } else {
+            qnhPath.lineTo(x, y)
+          }
+          drawCircle(color = qnhColor, radius = 4.5f, center = Offset(x, y))
+        }
+        if (qnhValues.size >= 2) {
+          drawPath(
+            path = qnhPath,
+            color = qnhColor,
+            style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+          )
+        }
       }
     }
     Row(
@@ -518,7 +628,12 @@ private fun NativeWindPressureFallbackChart(
       )
       Text(
         text = model.points.lastOrNull()?.let {
-          "Последний: ${it.windDisplay.roundToInt()} ${model.windUnit.label}"
+          val extra = if (chartMode == D3TrendChartMode.WIND_VIS && it.visibilityMeters != null) {
+            " · ${D3TrendsDashboardModel.formatVisibility(it.visibilityMeters)}"
+          } else {
+            ""
+          }
+          "Последний: ${it.windDisplay.roundToInt()} ${model.windUnit.label}$extra"
         }.orEmpty(),
         color = palette.textSecondary,
         fontSize = 10.sp,

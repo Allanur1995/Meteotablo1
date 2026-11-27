@@ -4,6 +4,7 @@ import com.example.data.AirportCatalog
 import com.example.data.AutoRefreshInterval
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
+import com.example.domain.AviationWeatherParser
 import com.example.domain.DecodedTokenSeverity
 import com.example.domain.MetarTafDecoder
 import com.example.domain.UnitConverter
@@ -14,6 +15,7 @@ import com.example.model.AuthorBrand
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
 import com.example.model.UnitSystem
+import com.example.model.WindData
 import com.example.model.WindSpeedUnit
 import java.awt.BorderLayout
 import java.awt.Color
@@ -28,6 +30,8 @@ import java.awt.GridLayout
 import java.awt.Insets
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Locale
@@ -42,18 +46,22 @@ import javax.swing.JFileChooser
 import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
-import javax.swing.JPasswordField
 import javax.swing.JScrollPane
 import javax.swing.JTabbedPane
 import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.SwingConstants
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 import javax.swing.filechooser.FileNameExtensionFilter
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 object DesktopDialogs {
 
@@ -250,12 +258,15 @@ object DesktopDialogs {
       background = palette.panelSurface
     }
     val cfg = state.serverConfig
+    var resetToDefaultInternal = false
     val modeCombo = JComboBox(DataSourceMode.entries.map { it.displayName }.toTypedArray()).apply {
       selectedIndex = cfg.resolvedMode().ordinal
     }
-    val urlField = JTextField(cfg.url, 32)
-    val userField = JTextField(cfg.username, 20)
-    val passField = JPasswordField(cfg.password, 20)
+    val autoAuthStatusLabel = JLabel("Ведомственный метеосервер · Авто-вход: активен (реквизиты скрыты)").apply {
+      font = Font("Segoe UI", Font.BOLD, 12)
+      putClientProperty("preserveForeground", true)
+      foreground = palette.headwindPositive
+    }
     val awcCheck = JCheckBox("aviationweather.gov (JSON API)", cfg.useAviationWeatherGov).apply {
       isOpaque = false
     }
@@ -280,9 +291,10 @@ object DesktopDialogs {
       wrapStyleWord = true
       font = Font("Consolas", Font.PLAIN, 11)
       background = palette.fieldBackground
+      putClientProperty("preserveForeground", true)
       foreground = palette.textSecondary
       border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
-      text = "Поддерживается UMAS /cgi-bin/wdr (SATR/FTTR) для всех 7 аэропортов Туркменистана: UTAM, UTAK, UTAA, UTAN, UTAT, UTAV, UTAE."
+      text = "Поддерживается автоматическая авторизация для всех 7 аэропортов Туркменистана: UTAM, UTAK, UTAA, UTAN, UTAT, UTAV, UTAE."
     }
     val diagnosticScroll = JScrollPane(diagnosticArea).apply {
       preferredSize = Dimension(520, 82)
@@ -300,21 +312,11 @@ object DesktopDialogs {
     serverPanel.add(modeCombo, gbc)
 
     gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
-    serverPanel.add(JLabel("URL / IP сервера:"), gbc)
+    serverPanel.add(JLabel("Авторизация:"), gbc)
     gbc.gridx = 1; gbc.weightx = 1.0
-    serverPanel.add(urlField, gbc)
+    serverPanel.add(autoAuthStatusLabel, gbc)
 
     gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
-    serverPanel.add(JLabel("Логин:"), gbc)
-    gbc.gridx = 1; gbc.weightx = 1.0
-    serverPanel.add(userField, gbc)
-
-    gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0
-    serverPanel.add(JLabel("Пароль:"), gbc)
-    gbc.gridx = 1; gbc.weightx = 1.0
-    serverPanel.add(passField, gbc)
-
-    gbc.gridx = 0; gbc.gridy = 4; gbc.weightx = 0.0
     serverPanel.add(JLabel("Автообновление:"), gbc)
     gbc.gridx = 1; gbc.weightx = 1.0
     serverPanel.add(
@@ -326,30 +328,33 @@ object DesktopDialogs {
       gbc,
     )
 
-    gbc.gridx = 0; gbc.gridy = 5; gbc.weightx = 0.0
+    gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0
     serverPanel.add(JLabel("Интернет-сайты:"), gbc)
     gbc.gridx = 1; gbc.weightx = 1.0
     serverPanel.add(awcCheck, gbc)
-    gbc.gridx = 1; gbc.gridy = 6
+    gbc.gridx = 1; gbc.gridy = 4
     serverPanel.add(tgftpCheck, gbc)
-    gbc.gridx = 1; gbc.gridy = 7
+    gbc.gridx = 1; gbc.gridy = 5
     serverPanel.add(vatsimCheck, gbc)
 
-    gbc.gridx = 0; gbc.gridy = 8; gbc.gridwidth = 2; gbc.weightx = 1.0
+    gbc.gridx = 0; gbc.gridy = 6; gbc.gridwidth = 2; gbc.weightx = 1.0
     serverPanel.add(diagnosticScroll, gbc)
 
     val serverButtons = JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
       isOpaque = false
-      val testIpBtn = JButton("Проверить IP-сервер (${state.station.icao})")
-      testIpBtn.addActionListener {
-        testIpBtn.isEnabled = false
-        testIpBtn.text = "Проверка (${state.station.icao})…"
+      val testServerBtn = JButton("Проверить сервер (${state.station.icao})")
+      testServerBtn.addActionListener {
+        testServerBtn.isEnabled = false
+        testServerBtn.text = "Проверка (${state.station.icao})…"
         diagnosticArea.foreground = palette.textSecondary
-        diagnosticArea.text = "Подключение к ${urlField.text}…"
+        diagnosticArea.text = "Выполняется автоматическое подключение к ведомственному метеосерверу…"
+        val activeUrl = if (resetToDefaultInternal) ServerConfig.DEFAULT_SERVER_URL else cfg.url
+        val activeUser = if (resetToDefaultInternal) ServerConfig.DEFAULT_USERNAME else cfg.username
+        val activePass = if (resetToDefaultInternal) ServerConfig.DEFAULT_PASSWORD else cfg.password
         val probeCfg = ServerConfig(
-          url = urlField.text,
-          username = userField.text.trim(),
-          password = String(passField.password),
+          url = activeUrl,
+          username = activeUser,
+          password = activePass,
           sourceMode = DataSourceMode.IP_ONLY,
           useCustomServer = true,
           fallbackToNoaa = false,
@@ -360,16 +365,14 @@ object DesktopDialogs {
             appendLine(report.summary)
             report.logs.takeLast(5).forEach { appendLine(it) }
           }.trim()
-          testIpBtn.isEnabled = true
-          testIpBtn.text = "Проверить IP-сервер (${state.station.icao})"
+          testServerBtn.isEnabled = true
+          testServerBtn.text = "Проверить сервер (${state.station.icao})"
         }
       }
-      val resetBtn = JButton("По умолчанию (217.174.229.206)").apply {
+      val resetBtn = JButton("Авто по умолч.").apply {
         addActionListener {
+          resetToDefaultInternal = true
           modeCombo.selectedIndex = DataSourceMode.AUTO_IP_FIRST.ordinal
-          urlField.text = ServerConfig.DEFAULT_SERVER_URL
-          userField.text = ServerConfig.DEFAULT_USERNAME
-          passField.text = ServerConfig.DEFAULT_PASSWORD
           awcCheck.isSelected = true
           tgftpCheck.isSelected = true
           vatsimCheck.isSelected = true
@@ -385,11 +388,14 @@ object DesktopDialogs {
           }
           controller.setAutoRefreshEnabled(autoRefreshCheck.isSelected)
           controller.setAutoRefreshInterval(interval.minutes)
+          val activeUrl = if (resetToDefaultInternal) ServerConfig.DEFAULT_SERVER_URL else cfg.url
+          val activeUser = if (resetToDefaultInternal) ServerConfig.DEFAULT_USERNAME else cfg.username
+          val activePass = if (resetToDefaultInternal) ServerConfig.DEFAULT_PASSWORD else cfg.password
           controller.updateServerConfig(
             ServerConfig(
-              url = urlField.text,
-              username = userField.text,
-              password = String(passField.password),
+              url = activeUrl,
+              username = activeUser,
+              password = activePass,
               useCustomServer = selectedMode != DataSourceMode.INTERNET_ONLY,
               fallbackToNoaa = selectedMode != DataSourceMode.IP_ONLY,
               sourceMode = selectedMode,
@@ -402,11 +408,11 @@ object DesktopDialogs {
           dialog.dispose()
         }
       }
-      add(testIpBtn)
+      add(testServerBtn)
       add(resetBtn)
       add(saveBtn)
     }
-    gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
+    gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2; gbc.anchor = GridBagConstraints.EAST
     serverPanel.add(serverButtons, gbc)
 
     tabs.addTab("Сервер и Авто", serverPanel)
@@ -447,6 +453,7 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, palette)
     dialog.isVisible = true
   }
 
@@ -630,11 +637,13 @@ object DesktopDialogs {
       rawArea.background = pal.fieldBackground
       rawArea.foreground = pal.textPrimary
       rawArea.text = "${st.weather.rawMetar}\n${st.weather.rawTaf}"
+      DesktopThemeHelper.applyThemeTree(root, pal)
+      table.repaint()
     }
 
     controller.addListener(listener)
-    dialog.addWindowListener(object : java.awt.event.WindowAdapter() {
-      override fun windowClosed(e: java.awt.event.WindowEvent?) {
+    dialog.addWindowListener(object : WindowAdapter() {
+      override fun windowClosed(e: WindowEvent?) {
         controller.removeListener(listener)
       }
     })
@@ -740,6 +749,7 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
     dialog.isVisible = true
   }
 
@@ -751,7 +761,7 @@ object DesktopDialogs {
     val pal = st.palette
     val dialog = JDialog(owner, "Конвертер давления QNH / QFE (hPa ↔ inHg ↔ mmHg)", true)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    dialog.setSize(560, 400)
+    dialog.setSize(580, 420)
     dialog.setLocationRelativeTo(owner)
 
     val initialQnh = st.weather.qnhHpa?.toDouble() ?: 1013.25
@@ -760,16 +770,19 @@ object DesktopDialogs {
     val elevField = JTextField(st.station.elevationMeters.toString(), 8)
     val qfeResultLabel = JLabel("", SwingConstants.LEFT).apply {
       font = Font("Consolas", Font.BOLD, 14)
+      putClientProperty("preserveForeground", true)
       foreground = pal.accentCyan
     }
     val isaDiffLabel = JLabel("", SwingConstants.LEFT).apply {
       font = Font("Consolas", Font.PLAIN, 12)
+      putClientProperty("preserveForeground", true)
       foreground = pal.textSecondary
     }
     var updating = false
+    var autoSyncMetar = true
 
     fun updateDerived(qnhHpa: Double) {
-      val elevM = elevField.text.trim().toIntOrNull() ?: st.station.elevationMeters
+      val elevM = elevField.text.trim().toIntOrNull() ?: controller.state.station.elevationMeters
       val qfeHpa = UnitConverter.computeQfeFromQnhHpa(qnhHpa, elevM)
       val qfeInHg = UnitConverter.convertHpaToInHg(qfeHpa)
       val qfeMm = UnitConverter.convertHpaToMmHg(qfeHpa.roundToInt())
@@ -793,23 +806,53 @@ object DesktopDialogs {
       )
     }
 
-    qnhHpaField.addActionListener {
-      if (updating) return@addActionListener
-      val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return@addActionListener
+    fun syncFromHpaInput(markManual: Boolean = false) {
+      if (updating) return
+      val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return
+      if (markManual) autoSyncMetar = false
       updating = true
       qnhInHgField.text = String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(hpa))
       updateDerived(hpa)
       updating = false
     }
-    qnhInHgField.addActionListener {
-      if (updating) return@addActionListener
-      val inhg = qnhInHgField.text.trim().replace(',', '.').toDoubleOrNull() ?: return@addActionListener
+
+    fun syncFromInHgInput(markManual: Boolean = false) {
+      if (updating) return
+      val inhg = qnhInHgField.text.trim().replace(',', '.').toDoubleOrNull() ?: return
+      if (markManual) autoSyncMetar = false
       val hpa = UnitConverter.convertInHgToHpa(inhg)
       updating = true
       qnhHpaField.text = String.format(Locale.US, "%.2f", hpa)
       updateDerived(hpa)
       updating = false
     }
+
+    qnhHpaField.document.addDocumentListener(object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) = syncFromHpaInput(markManual = true)
+      override fun removeUpdate(e: DocumentEvent?) = syncFromHpaInput(markManual = true)
+      override fun changedUpdate(e: DocumentEvent?) = syncFromHpaInput(markManual = true)
+    })
+    qnhInHgField.document.addDocumentListener(object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) = syncFromInHgInput(markManual = true)
+      override fun removeUpdate(e: DocumentEvent?) = syncFromInHgInput(markManual = true)
+      override fun changedUpdate(e: DocumentEvent?) = syncFromInHgInput(markManual = true)
+    })
+    elevField.document.addDocumentListener(object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) {
+        val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return
+        updateDerived(hpa)
+      }
+      override fun removeUpdate(e: DocumentEvent?) {
+        val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return
+        updateDerived(hpa)
+      }
+      override fun changedUpdate(e: DocumentEvent?) {
+        val hpa = qnhHpaField.text.trim().replace(',', '.').toDoubleOrNull() ?: return
+        updateDerived(hpa)
+      }
+    })
+    qnhHpaField.addActionListener { syncFromHpaInput(markManual = true) }
+    qnhInHgField.addActionListener { syncFromInHgInput(markManual = true) }
 
     val panel = JPanel(GridBagLayout()).apply {
       border = BorderFactory.createEmptyBorder(14, 14, 14, 14)
@@ -825,8 +868,17 @@ object DesktopDialogs {
     gbc.gridx = 1; gbc.weightx = 1.0
     panel.add(qnhHpaField, gbc)
     gbc.gridx = 2; gbc.weightx = 0.0
-    panel.add(JButton("→ inHg").apply {
-      addActionListener { qnhHpaField.postActionEvent() }
+    panel.add(JButton("Из METAR").apply {
+      addActionListener {
+        autoSyncMetar = true
+        val curQnh = controller.state.weather.qnhHpa?.toDouble() ?: 1013.25
+        updating = true
+        qnhHpaField.text = String.format(Locale.US, "%.2f", curQnh)
+        qnhInHgField.text = String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(curQnh))
+        elevField.text = controller.state.station.elevationMeters.toString()
+        updateDerived(curQnh)
+        updating = false
+      }
     }, gbc)
 
     gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
@@ -835,7 +887,7 @@ object DesktopDialogs {
     panel.add(qnhInHgField, gbc)
     gbc.gridx = 2; gbc.weightx = 0.0
     panel.add(JButton("→ hPa").apply {
-      addActionListener { qnhInHgField.postActionEvent() }
+      addActionListener { syncFromInHgInput(markManual = true) }
     }, gbc)
 
     gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
@@ -844,7 +896,7 @@ object DesktopDialogs {
     panel.add(elevField, gbc)
     gbc.gridx = 2; gbc.weightx = 0.0
     panel.add(JButton("Пересчёт QFE").apply {
-      addActionListener { qnhHpaField.postActionEvent() }
+      addActionListener { syncFromHpaInput(markManual = false) }
     }, gbc)
 
     gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3
@@ -869,6 +921,26 @@ object DesktopDialogs {
 
     updateDerived(initialQnh)
 
+    val listener: (DesktopUiState) -> Unit = { nextState ->
+      if (autoSyncMetar) {
+        val nextQnh = nextState.weather.qnhHpa?.toDouble()
+        if (nextQnh != null) {
+          updating = true
+          qnhHpaField.text = String.format(Locale.US, "%.2f", nextQnh)
+          qnhInHgField.text = String.format(Locale.US, "%.2f", UnitConverter.convertHpaToInHg(nextQnh))
+          updateDerived(nextQnh)
+          updating = false
+        }
+      }
+      DesktopThemeHelper.applyThemeTree(dialog.contentPane, nextState.palette)
+    }
+    controller.addListener(listener)
+    dialog.addWindowListener(object : WindowAdapter() {
+      override fun windowClosed(e: WindowEvent?) {
+        controller.removeListener(listener)
+      }
+    })
+
     dialog.contentPane.layout = BorderLayout()
     dialog.contentPane.add(panel, BorderLayout.CENTER)
     dialog.contentPane.add(
@@ -877,6 +949,255 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
+    dialog.isVisible = true
+  }
+
+  fun showCrosswindCalculatorDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val st = controller.state
+    val pal = st.palette
+    val dialog = JDialog(owner, "Калькулятор бокового ветра · ${st.station.icao}", false)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(580, 390)
+    dialog.setLocationRelativeTo(owner)
+
+    val defaultHeading = st.primaryRunwayCalc.headingDeg
+    val headingField = JTextField(String.format(Locale.US, "%03d", defaultHeading), 6)
+    val windDirField = JTextField(
+      st.weather.wind.directionDeg?.let { String.format(Locale.US, "%03d", it) } ?: "270",
+      6,
+    )
+    val windSpeedField = JTextField(
+      UnitConverter.formatWindSpeedValue(st.weather.wind.speedKt, st.windUnit).toString(),
+      6,
+    )
+    val unitBtn = JButton(st.windUnit.label)
+    var useCustomWind = false
+
+    val headwindResultLabel = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Consolas", Font.BOLD, 15)
+      putClientProperty("preserveForeground", true)
+    }
+    val crosswindResultLabel = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Consolas", Font.BOLD, 15)
+      putClientProperty("preserveForeground", true)
+    }
+    val limitBannerLabel = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Segoe UI", Font.BOLD, 12)
+      putClientProperty("preserveForeground", true)
+    }
+
+    fun normalizeHeading(deg: Int): Int {
+      val m = ((deg % 360) + 360) % 360
+      return if (m == 0) 360 else m
+    }
+
+    fun recalculate(curState: DesktopUiState) {
+      val activePal = curState.palette
+      val rwyHdg = normalizeHeading(headingField.text.trim().toIntOrNull() ?: defaultHeading)
+      val windDir = windDirField.text.trim().toIntOrNull()?.let { normalizeHeading(it) }
+        ?: (curState.weather.wind.directionDeg ?: 270)
+      val windDispSpeed = windSpeedField.text.trim().replace(',', '.').toDoubleOrNull()?.coerceIn(0.0, 200.0) ?: 0.0
+      val speedKt = UnitConverter.convertWind(windDispSpeed, curState.windUnit, WindSpeedUnit.KT).roundToInt()
+
+      val windData = if (!useCustomWind && (curState.weather.wind.isCalm || curState.weather.wind.isVariable)) {
+        curState.weather.wind
+      } else {
+        WindData(
+          directionDeg = windDir,
+          speedKt = speedKt,
+          gustKt = if (!useCustomWind) curState.weather.wind.gustKt else null,
+          speedMps = UnitConverter.convertKnotsToMps(speedKt.toDouble()),
+          isVariable = false,
+          isCalm = speedKt == 0,
+        )
+      }
+
+      val calc = AviationWeatherParser.calculateRunwayComponents(
+        designator = String.format(Locale.US, "%02d", ((rwyHdg + 4) / 10).coerceIn(1, 36)),
+        runwayHeadingDeg = rwyHdg,
+        wind = windData,
+        frictionCoeff = null,
+        rvrMeters = null,
+      )
+      val headVal = UnitConverter.convertWindFromKnots(abs(calc.headwindKt), curState.windUnit)
+      val crossVal = UnitConverter.convertWindFromKnots(calc.crosswindKt, curState.windUnit)
+      val isTailwind = calc.headwindKt < -0.05
+      val headPrefix = when {
+        windData.isCalm -> "Штиль"
+        windData.isVariable -> "VRB (поперечный)"
+        isTailwind -> "Попутный (Tailwind): -"
+        else -> "Встречный (Headwind): +"
+      }
+      headwindResultLabel.text = if (windData.isCalm || windData.isVariable) {
+        headPrefix
+      } else {
+        String.format(Locale.US, "%s%.1f %s (ВПП %03d° / ветер %03d°)", headPrefix, headVal, curState.windUnit.label, rwyHdg, windDir)
+      }
+      headwindResultLabel.foreground = when {
+        windData.isCalm || windData.isVariable -> activePal.textSecondary
+        isTailwind -> activePal.tailwindNegative
+        else -> activePal.headwindPositive
+      }
+
+      val sinVal = if (!windData.isCalm && !windData.isVariable && windData.directionDeg != null) {
+        sin((windDir - rwyHdg) * PI / 180.0)
+      } else 0.0
+      val sideText = when {
+        windData.isCalm -> ""
+        windData.isVariable -> " (перем.)"
+        sinVal > 0.02 -> " справа"
+        sinVal < -0.02 -> " слева"
+        else -> " по оси"
+      }
+      val exceeded = curState.alertConfig.isCrosswindExceeded(calc.crosswindKt, null)
+      crosswindResultLabel.text = String.format(
+        Locale.US,
+        "Боковой (Crosswind)%s: %.1f %s",
+        sideText,
+        crossVal,
+        curState.windUnit.label,
+      )
+      crosswindResultLabel.foreground = when {
+        exceeded || calc.crosswindKt >= 20.0 -> activePal.tailwindNegative
+        calc.crosswindKt >= 12.0 -> activePal.metarAmber
+        else -> activePal.accentCyan
+      }
+
+      val limitDisp = UnitConverter.convertWindFromKnots(curState.alertConfig.maxCrosswindKt.toDouble(), curState.windUnit)
+      val acName = curState.alertConfig.resolvedAircraftName()
+      if (exceeded) {
+        limitBannerLabel.text = String.format(Locale.US, "⚠ ПРЕВЫШЕНИЕ для %s: лимит %.0f %s", acName, limitDisp, curState.windUnit.label)
+        limitBannerLabel.foreground = activePal.tailwindNegative
+      } else {
+        limitBannerLabel.text = String.format(Locale.US, "Ограничение %s: %.0f %s — в допуске", acName, limitDisp, curState.windUnit.label)
+        limitBannerLabel.foreground = activePal.headwindPositive
+      }
+    }
+
+    val panel = JPanel(GridBagLayout()).apply {
+      border = BorderFactory.createEmptyBorder(14, 14, 14, 14)
+    }
+    val gbc = GridBagConstraints().apply {
+      insets = Insets(6, 6, 6, 6)
+      anchor = GridBagConstraints.WEST
+      fill = GridBagConstraints.HORIZONTAL
+    }
+
+    gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+    panel.add(JLabel("Курс ВПП (°):"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(headingField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    panel.add(
+      JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+        isOpaque = false
+        add(JButton("-10°").apply {
+          addActionListener {
+            val cur = headingField.text.trim().toIntOrNull() ?: defaultHeading
+            headingField.text = String.format(Locale.US, "%03d", normalizeHeading(cur - 10))
+          }
+        })
+        add(JButton("+10°").apply {
+          addActionListener {
+            val cur = headingField.text.trim().toIntOrNull() ?: defaultHeading
+            headingField.text = String.format(Locale.US, "%03d", normalizeHeading(cur + 10))
+          }
+        })
+        add(JButton("180°").apply {
+          addActionListener {
+            val cur = headingField.text.trim().toIntOrNull() ?: defaultHeading
+            headingField.text = String.format(Locale.US, "%03d", normalizeHeading(cur + 180))
+          }
+        })
+      },
+      gbc,
+    )
+
+    gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+    panel.add(JLabel("Направление ветра (°):"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(windDirField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    panel.add(
+      JButton("Из METAR").apply {
+        addActionListener {
+          useCustomWind = false
+          val cur = controller.state
+          windDirField.text = cur.weather.wind.directionDeg?.let { String.format(Locale.US, "%03d", it) } ?: "270"
+          windSpeedField.text = UnitConverter.formatWindSpeedValue(cur.weather.wind.speedKt, cur.windUnit).toString()
+          recalculate(cur)
+        }
+      },
+      gbc,
+    )
+
+    gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
+    panel.add(JLabel("Скорость ветра:"), gbc)
+    gbc.gridx = 1; gbc.weightx = 1.0
+    panel.add(windSpeedField, gbc)
+    gbc.gridx = 2; gbc.weightx = 0.0
+    unitBtn.addActionListener { controller.toggleWindUnit() }
+    panel.add(unitBtn, gbc)
+
+    gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3
+    panel.add(headwindResultLabel, gbc)
+    gbc.gridy = 4
+    panel.add(crosswindResultLabel, gbc)
+    gbc.gridy = 5
+    panel.add(limitBannerLabel, gbc)
+
+    val liveDocListener = object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) {
+        useCustomWind = true
+        recalculate(controller.state)
+      }
+      override fun removeUpdate(e: DocumentEvent?) {
+        useCustomWind = true
+        recalculate(controller.state)
+      }
+      override fun changedUpdate(e: DocumentEvent?) {
+        useCustomWind = true
+        recalculate(controller.state)
+      }
+    }
+    headingField.document.addDocumentListener(object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) = recalculate(controller.state)
+      override fun removeUpdate(e: DocumentEvent?) = recalculate(controller.state)
+      override fun changedUpdate(e: DocumentEvent?) = recalculate(controller.state)
+    })
+    windDirField.document.addDocumentListener(liveDocListener)
+    windSpeedField.document.addDocumentListener(liveDocListener)
+
+    val stateListener: (DesktopUiState) -> Unit = { nextState ->
+      unitBtn.text = nextState.windUnit.label
+      if (!useCustomWind) {
+        windDirField.text = nextState.weather.wind.directionDeg?.let { String.format(Locale.US, "%03d", it) } ?: "270"
+        windSpeedField.text = UnitConverter.formatWindSpeedValue(nextState.weather.wind.speedKt, nextState.windUnit).toString()
+      }
+      recalculate(nextState)
+      DesktopThemeHelper.applyThemeTree(dialog.contentPane, nextState.palette)
+    }
+    controller.addListener(stateListener)
+    dialog.addWindowListener(object : WindowAdapter() {
+      override fun windowClosed(e: WindowEvent?) {
+        controller.removeListener(stateListener)
+      }
+    })
+
+    recalculate(st)
+    dialog.contentPane.layout = BorderLayout()
+    dialog.contentPane.add(panel, BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
     dialog.isVisible = true
   }
 
@@ -966,6 +1287,7 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal, skipComponents = setOf(leftRose, rightRose))
     dialog.isVisible = true
   }
 
@@ -1052,6 +1374,7 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
     dialog.isVisible = true
   }
 
@@ -1059,6 +1382,7 @@ object DesktopDialogs {
     owner: Frame,
     controller: DesktopController,
   ) {
+    val pal = controller.state.palette
     val dialog = JDialog(owner, "Журнал событий (Лог)", true)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
     dialog.setSize(680, 420)
@@ -1082,6 +1406,7 @@ object DesktopDialogs {
       },
       BorderLayout.SOUTH,
     )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
     dialog.isVisible = true
   }
 
@@ -1325,6 +1650,7 @@ object DesktopDialogs {
     dialog.contentPane.add(topPanel, BorderLayout.NORTH)
     dialog.contentPane.add(JScrollPane(listPanel), BorderLayout.CENTER)
     dialog.contentPane.add(footerRow, BorderLayout.SOUTH)
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, state.palette)
     dialog.isVisible = true
   }
 

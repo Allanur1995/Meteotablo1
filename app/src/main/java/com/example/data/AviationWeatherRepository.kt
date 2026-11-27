@@ -122,7 +122,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
     )
   }
 
-  logs.add("$icao: приоритетный источник — IP-сервер")
+  logs.add("$icao: приоритетный источник — ведомственный сервер")
   val (ipRes, ipErr) =
     fetchFromCustomIpServer(icao, serverConfig, station, logs)
 
@@ -141,7 +141,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
       if (!fallbackTaf.isNullOrBlank()) {
         val cleanFallbackTaf = fallbackTaf.trim().replace(Regex("\\s+"), " ")
           .replace(Regex("^TAF\\s+TAF\\b", RegexOption.IGNORE_CASE), "TAF")
-        logs.add("IP вернул METAR без TAF -> TAF $icao дополнен из интернета")
+        logs.add("Ведомственный сервер вернул METAR без TAF -> TAF $icao дополнен из интернета")
         return@withContext Result.success(
           ipRes.copy(
             weather = ipRes.weather.copy(
@@ -156,7 +156,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
     return@withContext Result.success(ipRes)
   }
 
-  logs.add("IP-сервер (${ipErr ?: "недоступен"}) -> переход на интернет")
+  logs.add("Ведомственный сервер (${ipErr ?: "недоступен"}) -> переход на интернет")
   val (netRes, netErr) =
     fetchFromInternetSites(icao, serverConfig, station, logs)
 
@@ -307,7 +307,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
     logs: MutableList<String>,
   ): Pair<FetchResult?, String?> {
     if (serverConfig.url.isBlank()) {
-      return null to "URL IP-сервера не задан"
+      return null to "Параметры ведомственного сервера не заданы"
     }
     val outcome = customServerClient.fetchMetarAndTaf(icao, serverConfig)
     logs.addAll(outcome.logs)
@@ -318,12 +318,12 @@ DataSourceMode.AUTO_IP_FIRST -> {
         rawMetarInput = customMetar,
         rawTafInput = finalTaf,
         station = station,
-        sourceLabel = "сервер ${outcome.sourceHost}",
+        sourceLabel = "ведомственный сервер",
       )
-      logs.add("Успешно декодирован $icao с ${outcome.sourceHost} (${decoded.observationTimeUtc})")
+      logs.add("Успешно декодирован $icao (ведомственный сервер, ${decoded.observationTimeUtc})")
       return FetchResult(decoded, station, logs) to null
     }
-    return null to (outcome.errorMessage ?: "Нет данных для $icao на сервере ${outcome.sourceHost}")
+    return null to (outcome.errorMessage ?: "Нет данных для $icao на ведомственном сервере")
   }
 
   private suspend fun fetchFromInternetSites(
@@ -424,7 +424,7 @@ DataSourceMode.AUTO_IP_FIRST -> {
         rawMetar = obs.rawMetar,
         rawTaf = obs.rawTaf,
         station = station,
-        sourceLabel = "сервер ${outcome.sourceHost}",
+        sourceLabel = "ведомственный сервер",
         explicitTimestampMillis = obs.obsTimeMillis,
       )
     }

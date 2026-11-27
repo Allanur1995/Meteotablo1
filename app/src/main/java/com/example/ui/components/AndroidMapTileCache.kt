@@ -82,6 +82,35 @@ object AndroidMapTileLoader {
     }
   }
 
+  suspend fun loadUrlBitmap(
+    cacheKey: String,
+    url: String,
+  ): ImageBitmap? {
+    memoryCache.get(cacheKey)?.let { return it }
+    if (!inFlight.add(cacheKey)) return null
+    return try {
+      withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+          .url(url)
+          .header("User-Agent", "Meteotablo/1.0 (Aviation Weather Radar)")
+          .header("Accept", "image/png,image/*")
+          .build()
+        runCatching {
+          client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) return@use null
+            val bytes = resp.body?.bytes() ?: return@use null
+            if (bytes.isEmpty()) return@use null
+            val decoded = decodeImageBitmap(bytes) ?: return@use null
+            memoryCache.put(cacheKey, decoded)
+            decoded
+          }
+        }.getOrNull()
+      }
+    } finally {
+      inFlight.remove(cacheKey)
+    }
+  }
+
   private fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
     val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
     return bmp.asImageBitmap()
@@ -107,6 +136,38 @@ fun rememberMapTileSnapshot(
       missing.take(24).map { tile ->
         async {
           val loaded = AndroidMapTileLoader.loadTile(context, tile, style)
+          if (loaded != null) {
+            revision++
+          }
+        }
+      }.awaitAll()
+    }
+  }
+  return revision
+}
+
+@Composable
+fun rememberRadarTileSnapshot(
+  tiles: List<TilePlacement>,
+  host: String,
+  frame: com.example.data.RadarFrame?,
+): Int {
+  var revision by remember { mutableIntStateOf(0) }
+  val signature = remember(tiles, host, frame) {
+    if (frame == null) "none" else "${frame.timestampEpochSec}:${tiles.joinToString(",") { "${it.z}/${it.x}/${it.y}" }}"
+  }
+
+  LaunchedEffect(signature) {
+    val f = frame ?: return@LaunchedEffect
+    val missing = tiles.filter { AndroidMapTileLoader.getCached(f.cacheKey(it.z, it.x, it.y)) == null }
+    if (missing.isEmpty()) return@LaunchedEffect
+
+    coroutineScope {
+      missing.take(24).map { tile ->
+        async {
+          val key = f.cacheKey(tile.z, tile.x, tile.y)
+          val url = f.tileUrl(host, tile.z, tile.x, tile.y)
+          val loaded = AndroidMapTileLoader.loadUrlBitmap(key, url)
           if (loaded != null) {
             revision++
           }

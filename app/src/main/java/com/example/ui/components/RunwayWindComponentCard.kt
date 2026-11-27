@@ -21,16 +21,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,6 +66,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.UnitConverter
+import com.example.model.AirportStation
 import com.example.model.WindData
 import com.example.model.WindSpeedUnit
 import com.example.ui.theme.LocalMeteoPalette
@@ -664,16 +669,49 @@ fun InteractiveRunwayHeadingWindCard(
 ) {
   val palette = LocalMeteoPalette.current
   var headingInput by remember { mutableStateOf(String.format(Locale.US, "%03d", normalizeRunwayHeading(defaultHeadingDeg))) }
+  var useCustomWind by remember { mutableStateOf(false) }
+  var windDirInput by remember {
+    mutableStateOf(wind.directionDeg?.let { String.format(Locale.US, "%03d", normalizeRunwayHeading(it)) } ?: "270")
+  }
+  var windSpeedInput by remember {
+    mutableStateOf(UnitConverter.formatWindSpeedValue(wind.speedKt, windUnit).toString())
+  }
 
   LaunchedEffect(defaultHeadingDeg) {
     headingInput = String.format(Locale.US, "%03d", normalizeRunwayHeading(defaultHeadingDeg))
   }
 
+  LaunchedEffect(wind, windUnit, useCustomWind) {
+    if (!useCustomWind) {
+      windDirInput = wind.directionDeg?.let { String.format(Locale.US, "%03d", normalizeRunwayHeading(it)) } ?: "270"
+      windSpeedInput = UnitConverter.formatWindSpeedValue(wind.speedKt, windUnit).toString()
+    }
+  }
+
   val activeHeading = headingInput.toIntOrNull()?.let { normalizeRunwayHeading(it) }
     ?: normalizeRunwayHeading(defaultHeadingDeg)
 
+  val effectiveWind = remember(useCustomWind, windDirInput, windSpeedInput, wind, windUnit) {
+    if (!useCustomWind) {
+      wind
+    } else {
+      val parsedDir = windDirInput.toIntOrNull()?.let { normalizeRunwayHeading(it) }
+        ?: (wind.directionDeg ?: 270)
+      val parsedDispSpeed = windSpeedInput.trim().toDoubleOrNull()?.coerceIn(0.0, 200.0) ?: 0.0
+      val speedKt = UnitConverter.convertWind(parsedDispSpeed, windUnit, WindSpeedUnit.KT).roundToInt()
+      WindData(
+        directionDeg = parsedDir,
+        speedKt = speedKt,
+        gustKt = null,
+        speedMps = UnitConverter.convertKnotsToMps(speedKt.toDouble()),
+        isVariable = false,
+        isCalm = speedKt == 0,
+      )
+    }
+  }
+
   Column(
-    verticalArrangement = Arrangement.spacedBy(6.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
     modifier = modifier
       .fillMaxWidth()
       .testTag("interactive_runway_heading_calculator")
@@ -689,14 +727,13 @@ fun InteractiveRunwayHeadingWindCard(
       OutlinedTextField(
         value = headingInput,
         onValueChange = { raw ->
-          val digits = raw.filter { it.isDigit() }.take(3)
-          headingInput = digits
+          headingInput = raw.filter { it.isDigit() }.take(3)
         },
         label = { Text("Курс ВПП (°)", fontSize = 10.5.sp) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier
-          .width(126.dp)
+          .width(120.dp)
           .testTag("custom_runway_heading_input"),
       )
 
@@ -711,7 +748,7 @@ fun InteractiveRunwayHeadingWindCard(
           },
           modifier = Modifier
             .weight(1f)
-            .heightIn(min = 42.dp)
+            .heightIn(min = 48.dp)
             .testTag("custom_runway_heading_minus10"),
         ) {
           Text("-10°", fontSize = 11.sp, textAlign = TextAlign.Center)
@@ -723,7 +760,7 @@ fun InteractiveRunwayHeadingWindCard(
           },
           modifier = Modifier
             .weight(1f)
-            .heightIn(min = 42.dp)
+            .heightIn(min = 48.dp)
             .testTag("custom_runway_heading_plus10"),
         ) {
           Text("+10°", fontSize = 11.sp, textAlign = TextAlign.Center)
@@ -735,7 +772,7 @@ fun InteractiveRunwayHeadingWindCard(
           },
           modifier = Modifier
             .minimumInteractiveComponentSize()
-            .heightIn(min = 42.dp)
+            .heightIn(min = 48.dp)
             .testTag("custom_runway_heading_flip"),
         ) {
           Icon(
@@ -749,9 +786,54 @@ fun InteractiveRunwayHeadingWindCard(
       }
     }
 
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      OutlinedTextField(
+        value = windDirInput,
+        onValueChange = { raw ->
+          useCustomWind = true
+          windDirInput = raw.filter { it.isDigit() }.take(3)
+        },
+        label = { Text("Напр. ветра (°)", fontSize = 10.5.sp) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier
+          .weight(1f)
+          .testTag("custom_wind_dir_input"),
+      )
+      OutlinedTextField(
+        value = windSpeedInput,
+        onValueChange = { raw ->
+          useCustomWind = true
+          windSpeedInput = raw.filter { it.isDigit() || it == '.' || it == ',' }.replace(',', '.').take(5)
+        },
+        label = { Text("Скор. (${windUnit.label})", fontSize = 10.5.sp) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = Modifier
+          .weight(1f)
+          .testTag("custom_wind_speed_input"),
+      )
+      OutlinedButton(
+        onClick = {
+          useCustomWind = false
+          windDirInput = wind.directionDeg?.let { String.format(Locale.US, "%03d", normalizeRunwayHeading(it)) } ?: "270"
+          windSpeedInput = UnitConverter.formatWindSpeedValue(wind.speedKt, windUnit).toString()
+        },
+        modifier = Modifier
+          .heightIn(min = 48.dp)
+          .testTag("custom_wind_reset_metar_button"),
+      ) {
+        Text("Из METAR", fontSize = 11.sp)
+      }
+    }
+
     RunwayWindComponentsDisplay(
       runwayHeadingDeg = activeHeading,
-      wind = wind,
+      wind = effectiveWind,
       windUnit = windUnit,
       maxCrosswindKt = maxCrosswindKt,
       onToggleUnit = onToggleUnit,
@@ -759,11 +841,68 @@ fun InteractiveRunwayHeadingWindCard(
 
     RunwayOrientationWindVisualizer(
       runwayHeadingDeg = activeHeading,
-      wind = wind,
+      wind = effectiveWind,
       windUnit = windUnit,
       maxCrosswindKt = maxCrosswindKt,
       aircraftLabel = aircraftLabel,
       onToggleUnit = onToggleUnit,
     )
   }
+}
+
+@Composable
+fun CrosswindCalculatorDialog(
+  station: AirportStation,
+  wind: WindData,
+  defaultHeadingDeg: Int,
+  windUnit: WindSpeedUnit,
+  onToggleUnit: () -> Unit,
+  maxCrosswindKt: Int? = null,
+  aircraftLabel: String? = null,
+  onDismiss: () -> Unit,
+) {
+  val palette = LocalMeteoPalette.current
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = {
+      Column {
+        Text(
+          text = "Калькулятор бокового ветра · ${station.icao}",
+          fontSize = 17.sp,
+          fontWeight = FontWeight.Bold,
+        )
+        Text(
+          text = "Расчёт встречного/попутного и бокового ветра для любого курса ВПП",
+          color = palette.textSecondary,
+          fontSize = 11.5.sp,
+        )
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 480.dp)
+          .verticalScroll(rememberScrollState())
+          .testTag("crosswind_calculator_dialog"),
+      ) {
+        InteractiveRunwayHeadingWindCard(
+          wind = wind,
+          defaultHeadingDeg = defaultHeadingDeg,
+          windUnit = windUnit,
+          onToggleUnit = onToggleUnit,
+          maxCrosswindKt = maxCrosswindKt,
+          aircraftLabel = aircraftLabel,
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(
+        onClick = onDismiss,
+        modifier = Modifier.testTag("crosswind_dialog_close_button"),
+      ) {
+        Text("Закрыть")
+      }
+    },
+  )
 }

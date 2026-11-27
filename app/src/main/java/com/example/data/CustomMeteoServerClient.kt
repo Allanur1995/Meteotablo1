@@ -115,12 +115,8 @@ class CustomMeteoServerClient {
     val targetUrlStr = ServerConfig.normalizeServerUrl(config.url)
     val baseDirUrlStr = ServerConfig.retrofitBaseUrl(config.url)
     val baseHttpUrl = targetUrlStr.toHttpUrlOrNull()
-      ?: return null to "Некорректный URL сервера: ${config.url}"
-    val hostLabel = if (baseHttpUrl.port != 80 && baseHttpUrl.port != 443) {
-      "${baseHttpUrl.host}:${baseHttpUrl.port}"
-    } else {
-      baseHttpUrl.host
-    }
+      ?: return null to "Некорректная конфигурация метеосервера"
+    val hostLabel = "ведомственный сервер"
 
     val api = MeteoServerRetrofitFactory.create(
       config = config,
@@ -141,12 +137,12 @@ class CustomMeteoServerClient {
       currentBody = wdrDirectFirst.second
       statusCode = 200
     } else {
-      logs.add("Retrofit GET $targetUrlStr (логин: ${config.username.ifBlank { "нет" }})")
+      logs.add("Автоматическое подключение к ведомственному серверу…")
       val firstResp = api.fetchPage(targetUrlStr)
       currentUrl = firstResp.raw().request.url
       currentBody = readBody(firstResp)
       statusCode = firstResp.code()
-      logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+      logs.add("Сервер HTTP $statusCode (${currentBody.length} символов)")
     }
 
     if (baseHttpUrl.encodedPath == "/") {
@@ -156,12 +152,12 @@ class CustomMeteoServerClient {
         extractFrameUrls(currentBody, currentUrl).isNotEmpty()
       if (statusCode >= 400 || !initialHasContent) {
         val wloginUrl = baseHttpUrl.newBuilder().encodedPath("/cgi-bin/wlogin").build().toString()
-        logs.add("Авто-проба UMAS CGI: GET $wloginUrl")
+        logs.add("Авто-вход UMAS CGI…")
         val probeResp = runCatching { api.fetchPage(wloginUrl) }.getOrNull()
         if (probeResp != null) {
           val probeBody = readBody(probeResp)
           val probeCode = probeResp.code()
-          logs.add("HTTP $probeCode <- ${probeResp.raw().request.url} (${probeBody.length} символов)")
+          logs.add("HTTP $probeCode (${probeBody.length} символов)")
           if (probeCode < 400 && (isLoginFormHtml(probeBody) || probeBody.isNotBlank())) {
             currentUrl = probeResp.raw().request.url
             currentBody = probeBody
@@ -191,28 +187,27 @@ class CustomMeteoServerClient {
     }
 
     extractMetaRefreshUrl(currentBody, currentUrl)?.let { refreshUrl ->
-      logs.add("Meta-refresh -> GET $refreshUrl")
+      logs.add("Перенаправление входа…")
       val redirResp = runCatching { api.fetchPage(refreshUrl) }.getOrNull()
       if (redirResp != null && redirResp.isSuccessful) {
         currentUrl = redirResp.raw().request.url
         currentBody = readBody(redirResp)
         statusCode = redirResp.code()
-        logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+        logs.add("HTTP $statusCode (${currentBody.length} символов)")
       }
     }
 
     if (isLoginFormHtml(currentBody)) {
       val parsedForm = parseHtmlForm(currentBody, currentUrl, config.username, config.password)
       if (parsedForm != null) {
-        logs.add("Форма входа -> Retrofit ${parsedForm.method.uppercase()} ${parsedForm.actionUrl}")
+        logs.add("Автоматический вход на метеосервер…")
         val postResp = submitParsedForm(api, parsedForm)
         currentUrl = postResp.raw().request.url
         currentBody = readBody(postResp)
         statusCode = postResp.code()
-        logs.add("Ответ после входа: HTTP $statusCode ($currentUrl)")
+        logs.add("Ответ после входа: HTTP $statusCode")
 
         extractMetaRefreshUrl(currentBody, currentUrl)?.let { refreshUrl ->
-          logs.add("Meta-refresh после входа -> GET $refreshUrl")
           val redirResp = runCatching { api.fetchPage(refreshUrl) }.getOrNull()
           if (redirResp != null && redirResp.isSuccessful) {
             currentUrl = redirResp.raw().request.url
@@ -239,17 +234,15 @@ class CustomMeteoServerClient {
     }
 
     if (isLoginFormHtml(currentBody)) {
-      return null to "Не удалось войти на $hostLabel (проверьте логин и пароль)"
+      return null to "Не удалось выполнить автоматический вход ($hostLabel)"
     }
 
     val inspectedDocs = mutableListOf(currentUrl to currentBody)
     val frameUrls = extractFrameUrls(currentBody, currentUrl).take(4)
     for (frameUrl in frameUrls) {
-      logs.add("Frame GET $frameUrl")
       val frameResp = runCatching { api.fetchPage(frameUrl) }.getOrNull() ?: continue
       val frameBody = readBody(frameResp)
       val frameResolvedUrl = frameResp.raw().request.url
-      logs.add("Frame HTTP ${frameResp.code()} <- $frameUrl (${frameBody.length} символов)")
       if (frameResp.isSuccessful && !isLoginFormHtml(frameBody) && frameBody.isNotBlank()) {
         inspectedDocs.add(frameResolvedUrl to frameBody)
       }
@@ -264,12 +257,11 @@ class CustomMeteoServerClient {
         extractWmaNavUrl(docBody, docUrl)
       }
       if (wmaNavUrl != null && inspectedDocs.none { it.first.toString() == wmaNavUrl }) {
-        logs.add("Вкладка WMA -> GET $wmaNavUrl")
         val wmaResp = runCatching { api.fetchPage(wmaNavUrl) }.getOrNull()
         if (wmaResp != null && wmaResp.isSuccessful) {
           val wmaBody = readBody(wmaResp)
           val wmaUrl = wmaResp.raw().request.url
-          logs.add("WMA HTTP ${wmaResp.code()} <- $wmaUrl (${wmaBody.length} символов)")
+          logs.add("Вкладка WMA HTTP ${wmaResp.code()} (${wmaBody.length} символов)")
           if (!isLoginFormHtml(wmaBody) && wmaBody.isNotBlank()) {
             inspectedDocs.add(wmaUrl to wmaBody)
             candidates = inspectedDocs
@@ -315,7 +307,7 @@ class CustomMeteoServerClient {
   ): CustomHistoryOutcome {
     val logs = mutableListOf<String>()
     val cleanIcao = icao.trim().uppercase()
-    val hostFallback = config.url
+    val hostFallback = "ведомственный сервер"
     return try {
       val normalizedUrl = ServerConfig.normalizeServerUrl(config.url).toHttpUrlOrNull()
       if (normalizedUrl != null && normalizedUrl.encodedPath.endsWith("/wdr", ignoreCase = true)) {
@@ -410,7 +402,7 @@ class CustomMeteoServerClient {
         logs = logs,
       )
     } catch (e: Exception) {
-      val msg = e.message ?: e::class.simpleName ?: "Ошибка загрузки истории"
+      val msg = sanitizeIpFromMessage(e.message ?: e::class.simpleName ?: "Ошибка загрузки истории")
       logs.add("История 24ч ошибка: $msg")
       CustomHistoryOutcome(
         observations = emptyList(),
@@ -431,15 +423,11 @@ class CustomMeteoServerClient {
       ?: return CustomFetchOutcome(
         rawMetar = null,
         rawTaf = null,
-        sourceHost = config.url,
-        logs = listOf("Некорректный URL сервера: ${config.url}"),
-        errorMessage = "Некорректный URL сервера: ${config.url}",
+        sourceHost = "ведомственный сервер",
+        logs = listOf("Некорректная конфигурация метеосервера"),
+        errorMessage = "Некорректная конфигурация метеосервера",
       )
-    val hostLabel = if (baseHttpUrl.port != 80 && baseHttpUrl.port != 443) {
-      "${baseHttpUrl.host}:${baseHttpUrl.port}"
-    } else {
-      baseHttpUrl.host
-    }
+    val hostLabel = "ведомственный сервер"
 
     return try {
       val isExplicitWdrPath = baseHttpUrl.encodedPath.endsWith("/wdr", ignoreCase = true)
@@ -472,12 +460,12 @@ class CustomMeteoServerClient {
       var currentUrl: HttpUrl
       var currentBody: String
       var statusCode: Int
-      logs.add("Retrofit GET $targetUrlStr (логин: ${config.username.ifBlank { "нет" }})")
+      logs.add("Автоматическое подключение к ведомственному серверу…")
       val firstResp = api.fetchPage(targetUrlStr)
       currentUrl = firstResp.raw().request.url
       currentBody = readBody(firstResp)
       statusCode = firstResp.code()
-      logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+      logs.add("Сервер HTTP $statusCode (${currentBody.length} символов)")
 
       // If user configured bare host "/" and root returns an error or empty shell, auto-probe /cgi-bin/wlogin
       if (baseHttpUrl.encodedPath == "/") {
@@ -487,12 +475,12 @@ class CustomMeteoServerClient {
           extractFrameUrls(currentBody, currentUrl).isNotEmpty()
         if (statusCode >= 400 || !initialHasContent) {
           val wloginUrl = baseHttpUrl.newBuilder().encodedPath("/cgi-bin/wlogin").build().toString()
-          logs.add("Авто-проба UMAS CGI: GET $wloginUrl")
+          logs.add("Авто-вход UMAS CGI…")
           val probeResp = runCatching { api.fetchPage(wloginUrl) }.getOrNull()
           if (probeResp != null) {
             val probeBody = readBody(probeResp)
             val probeCode = probeResp.code()
-            logs.add("HTTP $probeCode <- ${probeResp.raw().request.url} (${probeBody.length} символов)")
+            logs.add("HTTP $probeCode (${probeBody.length} символов)")
             if (probeCode < 400 && (isLoginFormHtml(probeBody) || probeBody.isNotBlank())) {
               currentUrl = probeResp.raw().request.url
               currentBody = probeBody
@@ -529,13 +517,12 @@ class CustomMeteoServerClient {
 
       // Follow HTML <meta http-equiv="refresh" ...> if present
       extractMetaRefreshUrl(currentBody, currentUrl)?.let { refreshUrl ->
-        logs.add("Meta-refresh -> GET $refreshUrl")
         val redirResp = runCatching { api.fetchPage(refreshUrl) }.getOrNull()
         if (redirResp != null && redirResp.isSuccessful) {
           currentUrl = redirResp.raw().request.url
           currentBody = readBody(redirResp)
           statusCode = redirResp.code()
-          logs.add("HTTP $statusCode <- $currentUrl (${currentBody.length} символов)")
+          logs.add("HTTP $statusCode (${currentBody.length} символов)")
         }
       }
 
@@ -552,15 +539,14 @@ class CustomMeteoServerClient {
       if (isLoginFormHtml(currentBody)) {
         val parsedForm = parseHtmlForm(currentBody, currentUrl, config.username, config.password)
         if (parsedForm != null) {
-          logs.add("Форма входа -> Retrofit ${parsedForm.method.uppercase()} ${parsedForm.actionUrl}")
+          logs.add("Автоматический вход на метеосервер…")
           val postResp = submitParsedForm(api, parsedForm)
           currentUrl = postResp.raw().request.url
           currentBody = readBody(postResp)
           statusCode = postResp.code()
-          logs.add("Ответ после входа: HTTP $statusCode ($currentUrl)")
+          logs.add("Ответ после входа: HTTP $statusCode")
 
           extractMetaRefreshUrl(currentBody, currentUrl)?.let { refreshUrl ->
-            logs.add("Meta-refresh после входа -> GET $refreshUrl")
             val redirResp = runCatching { api.fetchPage(refreshUrl) }.getOrNull()
             if (redirResp != null && redirResp.isSuccessful) {
               currentUrl = redirResp.raw().request.url
@@ -584,7 +570,7 @@ class CustomMeteoServerClient {
                 rawTaf = null,
                 sourceHost = hostLabel,
                 logs = logs,
-                errorMessage = "Не удалось войти на $hostLabel (проверьте логин и пароль)",
+                errorMessage = "Не удалось выполнить автоматический вход ($hostLabel)",
               )
             }
           }
@@ -615,11 +601,9 @@ class CustomMeteoServerClient {
       if (metar.isNullOrBlank() || taf.isNullOrBlank()) {
         val frameUrls = extractFrameUrls(currentBody, currentUrl).take(4)
         for (frameUrl in frameUrls) {
-          logs.add("Frame GET $frameUrl")
           val frameResp = runCatching { api.fetchPage(frameUrl) }.getOrNull() ?: continue
           val frameBody = readBody(frameResp)
           val frameResolvedUrl = frameResp.raw().request.url
-          logs.add("Frame HTTP ${frameResp.code()} <- $frameUrl (${frameBody.length} символов)")
           if (frameResp.isSuccessful && !isLoginFormHtml(frameBody) && frameBody.isNotBlank()) {
             inspectedDocs.add(frameResolvedUrl to frameBody)
             val (fm, ft) = extractMetarAndTaf(frameBody, cleanIcao, moshi)
@@ -640,12 +624,11 @@ class CustomMeteoServerClient {
           extractWmaNavUrl(docBody, docUrl)
         }
         if (wmaNavUrl != null && inspectedDocs.none { it.first.toString() == wmaNavUrl }) {
-          logs.add("Вкладка WMA -> GET $wmaNavUrl")
           val wmaResp = runCatching { api.fetchPage(wmaNavUrl) }.getOrNull()
           if (wmaResp != null && wmaResp.isSuccessful) {
             val wmaBody = readBody(wmaResp)
             val wmaUrl = wmaResp.raw().request.url
-            logs.add("WMA HTTP ${wmaResp.code()} <- $wmaUrl (${wmaBody.length} символов)")
+            logs.add("Вкладка WMA HTTP ${wmaResp.code()} (${wmaBody.length} символов)")
             if (!isLoginFormHtml(wmaBody) && wmaBody.isNotBlank()) {
               inspectedDocs.add(wmaUrl to wmaBody)
               val (wm, wt) = extractMetarAndTaf(wmaBody, cleanIcao, moshi)
@@ -670,11 +653,11 @@ class CustomMeteoServerClient {
         for (candidate in metarCandidates) {
           if (candidate.url == currentUrl.toString()) continue
           fetchedBulletinUrls.add(candidate.url)
-          logs.add("Бюллетень METAR (${candidate.label}) -> GET ${candidate.url}")
+          logs.add("Бюллетень METAR (${candidate.label})")
           val subResp = runCatching { api.fetchPage(candidate.url) }.getOrNull() ?: continue
           val subStatus = subResp.code()
           val subBody = readBody(subResp)
-          logs.add("HTTP $subStatus <- ${candidate.url} (${subBody.length} символов)")
+          logs.add("HTTP $subStatus (${candidate.label}, ${subBody.length} символов)")
           if (subStatus in 200..299 && !isLoginFormHtml(subBody) && subBody.isNotBlank()) {
             val (subMetar, subTaf) = extractMetarAndTaf(subBody, cleanIcao, moshi)
             if (!subMetar.isNullOrBlank()) {
@@ -697,11 +680,11 @@ class CustomMeteoServerClient {
         for (candidate in tafCandidates) {
           if (candidate.url == currentUrl.toString() || candidate.url in fetchedBulletinUrls) continue
           fetchedBulletinUrls.add(candidate.url)
-          logs.add("Бюллетень TAF (${candidate.label}) -> GET ${candidate.url}")
+          logs.add("Бюллетень TAF (${candidate.label})")
           val subResp = runCatching { api.fetchPage(candidate.url) }.getOrNull() ?: continue
           val subStatus = subResp.code()
           val subBody = readBody(subResp)
-          logs.add("HTTP $subStatus <- ${candidate.url} (${subBody.length} символов)")
+          logs.add("HTTP $subStatus (${candidate.label}, ${subBody.length} символов)")
           if (subStatus in 200..299 && !isLoginFormHtml(subBody) && subBody.isNotBlank()) {
             val (subMetar, subTaf) = extractMetarAndTaf(subBody, cleanIcao, moshi)
             if (metar.isNullOrBlank() && !subMetar.isNullOrBlank()) {
@@ -743,11 +726,9 @@ class CustomMeteoServerClient {
           .take(10)
 
         for (candidate in fallbackUrls) {
-          logs.add("Retrofit GET $candidate")
           val subResp = runCatching { api.fetchPage(candidate) }.getOrNull() ?: continue
           val subStatus = subResp.code()
           val subBody = readBody(subResp)
-          logs.add("HTTP $subStatus <- $candidate (${subBody.length} символов)")
           if (subStatus in 200..299 && !isLoginFormHtml(subBody) && subBody.isNotBlank()) {
             val (subMetar, subTaf) = extractMetarAndTaf(subBody, cleanIcao, moshi)
             if (!subMetar.isNullOrBlank()) {
@@ -796,16 +777,20 @@ class CustomMeteoServerClient {
         )
       }
     } catch (e: Exception) {
-      val msg = e.message ?: e::class.simpleName ?: "Ошибка соединения"
-      logs.add("Ошибка сервера $hostLabel: $msg")
+      val msg = sanitizeIpFromMessage(e.message ?: e::class.simpleName ?: "Ошибка соединения")
+      logs.add("Ошибка сервера ($hostLabel): $msg")
       CustomFetchOutcome(
         rawMetar = null,
         rawTaf = null,
         sourceHost = hostLabel,
         logs = logs,
-        errorMessage = "Сервер $hostLabel недоступен: $msg",
+        errorMessage = "Ведомственный сервер недоступен: $msg",
       )
     }
+  }
+
+  private fun sanitizeIpFromMessage(msg: String): String {
+    return msg.replace(Regex("""/?\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"""), "[сервер]")
   }
 
   private suspend fun tryUmasWdrDirectPost(
@@ -815,7 +800,7 @@ class CustomMeteoServerClient {
     logs: MutableList<String>,
   ): Pair<HttpUrl, String>? {
     val wdrUrl = baseHttpUrl.newBuilder().encodedPath("/cgi-bin/wdr").query(null).build().toString()
-    logs.add("UMAS WDR POST $wdrUrl (user=${config.username})")
+    logs.add("Авто-вход WDR на ведомственный сервер…")
     val resp = runCatching {
       api.submitLoginForm(
         wdrUrl,
@@ -827,7 +812,7 @@ class CustomMeteoServerClient {
     }.getOrNull() ?: return null
     val body = readBody(resp)
     val resolvedUrl = resp.raw().request.url
-    logs.add("WDR HTTP ${resp.code()} <- $resolvedUrl (${body.length} символов)")
+    logs.add("WDR HTTP ${resp.code()} (${body.length} символов)")
     if (!resp.isSuccessful || body.isBlank() || isLoginFormHtml(body)) {
       return null
     }

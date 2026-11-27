@@ -64,7 +64,22 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all {
+        val candidateDirs = listOf(
+          file("${System.getProperty("user.home")}/.m2/repository/org/robolectric/android-all-instrumented/16-robolectric-13921718-i7"),
+          file("/home/appuser/.m2/repository/org/robolectric/android-all-instrumented/16-robolectric-13921718-i7"),
+        )
+        val localRobolectricDir = candidateDirs.firstOrNull { it.exists() }
+        if (localRobolectricDir != null) {
+          it.systemProperty("robolectric.offline", "true")
+          it.systemProperty("robolectric.dependency.dir", localRobolectricDir.absolutePath)
+        }
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -105,8 +120,8 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   // implementation(libs.androidx.navigation.compose)
-  // implementation(libs.androidx.room.ktx)
-  // implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  implementation(libs.androidx.room.runtime)
   // implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
@@ -141,6 +156,6 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
-  // "ksp"(libs.androidx.room.compiler)
+  "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }

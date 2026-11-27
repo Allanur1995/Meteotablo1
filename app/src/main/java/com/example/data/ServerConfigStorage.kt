@@ -4,9 +4,9 @@ enum class DataSourceMode(
   val shortLabel: String,
   val displayName: String,
 ) {
-  AUTO_IP_FIRST("IP→Инет", "Авто: IP → Интернет"),
-  AUTO_INTERNET_FIRST("Инет→IP", "Авто: Интернет → IP"),
-  IP_ONLY("Только IP", "Только IP-сервер"),
+  AUTO_IP_FIRST("Серв→Инет", "Авто: Сервер → Интернет"),
+  AUTO_INTERNET_FIRST("Инет→Серв", "Авто: Интернет → Сервер"),
+  IP_ONLY("Сервер", "Только метеосервер"),
   INTERNET_ONLY("Интернет", "Только Интернет"),
 }
 

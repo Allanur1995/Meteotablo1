@@ -16,7 +16,12 @@ data class D3TrendChartPoint(
   val windDisplay: Double,
   val gustDisplay: Double?,
   val pressureDisplay: Double?,
-)
+  val visibilityMeters: Int? = null,
+  val isCavok: Boolean = false,
+) {
+  val visibilityKm: Double?
+    get() = visibilityMeters?.let { (it / 100.0).roundToInt() / 10.0 }
+}
 
 data class D3TrendsDashboardModel(
   val icao: String,
@@ -32,8 +37,14 @@ data class D3TrendsDashboardModel(
   val maxPressureDisplay: Double?,
   val latestPressureDisplay: Double?,
   val deltaPressureDisplay: Double?,
+  val minVisibilityMeters: Int? = null,
+  val maxVisibilityMeters: Int? = null,
+  val latestVisibilityMeters: Int? = null,
 ) {
-  fun toD3JsonPayload(darkTheme: Boolean): String {
+  fun toD3JsonPayload(
+    darkTheme: Boolean,
+    mode: String = "WIND_VIS",
+  ): String {
     val pressureDecimals = if (pressureUnit == PressureUnit.INHG) 2 else 0
     val arr = JSONArray()
     points.forEach { pt ->
@@ -52,12 +63,21 @@ data class D3TrendsDashboardModel(
           } else {
             put("qnh", JSONObject.NULL)
           }
+          if (pt.visibilityMeters != null) {
+            put("visMeters", pt.visibilityMeters)
+            put("visKm", pt.visibilityKm)
+          } else {
+            put("visMeters", JSONObject.NULL)
+            put("visKm", JSONObject.NULL)
+          }
+          put("cavok", pt.isCavok)
         },
       )
     }
     return JSONObject().apply {
       put("icao", icao)
       put("city", city)
+      put("mode", mode)
       put("windUnit", windUnit.label)
       put("pressureUnit", pressureUnit.label)
       put("pressureDecimals", pressureDecimals)
@@ -91,6 +111,27 @@ data class D3TrendsDashboardModel(
       val rounded = d.roundToInt()
       val sign = if (rounded > 0) "+" else ""
       "$sign$rounded гПа"
+    }
+  }
+
+  fun formattedVisibilityRange(): String {
+    val minV = minVisibilityMeters ?: return "--"
+    val maxV = maxVisibilityMeters ?: return "--"
+    return if (minV == maxV) {
+      formatVisibility(minV)
+    } else {
+      "${formatVisibility(minV)}–${formatVisibility(maxV)}"
+    }
+  }
+
+  companion object {
+    fun formatVisibility(meters: Int?): String {
+      if (meters == null) return "--"
+      return when {
+        meters >= 10000 -> "≥10 км"
+        meters >= 1000 -> String.format(Locale.US, "%.1f км", meters / 1000.0)
+        else -> "$meters м"
+      }
     }
   }
 }
@@ -130,6 +171,11 @@ object D3TrendsChartDataBuilder {
         PressureUnit.INHG -> entry.qnhInHg
           ?: entry.qnhHpa?.let { UnitConverter.convertHpaToInHg(it) }
       }
+      val resolvedVisMeters = when {
+        entry.isCavok -> 10000
+        entry.visibilityMeters != null -> entry.visibilityMeters.coerceIn(0, 10000)
+        else -> null
+      }
       D3TrendChartPoint(
         observedAtMillis = entry.observedAtMillis,
         observationTimeUtc = entry.observationTimeUtc,
@@ -138,12 +184,15 @@ object D3TrendsChartDataBuilder {
         pressureDisplay = qnhVal?.let {
           if (pressureUnit == PressureUnit.INHG) (it * 100.0).roundToInt() / 100.0 else it.roundToInt().toDouble()
         },
+        visibilityMeters = resolvedVisMeters,
+        isCavok = entry.isCavok,
       )
     }
 
     val windSeries = chartPoints.map { it.windDisplay }
     val gustSeries = chartPoints.mapNotNull { it.gustDisplay }
     val pressureSeries = chartPoints.mapNotNull { it.pressureDisplay }
+    val visibilitySeries = chartPoints.mapNotNull { it.visibilityMeters }
     val pressureDelta = if (pressureSeries.size >= 2) {
       pressureSeries.last() - pressureSeries.first()
     } else if (pressureSeries.size == 1) {
@@ -166,6 +215,9 @@ object D3TrendsChartDataBuilder {
       maxPressureDisplay = pressureSeries.maxOrNull(),
       latestPressureDisplay = pressureSeries.lastOrNull(),
       deltaPressureDisplay = pressureDelta,
+      minVisibilityMeters = visibilitySeries.minOrNull(),
+      maxVisibilityMeters = visibilitySeries.maxOrNull(),
+      latestVisibilityMeters = visibilitySeries.lastOrNull(),
     )
   }
 }

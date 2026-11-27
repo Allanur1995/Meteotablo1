@@ -26,6 +26,7 @@ fun main() {
       unitPreferencesStorage = DesktopUnitPreferencesStorage(),
       weatherHistoryStorage = DesktopWeatherHistoryStorage(),
       recentSearchesStorage = DesktopRecentSearchesStorage(),
+      weatherCacheRepository = DesktopWeatherCacheStorage(),
     )
     controllerRef = controller
     DesktopSplashLauncher.showAndLaunch {

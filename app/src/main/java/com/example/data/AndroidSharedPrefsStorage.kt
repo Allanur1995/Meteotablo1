@@ -204,7 +204,7 @@ class SharedPreferencesUnitPreferencesStorage(
     val autoRefreshEnabled = prefs.getBoolean(KEY_AUTO_REFRESH_ENABLED, true)
     val rawInterval = prefs.getInt(
       KEY_AUTO_REFRESH_INTERVAL_MINUTES,
-      AutoRefreshInterval.FIFTEEN_MIN.minutes,
+      AutoRefreshInterval.ONE_MIN.minutes,
     )
     val autoRefreshInterval = AutoRefreshInterval.fromMinutes(rawInterval).minutes
     val isNightMode = prefs.getBoolean(KEY_IS_NIGHT_MODE, false)
@@ -280,5 +280,73 @@ class SharedPreferencesRecentSearchesStorage(
     const val KEY_RECENT_SEARCHES = "recent_search_icao_codes"
   }
 }
+
+class SharedPreferencesAirportRunwaysStorage(
+  context: Context,
+) : AirportRunwaysStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadAll(): Map<String, List<com.example.model.RunwayPair>> {
+    return AirportRunwaysSerializer.fromJson(prefs.getString(KEY_CUSTOM_RUNWAYS, null))
+  }
+
+  override fun saveForAirport(icao: String, runways: List<com.example.model.RunwayPair>) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4 || runways.isEmpty()) return
+    val current = loadAll().toMutableMap()
+    current[clean] = runways.toList()
+    prefs.edit().putString(KEY_CUSTOM_RUNWAYS, AirportRunwaysSerializer.toJson(current)).apply()
+  }
+
+  override fun clearForAirport(icao: String) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4) return
+    val current = loadAll().toMutableMap()
+    if (current.remove(clean) != null) {
+      prefs.edit().putString(KEY_CUSTOM_RUNWAYS, AirportRunwaysSerializer.toJson(current)).apply()
+    }
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_CUSTOM_RUNWAYS = "custom_airport_runways_json"
+  }
+}
+
+
+class SharedPreferencesAirportRunwaysStorage(
+  context: Context,
+) : AirportRunwaysStorage {
+
+  private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  override fun loadAll(): Map<String, List<com.example.model.RunwayPair>> {
+    return AirportRunwaysSerializer.fromJson(prefs.getString(KEY_CUSTOM_RUNWAYS, null))
+  }
+
+  override fun saveForAirport(icao: String, runways: List<com.example.model.RunwayPair>) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4 || runways.isEmpty()) return
+    val current = loadAll().toMutableMap()
+    current[clean] = runways.toList()
+    prefs.edit().putString(KEY_CUSTOM_RUNWAYS, AirportRunwaysSerializer.toJson(current)).apply()
+  }
+
+  override fun clearForAirport(icao: String) {
+    val clean = icao.trim().uppercase()
+    if (clean.length != 4) return
+    val current = loadAll().toMutableMap()
+    if (current.remove(clean) != null) {
+      prefs.edit().putString(KEY_CUSTOM_RUNWAYS, AirportRunwaysSerializer.toJson(current)).apply()
+    }
+  }
+
+  private companion object {
+    const val PREFS_NAME = "meteotablo_prefs"
+    const val KEY_CUSTOM_RUNWAYS = "custom_airport_runways_json"
+  }
+}
+
 
 

@@ -16,6 +16,9 @@ enum class AircraftTypePreset(
   PIPER_PA28("PIPER_PA28", "Piper PA-28", 17),
   BEECH_KING_AIR("BEECH_KING_AIR", "King Air 350", 25),
   ATR_72("ATR_72", "ATR 72 / Ан-24", 35),
+  B737("B737", "B737", 35),
+  B738("B738", "B738", 36),
+  B773("B773", "B773", 38),
   A320_B737("A320_B737", "A320 / B737", 38),
   B777_WIDE("B777_WIDE", "B777 / A330", 40),
   CUSTOM("CUSTOM", "Свой тип ВС", 20);

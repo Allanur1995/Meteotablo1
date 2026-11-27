@@ -474,5 +474,71 @@ class DesktopSmokeTest {
       controller2.shutdown()
     }
   }
+
+  @Test
+  fun `desktop weather cache storage persists METAR offline and DesktopThemeHelper fixes Night button contrast`() {
+    val cacheFile = File.createTempFile("meteotablo_win_cache", ".properties")
+    cacheFile.deleteOnExit()
+    cacheFile.delete()
+
+    val cacheRepo = DesktopWeatherCacheStorage(cacheFile)
+    val utam = com.example.data.AirportCatalog.findOrDefault("UTAM")
+    val validWeather = com.example.domain.AviationWeatherParser.parse(
+      rawMetarInput = "METAR UTAM 270800Z 29014G22KT 9999 SCT030 20/07 Q1019 NOSIG",
+      rawTafInput = "TAF UTAM 270500Z 2706/2806 29012KT CAVOK",
+      station = utam,
+      sourceLabel = "ведомственный сервер",
+    )
+
+    kotlinx.coroutines.runBlocking {
+      cacheRepo.saveWeather(utam, validWeather, 123456789L)
+    }
+    val reloadedRepo = DesktopWeatherCacheStorage(cacheFile)
+    val loadedRecord = kotlinx.coroutines.runBlocking {
+      reloadedRepo.getCachedWeather("UTAM")
+    }
+    assertTrue(loadedRecord != null)
+    assertEquals(validWeather.rawMetar, loadedRecord!!.rawMetar)
+    assertEquals(validWeather.rawTaf, loadedRecord.rawTaf)
+
+    // Controller preload + sanitized server log
+    val controller = DesktopController(weatherCacheRepository = reloadedRepo, autoFetch = false)
+    try {
+      Thread.sleep(200)
+      assertTrue(controller.state.weather.rawMetar.contains("270800Z"))
+      assertTrue(controller.state.isOfflineCachedWeather)
+
+      controller.updateServerConfig(
+        com.example.data.ServerConfig(
+          url = "http://217.174.229.206:8181/cgi-bin/wdr",
+          username = "secretuser",
+          password = "secretpassword",
+        ),
+        fetchNow = false,
+      )
+      val allLogs = controller.state.logs.joinToString("\n") { it.message }
+      assertFalse(allLogs.contains("217.174.229.206"))
+      assertFalse(allLogs.contains("secretuser"))
+      assertFalse(allLogs.contains("secretpassword"))
+    } finally {
+      controller.shutdown()
+    }
+
+    // Verify Night mode DesktopThemeHelper applies BasicButtonUI with dark background & bright text
+    val btn = javax.swing.JButton("Тест")
+    val combo = javax.swing.JComboBox(arrayOf("UTAM", "UTAA"))
+    val panel = javax.swing.JPanel().apply {
+      add(btn)
+      add(combo)
+    }
+    DesktopThemeHelper.applyThemeTree(panel, NightDesktopPalette)
+    assertTrue(btn.ui is javax.swing.plaf.basic.BasicButtonUI)
+    assertTrue(btn.isOpaque)
+    assertEquals(NightDesktopPalette.buttonBackground, btn.background)
+    assertEquals(NightDesktopPalette.textPrimary, btn.foreground)
+    assertTrue(combo.ui is javax.swing.plaf.basic.BasicComboBoxUI)
+    assertEquals(NightDesktopPalette.fieldBackground, combo.background)
+    assertEquals(NightDesktopPalette.textPrimary, combo.foreground)
+  }
 }
 

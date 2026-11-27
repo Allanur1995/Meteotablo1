@@ -26,10 +26,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -56,8 +55,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AirportCatalog
@@ -111,14 +108,13 @@ fun StationAndMetarDialog(
   var presetNameInput by remember { mutableStateOf("") }
   var metarInput by remember { mutableStateOf(currentMetar) }
   var tafInput by remember { mutableStateOf(currentTaf) }
-  var serverUrlInput by remember(serverConfig) { mutableStateOf(serverConfig.url) }
-  var serverUserInput by remember(serverConfig) { mutableStateOf(serverConfig.username) }
-  var serverPassInput by remember(serverConfig) { mutableStateOf(serverConfig.password) }
+  var serverUrlInternal by remember(serverConfig) { mutableStateOf(serverConfig.url) }
+  var serverUserInternal by remember(serverConfig) { mutableStateOf(serverConfig.username) }
+  var serverPassInternal by remember(serverConfig) { mutableStateOf(serverConfig.password) }
   var sourceMode by remember(serverConfig) { mutableStateOf(serverConfig.resolvedMode()) }
   var useAwc by remember(serverConfig) { mutableStateOf(serverConfig.useAviationWeatherGov) }
   var useTgftp by remember(serverConfig) { mutableStateOf(serverConfig.useNoaaTgftp) }
   var useVatsim by remember(serverConfig) { mutableStateOf(serverConfig.useVatsimMetar) }
-  var showPassword by remember { mutableStateOf(false) }
   var isTestingIp by remember { mutableStateOf(false) }
   var ipTestReport by remember { mutableStateOf<CustomMeteoServerClient.ConnectionTestReport?>(null) }
   val dialogScope = rememberCoroutineScope()
@@ -505,49 +501,38 @@ fun StationAndMetarDialog(
             }
           }
           Spacer(modifier = Modifier.height(10.dp))
-          OutlinedTextField(
-            value = serverUrlInput,
-            onValueChange = { serverUrlInput = it },
-            label = { Text("URL / IP сервера") },
-            singleLine = true,
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier
               .fillMaxWidth()
-              .testTag("server_url_input"),
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
+              .testTag("server_auto_auth_card")
+              .clip(RoundedCornerShape(4.dp))
+              .background(palette.secondaryFieldBackground)
+              .border(1.dp, palette.borderStrong, RoundedCornerShape(4.dp))
+              .padding(horizontal = 10.dp, vertical = 8.dp),
           ) {
-            OutlinedTextField(
-              value = serverUserInput,
-              onValueChange = { serverUserInput = it },
-              label = { Text("Логин") },
-              singleLine = true,
-              modifier = Modifier
-                .weight(1f)
-                .testTag("server_user_input"),
+            Icon(
+              imageVector = Icons.Filled.Lock,
+              contentDescription = "Автоматическая авторизация",
+              tint = palette.headwindPositive,
+              modifier = Modifier.size(18.dp),
             )
-            OutlinedTextField(
-              value = serverPassInput,
-              onValueChange = { serverPassInput = it },
-              label = { Text("Пароль") },
-              singleLine = true,
-              visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-              trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                  Icon(
-                    imageVector = if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                    contentDescription = "Показать пароль",
-                  )
-                }
-              },
-              modifier = Modifier
-                .weight(1f)
-                .testTag("server_pass_input"),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Ведомственный метеосервер · Авто-вход: активен",
+                color = palette.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+              )
+              Text(
+                text = "Адрес, логин и пароль защищены и применяются автоматически",
+                color = palette.textSecondary,
+                fontSize = 10.5.sp,
+              )
+            }
           }
-          Spacer(modifier = Modifier.height(6.dp))
+          Spacer(modifier = Modifier.height(8.dp))
           Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -557,9 +542,9 @@ fun StationAndMetarDialog(
                 isTestingIp = true
                 ipTestReport = null
                 val probeCfg = ServerConfig(
-                  url = serverUrlInput,
-                  username = serverUserInput.trim(),
-                  password = serverPassInput,
+                  url = serverUrlInternal,
+                  username = serverUserInternal.trim(),
+                  password = serverPassInternal,
                   sourceMode = DataSourceMode.IP_ONLY,
                   useCustomServer = true,
                   fallbackToNoaa = false,
@@ -579,7 +564,7 @@ fun StationAndMetarDialog(
                 .testTag("server_test_connection_button"),
             ) {
               Text(
-                text = if (isTestingIp) "Проверка (${currentStation.icao})…" else "Проверить IP (${currentStation.icao})",
+                text = if (isTestingIp) "Проверка (${currentStation.icao})…" else "Проверить сервер (${currentStation.icao})",
                 fontSize = 11.5.sp,
                 fontWeight = FontWeight.Bold,
               )
@@ -587,16 +572,19 @@ fun StationAndMetarDialog(
             OutlinedButton(
               onClick = {
                 sourceMode = DataSourceMode.AUTO_IP_FIRST
-                serverUrlInput = ServerConfig.DEFAULT_SERVER_URL
-                serverUserInput = ServerConfig.DEFAULT_USERNAME
-                serverPassInput = ServerConfig.DEFAULT_PASSWORD
+                serverUrlInternal = ServerConfig.DEFAULT_SERVER_URL
+                serverUserInternal = ServerConfig.DEFAULT_USERNAME
+                serverPassInternal = ServerConfig.DEFAULT_PASSWORD
+                useAwc = true
+                useTgftp = true
+                useVatsim = true
               },
               modifier = Modifier
                 .heightIn(min = 48.dp)
                 .testTag("server_reset_wdr_button"),
             ) {
               Text(
-                text = "WDR по умолч.",
+                text = "Авто по умолч.",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
               )
@@ -754,9 +742,9 @@ fun StationAndMetarDialog(
               1 -> onApplyCustomMetar(metarInput, tafInput)
               else -> onSaveServerConfig(
                 ServerConfig(
-                  url = serverUrlInput,
-                  username = serverUserInput,
-                  password = serverPassInput,
+                  url = serverUrlInternal,
+                  username = serverUserInternal,
+                  password = serverPassInternal,
                   useCustomServer = sourceMode != DataSourceMode.INTERNET_ONLY,
                   fallbackToNoaa = sourceMode != DataSourceMode.IP_ONLY,
                   sourceMode = sourceMode,

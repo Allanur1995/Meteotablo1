@@ -68,11 +68,11 @@ class UmasWdrClient(
       ?: return WdrFetchResult(
         rawMetar = null,
         rawTaf = null,
-        hostLabel = config.url,
-        logs = listOf("WDR: некорректный URL ${config.url}"),
-        errorMessage = "Некорректный URL сервера: ${config.url}",
+        hostLabel = "ведомственный сервер",
+        logs = listOf("WDR: некорректная конфигурация сервера"),
+        errorMessage = "Некорректная конфигурация метеосервера",
       )
-    val hostLabel = formatHostLabel(wdrHttpUrl)
+    val hostLabel = "ведомственный сервер"
 
     return try {
       val (postUrl, postCode, postHtml) = postWdrLogin(wdrHttpUrl, config, logs)
@@ -84,7 +84,7 @@ class UmasWdrClient(
           logs = logs,
           reachable = true,
           httpCode = postCode,
-          errorMessage = "WDR POST вернул HTTP $postCode на $hostLabel",
+          errorMessage = "WDR POST вернул HTTP $postCode ($hostLabel)",
         )
       }
 
@@ -105,7 +105,7 @@ class UmasWdrClient(
           logs = logs,
           reachable = true,
           httpCode = postCode,
-          errorMessage = "WDR отклонил логин/пароль (показана форма входа на $hostLabel)",
+          errorMessage = "Автоматическая авторизация WDR отклонена ($hostLabel)",
         )
       }
 
@@ -120,7 +120,7 @@ class UmasWdrClient(
       val orderedSatr = prioritizeLinksForStation(satrLinks, cleanIcao).take(24)
       for (link in orderedSatr) {
         if (!visited.add(link.resolvedUrl)) continue
-        logs.add("WDR SATR GET ${link.name} -> ${link.resolvedUrl}")
+        logs.add("WDR SATR GET ${link.name}")
         val (code, body) = getPage(link.resolvedUrl)
         logs.add("WDR HTTP $code <- ${link.name} (${body.length} символов)")
         if (code in 200..299 && body.isNotBlank()) {
@@ -143,7 +143,7 @@ class UmasWdrClient(
         for (link in orderedFttr) {
           if (!visited.add(link.resolvedUrl)) continue
           inspectedFttrCount++
-          logs.add("WDR FTTR GET ${link.name} -> ${link.resolvedUrl}")
+          logs.add("WDR FTTR GET ${link.name}")
           val (code, body) = getPage(link.resolvedUrl)
           logs.add("WDR HTTP $code <- ${link.name} (${body.length} символов)")
           if (code in 200..299 && body.isNotBlank()) {
@@ -185,7 +185,7 @@ class UmasWdrClient(
           logs = logs,
           reachable = true,
           httpCode = postCode,
-          errorMessage = "На $hostLabel (WDR) нет METAR для $cleanIcao: $linkHint",
+          errorMessage = "На сервере (WDR) нет METAR для $cleanIcao: $linkHint",
         )
       } else {
         logs.add("WDR OK ($cleanIcao): $foundMetar")
@@ -199,7 +199,7 @@ class UmasWdrClient(
         )
       }
     } catch (e: Exception) {
-      val msg = e.message ?: e::class.simpleName ?: "Ошибка соединения WDR"
+      val msg = sanitizeIpFromMessage(e.message ?: e::class.simpleName ?: "Ошибка соединения WDR")
       logs.add("WDR ошибка ($hostLabel): $msg")
       WdrFetchResult(
         rawMetar = null,
@@ -207,7 +207,7 @@ class UmasWdrClient(
         hostLabel = hostLabel,
         logs = logs,
         reachable = false,
-        errorMessage = "IP-сервер $hostLabel недоступен: $msg",
+        errorMessage = "Ведомственный сервер (WDR) недоступен: $msg",
       )
     }
   }
@@ -220,8 +220,8 @@ class UmasWdrClient(
     val cleanIcao = icao.trim().uppercase()
     val logs = mutableListOf<String>()
     val wdrHttpUrl = resolveWdrUrl(config.url)
-      ?: return WdrHistoryResult(emptyList(), emptyList(), config.url, logs, "Некорректный URL ${config.url}")
-    val hostLabel = formatHostLabel(wdrHttpUrl)
+      ?: return WdrHistoryResult(emptyList(), emptyList(), "ведомственный сервер", logs, "Некорректная конфигурация сервера")
+    val hostLabel = "ведомственный сервер"
 
     return try {
       val (postUrl, postCode, postHtml) = postWdrLogin(wdrHttpUrl, config, logs)
@@ -263,10 +263,14 @@ class UmasWdrClient(
       logs.add("WDR 24ч ($cleanIcao): METAR=${metars.size}, TAF=${tafs.size}")
       WdrHistoryResult(metars.toList(), tafs.toList(), hostLabel, logs)
     } catch (e: Exception) {
-      val msg = e.message ?: e::class.simpleName ?: "Ошибка WDR истории"
+      val msg = sanitizeIpFromMessage(e.message ?: e::class.simpleName ?: "Ошибка WDR истории")
       logs.add("WDR 24ч ошибка: $msg")
       WdrHistoryResult(emptyList(), emptyList(), hostLabel, logs, msg)
     }
+  }
+
+  private fun sanitizeIpFromMessage(msg: String): String {
+    return msg.replace(Regex("""/?\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"""), "[сервер]")
   }
 
   private fun postWdrLogin(
@@ -274,7 +278,7 @@ class UmasWdrClient(
     config: ServerConfig,
     logs: MutableList<String>,
   ): Triple<HttpUrl, Int, String> {
-    logs.add("WDR POST $wdrUrl (user=${config.username.ifBlank { "нет" }})")
+    logs.add("Авто-вход на ведомственный сервер (WDR)…")
     val formBody = FormBody.Builder()
       .add("user", config.username)
       .add("pass", config.password)
@@ -291,7 +295,7 @@ class UmasWdrClient(
     client.newCall(request).execute().use { resp ->
       val bodyText = decodeResponseBody(resp)
       val finalUrl = resp.request.url
-      logs.add("WDR HTTP ${resp.code} <- $finalUrl (${bodyText.length} символов)")
+      logs.add("WDR HTTP ${resp.code} (${bodyText.length} символов)")
       return Triple(finalUrl, resp.code, bodyText)
     }
   }
