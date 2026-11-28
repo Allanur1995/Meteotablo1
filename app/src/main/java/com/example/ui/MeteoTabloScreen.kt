@@ -53,6 +53,7 @@ import com.example.model.WindSpeedUnit
 import com.example.ui.components.AirportSearchBar
 import com.example.ui.components.CenterWeatherPanel
 import com.example.ui.components.CrosswindCalculatorDialog
+import com.example.ui.components.DispatcherBriefingCard
 import com.example.ui.components.DualRunwayWindRosePanel
 import com.example.ui.components.ExportWeatherDialog
 import com.example.ui.components.LogViewerDialog
@@ -60,6 +61,8 @@ import com.example.ui.components.MetarTafFooter
 import com.example.ui.components.MeteoTopToolbar
 import com.example.ui.components.PressureConversionUtilityDialog
 import com.example.ui.components.RunwayColumnPanel
+import com.example.ui.components.RunwayManagerDialog
+import com.example.ui.components.SigmetAlertsDialog
 import com.example.ui.components.StationAndMetarDialog
 import com.example.ui.components.WeatherAlertsDialog
 import com.example.ui.components.calculateRunwayWindComponents
@@ -122,6 +125,10 @@ fun MeteoTabloScreen(
     onSetVfrMonitorAllFavorites = viewModel::setVfrMonitorAllFavorites,
     onCheckVfrNow = viewModel::checkVfrMinimumsNow,
     onClearRecentSearches = viewModel::clearRecentSearches,
+    onAddRunwayPair = viewModel::addRunwayPair,
+    onRemoveRunwayPair = viewModel::removeRunwayPair,
+    onResetRunwaysToDefault = viewModel::resetRunwaysToDefault,
+    onRefreshSigmets = { viewModel.refreshSigmets() },
     modifier = modifier,
   )
 }
@@ -169,6 +176,10 @@ fun MeteoTabloContent(
   onSetVfrMonitorAllFavorites: (Boolean) -> Unit = {},
   onCheckVfrNow: () -> Unit = {},
   onClearRecentSearches: () -> Unit = {},
+  onAddRunwayPair: (String, Int) -> Unit = { _, _ -> },
+  onRemoveRunwayPair: (Int) -> Unit = {},
+  onResetRunwaysToDefault: () -> Unit = {},
+  onRefreshSigmets: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val palette = LocalMeteoPalette.current
@@ -180,6 +191,7 @@ fun MeteoTabloContent(
   var showMetarTable by remember { mutableStateOf(false) }
   var showSettings by remember { mutableStateOf(false) }
   var showMapScreen by remember { mutableStateOf(false) }
+  var showRadarScreen by remember { mutableStateOf(false) }
   var showHistory24h by remember { mutableStateOf(false) }
   var showThresholdConfig by remember { mutableStateOf(false) }
   var showExportDialog by remember { mutableStateOf(false) }
@@ -189,6 +201,8 @@ fun MeteoTabloContent(
   var showMyAirportsScreen by remember { mutableStateOf(false) }
   var showD3TrendsScreen by remember { mutableStateOf(false) }
   var showCrosswindCalculator by remember { mutableStateOf(false) }
+  var showRunwayManagerDialog by remember { mutableStateOf(false) }
+  var showSigmetDialog by remember { mutableStateOf(false) }
 
   fun launchWeatherShareSheet() {
     val payload = WeatherExportPayload(
@@ -289,6 +303,7 @@ fun MeteoTabloContent(
       onOpenExportDialog = { showExportDialog = true },
       onOpenDecoder = { showDecoderScreen = true },
       onOpenPressureUtility = { showPressureUtility = true },
+      onOpenManageRunways = { showRunwayManagerDialog = true },
       modifier = modifier,
     )
     if (showStationDialog) {
@@ -413,6 +428,19 @@ fun MeteoTabloContent(
       onToggleFavorite = onToggleFavorite,
       modifier = modifier,
     )
+  } else if (showRadarScreen) {
+    WeatherRadarScreen(
+      stations = uiState.mapStations,
+      activeStation = uiState.station,
+      isNightMode = uiState.isNightMode,
+      isFullscreen = uiState.isFullscreen,
+      onSelectStationOnBoard = { icao ->
+        onSelectStation(icao)
+        showRadarScreen = false
+      },
+      onBack = { showRadarScreen = false },
+      modifier = modifier,
+    )
   } else if (showMyAirportsScreen) {
     MyAirportsScreen(
       currentStation = uiState.station,
@@ -504,6 +532,7 @@ fun MeteoTabloContent(
           savedPresets = uiState.savedPresets,
           unreadAlertCount = uiState.unreadAlertCount,
           alertsEnabled = uiState.alertConfig.enabled,
+          activeSigmetCount = uiState.activeSigmets.size,
           onSaveCurrentSetup = { onSaveCurrentSetup(null) },
           onApplySavedPreset = onApplySavedPreset,
           onOpenAlertsDialog = { showAlertsDialog = true },
@@ -533,6 +562,11 @@ fun MeteoTabloContent(
           onOpenMap = {
             showMapScreen = true
             onRefreshMapWeather()
+          },
+          onOpenRadar = { showRadarScreen = true },
+          onOpenSigmetDialog = {
+            showSigmetDialog = true
+            onRefreshSigmets()
           },
           onOpenHistory24h = {
             showHistory24h = true
@@ -745,6 +779,7 @@ fun MeteoTabloContent(
                 onOpenStationDialog = { showStationDialog = true },
                 onToggleUnit = onToggleWindUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                onOpenManageRunways = { showRunwayManagerDialog = true },
                 maxCrosswindKt = activeCrosswindLimitKt,
                 compactMode = isCompactHeight,
                 metarFetchSeq = uiState.metarFetchSeq,
@@ -776,6 +811,7 @@ fun MeteoTabloContent(
                 onOpenStationDialog = { showStationDialog = true },
                 onToggleUnit = onToggleWindUnit,
                 onTogglePressureUnit = onTogglePressureUnit,
+                onOpenManageRunways = { showRunwayManagerDialog = true },
                 maxCrosswindKt = activeCrosswindLimitKt,
                 compactMode = isCompactHeight,
                 metarFetchSeq = uiState.metarFetchSeq,
@@ -797,6 +833,7 @@ fun MeteoTabloContent(
               onOpenStationDialog = { showStationDialog = true },
               onToggleUnit = onToggleWindUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              onOpenManageRunways = { showRunwayManagerDialog = true },
               maxCrosswindKt = activeCrosswindLimitKt,
               metarFetchSeq = uiState.metarFetchSeq,
             )
@@ -814,6 +851,7 @@ fun MeteoTabloContent(
               onOpenStationDialog = { showStationDialog = true },
               onToggleUnit = onToggleWindUnit,
               onTogglePressureUnit = onTogglePressureUnit,
+              onOpenManageRunways = { showRunwayManagerDialog = true },
               maxCrosswindKt = activeCrosswindLimitKt,
               metarFetchSeq = uiState.metarFetchSeq,
             )
@@ -858,6 +896,22 @@ fun MeteoTabloContent(
               showStationDialog = true
             },
             compactMode = isCompactHeight,
+          )
+
+          DispatcherBriefingCard(
+            station = uiState.station,
+            weather = uiState.weather,
+            windUnit = uiState.windUnit,
+            pressureUnit = uiState.pressureUnit,
+            alertConfig = uiState.alertConfig,
+            activeSigmets = uiState.activeSigmets,
+            isLoadingSigmets = uiState.isLoadingSigmets,
+            onOpenSigmetDialog = {
+              showSigmetDialog = true
+              onRefreshSigmets()
+            },
+            onOpenManageRunways = { showRunwayManagerDialog = true },
+            onSelectRunwayPair = onSelectRunwayPair,
           )
         }
       }
@@ -966,6 +1020,29 @@ fun MeteoTabloContent(
       maxCrosswindKt = activeLimit,
       aircraftLabel = uiState.alertConfig.resolvedAircraftName(),
       onDismiss = { showCrosswindCalculator = false },
+    )
+  }
+
+  if (showRunwayManagerDialog) {
+    RunwayManagerDialog(
+      station = uiState.station,
+      selectedRunwayIndex = uiState.selectedRunwayPairIndex,
+      onSelectRunwayPair = onSelectRunwayPair,
+      onAddRunwayPair = onAddRunwayPair,
+      onRemoveRunwayPair = onRemoveRunwayPair,
+      onResetRunwaysToDefault = onResetRunwaysToDefault,
+      onDismiss = { showRunwayManagerDialog = false },
+    )
+  }
+
+  if (showSigmetDialog) {
+    SigmetAlertsDialog(
+      station = uiState.station,
+      pressureUnit = uiState.pressureUnit,
+      sigmets = uiState.activeSigmets,
+      isLoading = uiState.isLoadingSigmets,
+      onRefresh = onRefreshSigmets,
+      onDismiss = { showSigmetDialog = false },
     )
   }
 }

@@ -1,6 +1,7 @@
 package com.example.windows
 
 import com.example.data.AirportCatalog
+import com.example.data.AutoRefreshInterval
 import com.example.data.DataSourceMode
 import com.example.domain.AirportMapProjection
 import com.example.domain.FlightCategory
@@ -60,6 +61,7 @@ import javax.swing.event.DocumentListener
 enum class DesktopCenterView {
   BOARD,
   MAP,
+  RADAR,
   TRENDS,
   MY_AIRPORTS,
 }
@@ -80,7 +82,7 @@ class MeteoDesktopFrame(
   private val favoriteButton = JButton("☆")
   private val metarUtcLabel = JLabel("METAR --:--Z")
   private val sourceModeCombo = JComboBox(DataSourceMode.entries.map { it.shortLabel }.toTypedArray())
-  private val autoRefreshBadgeButton = JButton("АВТО 15м")
+  private val autoRefreshBadgeButton = JButton("АВТО 60с")
   private val refreshButton = JButton("Обновить")
   private val nightButton = JButton("Ночь")
 
@@ -90,9 +92,12 @@ class MeteoDesktopFrame(
   private val pressureUnitButton = JButton("гПа")
   private val myAirportsButton = JButton("Мои")
   private val mapButton = JButton("Карта")
+  private val radarButton = JButton("Радар")
   private val trendsButton = JButton("Графики 24ч")
+  private val runwaysButton = JButton("ВПП")
   private val dualRoseButton = JButton("ВПП Роза")
   private val crosswindButton = JButton("Бок. ветер")
+  private val sigmetButton = JButton("SIGMET")
   private val decoderButton = JButton("Декодер")
   private val pressureConvButton = JButton("QNH/QFE")
   private val tableButton = JButton("Таблица")
@@ -153,6 +158,13 @@ class MeteoDesktopFrame(
     onRefreshAllStations = { controller.refreshMapWeather() },
     onRefreshSingleStation = { icao -> controller.fetchStationWeatherForMap(icao) },
     onToggleFavorite = { icao -> controller.toggleFavorite(icao) },
+  )
+  private val radarPanel = WeatherRadarDesktopPanel(
+    onBackToBoard = { setCenterView(DesktopCenterView.BOARD) },
+    onSelectStationOnBoard = { icao ->
+      controller.selectStation(icao)
+      setCenterView(DesktopCenterView.BOARD)
+    },
   )
   private val trendsPanel = WindPressure24hChartPanel(
     onBackToBoard = { setCenterView(DesktopCenterView.BOARD) },
@@ -246,7 +258,7 @@ class MeteoDesktopFrame(
       sourceModeCombo.font = Font("Segoe UI", Font.BOLD, 11)
       sourceModeCombo.toolTipText = "Источник данных: ведомственный метеосервер и/или Интернет-сайты"
       autoRefreshBadgeButton.font = Font("Consolas", Font.BOLD, 11)
-      autoRefreshBadgeButton.toolTipText = "Автообновление 5 / 15 / 30 мин (нажмите для настройки)"
+      autoRefreshBadgeButton.toolTipText = "Автообновление 60с / 5 / 15 / 30 мин (нажмите для настройки)"
       add(metarUtcLabel)
       add(sourceModeCombo)
       add(autoRefreshBadgeButton)
@@ -266,9 +278,12 @@ class MeteoDesktopFrame(
     toolsStripPanel.add(pressureUnitButton)
     toolsStripPanel.add(myAirportsButton)
     toolsStripPanel.add(mapButton)
+    toolsStripPanel.add(radarButton)
     toolsStripPanel.add(trendsButton)
+    toolsStripPanel.add(runwaysButton)
     toolsStripPanel.add(dualRoseButton)
     toolsStripPanel.add(crosswindButton)
+    toolsStripPanel.add(sigmetButton)
     toolsStripPanel.add(decoderButton)
     toolsStripPanel.add(pressureConvButton)
     toolsStripPanel.add(tableButton)
@@ -475,6 +490,7 @@ class MeteoDesktopFrame(
     centerDeckPanel.isOpaque = false
     centerDeckPanel.add(boardPanel, DesktopCenterView.BOARD.name)
     centerDeckPanel.add(mapPanel, DesktopCenterView.MAP.name)
+    centerDeckPanel.add(radarPanel, DesktopCenterView.RADAR.name)
     centerDeckPanel.add(trendsPanel, DesktopCenterView.TRENDS.name)
     centerDeckPanel.add(myAirportsViewPanel, DesktopCenterView.MY_AIRPORTS.name)
     centerCardLayout.show(centerDeckPanel, DesktopCenterView.BOARD.name)
@@ -613,6 +629,9 @@ class MeteoDesktopFrame(
     mapButton.addActionListener {
       setCenterView(if (currentCenterView == DesktopCenterView.MAP) DesktopCenterView.BOARD else DesktopCenterView.MAP)
     }
+    radarButton.addActionListener {
+      setCenterView(if (currentCenterView == DesktopCenterView.RADAR) DesktopCenterView.BOARD else DesktopCenterView.RADAR)
+    }
     trendsButton.addActionListener {
       if (currentCenterView == DesktopCenterView.TRENDS) {
         setCenterView(DesktopCenterView.BOARD)
@@ -622,8 +641,13 @@ class MeteoDesktopFrame(
         controller.load24hHistoryForIcao(trendIcao, force = false)
       }
     }
+    runwaysButton.addActionListener { DesktopDialogs.showRunwaysDialog(this, controller) }
     dualRoseButton.addActionListener { DesktopDialogs.showDualWindRoseDialog(this, controller) }
     crosswindButton.addActionListener { DesktopDialogs.showCrosswindCalculatorDialog(this, controller) }
+    sigmetButton.addActionListener {
+      controller.refreshSigmets(targetStation = controller.state.station, force = true)
+      DesktopDialogs.showSigmetsAndBriefingDialog(this, controller)
+    }
     decoderButton.addActionListener { DesktopDialogs.showDecoderDialog(this, controller) }
     pressureConvButton.addActionListener { DesktopDialogs.showPressureConverterDialog(this, controller) }
     tableButton.addActionListener { DesktopDialogs.showMetarTableDialog(this, controller) }
@@ -715,6 +739,7 @@ class MeteoDesktopFrame(
     when (view) {
       DesktopCenterView.BOARD -> Unit
       DesktopCenterView.MAP -> mapPanel.applyState(controller.state)
+      DesktopCenterView.RADAR -> radarPanel.onShown(controller.state)
       DesktopCenterView.TRENDS -> trendsPanel.applyState(controller.state)
       DesktopCenterView.MY_AIRPORTS -> rebuildMyAirportsBar(controller.state)
     }
@@ -996,7 +1021,7 @@ class MeteoDesktopFrame(
         sourceModeCombo.selectedIndex = modeIdx
       }
       autoRefreshBadgeButton.text = if (state.autoRefreshEnabled) {
-        "АВТО ${state.autoRefreshIntervalMinutes}м"
+        "АВТО ${AutoRefreshInterval.fromMinutes(state.autoRefreshIntervalMinutes).shortLabel}"
       } else {
         "РУЧН."
       }
@@ -1012,6 +1037,7 @@ class MeteoDesktopFrame(
       }
       windUnitButton.text = state.windUnit.label
       pressureUnitButton.text = state.pressureUnit.label
+      sigmetButton.text = if (state.activeSigmets.isNotEmpty()) "SIGMET (${state.activeSigmets.size})" else "SIGMET"
       alertsButton.text = if (state.unreadAlertCount > 0) "Тревога (${state.unreadAlertCount})" else "Оповещ."
       presetsButton.text = if (state.savedPresets.isEmpty()) "Профили" else "Профили (${state.savedPresets.size})"
       applyButtonTheme(state)
@@ -1044,7 +1070,7 @@ class MeteoDesktopFrame(
         calc = state.reciprocalRunwayCalc,
         state = state,
       )
-      rightRunwaySpacer.text = "${state.station.icao} · ${state.station.elevationMeters} м"
+      rightRunwaySpacer.text = "${state.station.icao} · ${UnitConverter.formatElevation(state.station.elevationMeters, state.pressureUnit)}"
       rightRunwaySpacer.foreground = pal.textSecondary
 
       // Center Telemetry
@@ -1068,18 +1094,31 @@ class MeteoDesktopFrame(
       stationSubtitleLabel.text = "${state.station.icao} · ${state.station.city} (UTC)"
       stationSubtitleLabel.foreground = pal.textSecondary
 
+      val (visVal, visUnit) = UnitConverter.formatVisibility(w.visibilityMeters, w.isCavok, state.pressureUnit)
       visField.text = when {
-        w.isCavok -> "CAVOK (> 10 км)"
-        w.visibilityMeters != null && w.visibilityMeters >= 9999 -> "≥ 10 км"
-        w.visibilityMeters != null -> "${w.visibilityMeters} м"
-        else -> "--"
+        w.isCavok -> if (state.pressureUnit == PressureUnit.HPA) "CAVOK (> 10 км)" else "CAVOK (≥ 6 SM)"
+        visVal == "----" -> "--"
+        else -> "$visVal $visUnit"
       }
       cloudsField.text = if (w.clouds.isEmpty()) {
         if (w.isCavok) "Нет значимой" else "--"
       } else {
-        w.clouds.joinToString(" ") { "${it.cover} ${it.baseFeet} ft" }
+        w.clouds.joinToString(" ") { c ->
+          if (state.pressureUnit == PressureUnit.HPA) {
+            "${c.cover} ${UnitConverter.feetToMeters(c.baseFeet)}м"
+          } else {
+            "${c.cover} ${c.baseFeet}ft"
+          }
+        }
       }
-      ceilingField.text = w.ceilingFeet?.let { "$it ft (${w.ceilingCode ?: ""})" } ?: "--"
+      val (ceilVal, ceilUnit) = UnitConverter.formatCeilingValueAndUnit(
+        w.ceilingMeters,
+        w.ceilingFeet,
+        w.isCavok,
+        state.pressureUnit,
+      )
+      val ceilCodeSuffix = w.ceilingCode?.let { " ($it)" }.orEmpty()
+      ceilingField.text = if (ceilVal == "---") "--" else "$ceilVal $ceilUnit$ceilCodeSuffix"
       weatherField.text = w.weatherPhenomena
       tempField.text = w.temperatureC?.let { "$it °C" } ?: "--"
       dewField.text = w.dewPointC?.let { "$it °C" } ?: "--"
@@ -1098,11 +1137,15 @@ class MeteoDesktopFrame(
         leftHeadwindField, leftCrosswindField, rightHeadwindField, rightCrosswindField,
       ).forEach { tf ->
         tf.background = pal.fieldBackground
-        tf.foreground = pal.textPrimary
-        tf.border = BorderFactory.createCompoundBorder(
-          BorderFactory.createLineBorder(pal.border, 1),
-          BorderFactory.createEmptyBorder(2, 6, 2, 6),
-        )
+        if (tf.getClientProperty("preserveForeground") != true) {
+          tf.foreground = pal.textPrimary
+        }
+        if (tf.getClientProperty("preserveBorder") != true) {
+          tf.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(pal.border, 1),
+            BorderFactory.createEmptyBorder(2, 6, 2, 6),
+          )
+        }
       }
       applyLabelTheme(centerPanel, pal)
       applyLabelTheme(boardPanel, pal)
@@ -1115,6 +1158,7 @@ class MeteoDesktopFrame(
       ownerRightLabel.foreground = pal.textMuted
 
       mapPanel.applyState(state)
+      radarPanel.applyState(state)
       trendsPanel.applyState(state)
     } finally {
       suppressingEvents = false
@@ -1125,9 +1169,9 @@ class MeteoDesktopFrame(
     val pal = state.palette
     val standardButtons = listOf(
       titleButton, favoriteButton, autoRefreshBadgeButton, refreshButton, nightButton,
-      unitSystemButton, windUnitButton, pressureUnitButton, myAirportsButton, mapButton, trendsButton,
-      dualRoseButton, crosswindButton, decoderButton, pressureConvButton, tableButton, shareButton, exportButton,
-      alertsButton, logButton, presetsButton, serverButton,
+      unitSystemButton, windUnitButton, pressureUnitButton, myAirportsButton, mapButton, radarButton, trendsButton,
+      runwaysButton, dualRoseButton, crosswindButton, sigmetButton, decoderButton, pressureConvButton,
+      tableButton, shareButton, exportButton, alertsButton, logButton, presetsButton, serverButton,
       coordToggleBtn, coordFetchBtn,
       searchClearBtn, recentSearchesClearBtn, alertBannerOpenBtn, alertBannerOkBtn, bannerOkBtn,
       myAirportsBackBtn, myAirportsOpenMapBtn, myAirportsToggleCurrentBtn, myAirportsAddFavBtn,
@@ -1146,9 +1190,17 @@ class MeteoDesktopFrame(
     autoRefreshBadgeButton.foreground = if (state.autoRefreshEnabled) pal.accentCyan else pal.textMuted
     alertsButton.putClientProperty("preserveForeground", true)
     alertsButton.foreground = if (state.unreadAlertCount > 0) pal.tailwindNegative else pal.textPrimary
+    if (state.activeSigmets.isNotEmpty()) {
+      sigmetButton.putClientProperty("preserveForeground", true)
+      sigmetButton.foreground = pal.tailwindNegative
+      DesktopThemeHelper.styleButton(sigmetButton, pal, isActive = true, accentBorder = pal.tailwindNegative, padding = Insets(4, 8, 4, 8))
+    }
 
     if (currentCenterView == DesktopCenterView.MAP) {
       DesktopThemeHelper.styleButton(mapButton, pal, isActive = true, accentBorder = pal.metarAmber, padding = Insets(4, 8, 4, 8))
+    }
+    if (currentCenterView == DesktopCenterView.RADAR) {
+      DesktopThemeHelper.styleButton(radarButton, pal, isActive = true, accentBorder = pal.accentCyan, padding = Insets(4, 8, 4, 8))
     }
     if (currentCenterView == DesktopCenterView.TRENDS) {
       DesktopThemeHelper.styleButton(trendsButton, pal, isActive = true, accentBorder = pal.accentCyan, padding = Insets(4, 8, 4, 8))
@@ -1186,15 +1238,37 @@ class MeteoDesktopFrame(
     val headVal = UnitConverter.convertWindFromKnots(calc.headwindKt, state.windUnit)
     val crossVal = UnitConverter.convertWindFromKnots(calc.crosswindKt, state.windUnit)
     headwindField.text = String.format(Locale.US, "%.1f %s", headVal, state.windUnit.label)
-    crosswindField.text = String.format(Locale.US, "%.1f %s", crossVal, state.windUnit.label)
-    rvrLabel.text = "RVR: ${calc.rvrMeters?.let { "$it м" } ?: "--"}"
+
+    val crosswindExceeded = state.alertConfig.isCrosswindExceeded(calc.crosswindKt, null)
+    if (crosswindExceeded) {
+      crosswindField.text = String.format(Locale.US, "⚠ %.1f %s", crossVal, state.windUnit.label)
+      crosswindField.putClientProperty("preserveForeground", true)
+      crosswindField.putClientProperty("preserveBorder", true)
+      crosswindField.foreground = pal.tailwindNegative
+      crosswindField.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.tailwindNegative, 2),
+        BorderFactory.createEmptyBorder(1, 5, 1, 5),
+      )
+    } else {
+      crosswindField.text = String.format(Locale.US, "%.1f %s", crossVal, state.windUnit.label)
+      crosswindField.putClientProperty("preserveForeground", false)
+      crosswindField.putClientProperty("preserveBorder", false)
+      crosswindField.foreground = pal.textPrimary
+      crosswindField.border = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(pal.border, 1),
+        BorderFactory.createEmptyBorder(2, 6, 2, 6),
+      )
+    }
+
+    val (rvrVal, rvrUnit) = UnitConverter.formatRvrValueAndUnit(calc.rvrMeters, state.pressureUnit)
+    rvrLabel.text = "RVR: $rvrVal $rvrUnit"
     rvrLabel.foreground = pal.textSecondary
 
     (windRose.parent as? JPanel)?.apply {
       background = pal.panelSurface
       border = BorderFactory.createCompoundBorder(
-        BorderFactory.createMatteBorder(2, 0, 0, 0, pal.accentCyan),
-        BorderFactory.createLineBorder(pal.border, 1),
+        BorderFactory.createMatteBorder(2, 0, 0, 0, if (crosswindExceeded) pal.tailwindNegative else pal.accentCyan),
+        BorderFactory.createLineBorder(if (crosswindExceeded) pal.tailwindNegative else pal.border, 1),
       )
     }
   }
@@ -1211,7 +1285,7 @@ class MeteoDesktopFrame(
         comp !== detectedLocationLabel
       ) {
         comp.foreground = pal.textSecondary
-      } else if (comp is java.awt.Container && comp !== mapPanel && comp !== trendsPanel) {
+      } else if (comp is java.awt.Container && comp !== mapPanel && comp !== radarPanel && comp !== trendsPanel) {
         applyLabelTheme(comp, pal)
       }
     }
@@ -1252,6 +1326,7 @@ class MeteoDesktopFrame(
         addActionListener { DesktopDialogs.showStationAndServerDialog(this@MeteoDesktopFrame, controller, initialTab = 0) }
       },
     )
+    DesktopThemeHelper.stylePopupMenu(menu, cur.palette)
     menu.show(presetsButton, 0, presetsButton.height)
   }
 }

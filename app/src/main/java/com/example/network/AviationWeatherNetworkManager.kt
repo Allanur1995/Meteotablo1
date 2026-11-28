@@ -1,5 +1,6 @@
 package com.example.network
 
+import com.example.model.AirportStation
 import com.squareup.moshi.Moshi
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -300,8 +301,170 @@ class AviationWeatherNetworkManager(
     return HistoricalPublicData(metars = metars, tafs = tafs)
   }
 
+  suspend fun fetchActiveSigmets(
+    station: AirportStation,
+    logs: MutableList<String> = mutableListOf(),
+  ): List<com.example.model.SigmetAlert> {
+    val all = mutableListOf<com.example.model.SigmetAlert>()
+    runCatching {
+      logs.add("Retrofit GET api/data/isigmet?format=json")
+      val resp = api.getISigmets()
+      logs.add("AWC isigmet HTTP ${resp.code()}")
+      if (resp.isSuccessful) {
+        val body = resp.body()?.string().orEmpty()
+        all.addAll(parseSigmetsJson(body, station = station, isAirmet = false))
+      }
+    }.onFailure { err ->
+      logs.add("isigmet ошибка: ${err.message ?: err::class.simpleName}")
+    }
+
+    runCatching {
+      logs.add("Retrofit GET api/data/airsigmet?format=json")
+      val resp = api.getAirSigmets()
+      logs.add("AWC airsigmet HTTP ${resp.code()}")
+      if (resp.isSuccessful) {
+        val body = resp.body()?.string().orEmpty()
+        all.addAll(parseSigmetsJson(body, station = station, isAirmet = true))
+      }
+    }.onFailure { err ->
+      logs.add("airsigmet ошибка: ${err.message ?: err::class.simpleName}")
+    }
+
+    return all
+      .distinctBy { "${it.icaoId}_${it.validFromUtc}_${it.rawText.take(64)}" }
+      .sortedWith(compareBy({ it.distanceKm ?: Int.MAX_VALUE }, { !it.hazard.isSevere }))
+      .take(25)
+  }
+
   companion object {
     const val DEFAULT_AWC_BASE_URL = "https://aviationweather.gov/"
+
+    fun parseSigmetsJson(
+      jsonText: String,
+      station: AirportStation,
+      isAirmet: Boolean = false,
+      maxDistanceKm: Double = 1400.0,
+    ): List<com.example.model.SigmetAlert> {
+      val trimmed = jsonText.trim()
+      if (trimmed.isBlank() || trimmed == "[]") return emptyList()
+      val array = runCatching {
+        if (trimmed.startsWith("{")) {
+          org.json.JSONObject(trimmed).optJSONArray("features") ?: org.json.JSONArray()
+        } else {
+          org.json.JSONArray(trimmed)
+        }
+      }.getOrNull() ?: return emptyList()
+
+      val stationIcao = station.icao.trim().uppercase(Locale.US)
+      val stationPrefix2 = stationIcao.take(2)
+      val utcFmt = java.text.SimpleDateFormat("dd HH:mm'Z'", Locale.US).apply {
+        timeZone = java.util.TimeZone.getTimeZone("UTC")
+      }
+      val out = mutableListOf<com.example.model.SigmetAlert>()
+
+      for (i in 0 until array.length()) {
+        val item = array.optJSONObject(i) ?: continue
+        val props = item.optJSONObject("properties") ?: item
+        val raw = (props.optString("rawSigmet", "").ifBlank {
+          props.optString("rawAirSigmet", "").ifBlank {
+            props.optString("rawText", "")
+          }
+        }).trim()
+        if (raw.isBlank()) continue
+
+        val icaoId = props.optString("icaoId", "").trim().uppercase(Locale.US)
+          .ifBlank { props.optString("airSigmetType", if (isAirmet) "AIRSIG" else "SIGMET") }
+        val firName = props.optString("firName", "").ifBlank {
+          props.optString("firId", "")
+        }.trim()
+        val qualifier = props.optString("qualifier", "").trim()
+        val hazardRaw = props.optString("hazard", "").ifBlank {
+          props.optString("sigmetType", "")
+        }
+        val hazard = com.example.model.SigmetHazardType.fromRaw("$hazardRaw $raw")
+
+        val validFromEpoch = props.optLong("validTimeFrom", 0L)
+        val validToEpoch = props.optLong("validTimeTo", 0L)
+        val fromLabel = if (validFromEpoch > 0L) utcFmt.format(java.util.Date(validFromEpoch * 1000L)) else "--:--Z"
+        val toLabel = if (validToEpoch > 0L) utcFmt.format(java.util.Date(validToEpoch * 1000L)) else "--:--Z"
+
+        val baseFt = props.optInt("altitudeLow1", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+          ?: props.optInt("base", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+        val topFt = props.optInt("altitudeHi1", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+          ?: props.optInt("top", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
+
+        val minDistKm = extractMinDistanceKm(item, props, station.latitude, station.longitude)
+        val textMentionsStation = raw.contains(stationIcao, ignoreCase = true) ||
+          firName.contains(stationIcao, ignoreCase = true) ||
+          (stationPrefix2.length == 2 && icaoId.startsWith(stationPrefix2))
+        val isNear = minDistKm != null && minDistKm <= maxDistanceKm
+
+        if (textMentionsStation || isNear) {
+          out.add(
+            com.example.model.SigmetAlert(
+              id = props.optString("seriesId", "").ifBlank { "${icaoId}_$i" },
+              icaoId = icaoId,
+              firName = firName,
+              qualifier = qualifier,
+              hazard = hazard,
+              rawText = raw,
+              validFromUtc = fromLabel,
+              validToUtc = toLabel,
+              minAltitudeFt = baseFt,
+              maxAltitudeFt = topFt,
+              distanceKm = minDistKm?.toInt(),
+              isAirmet = isAirmet || qualifier.equals("AIRMET", ignoreCase = true),
+            ),
+          )
+        }
+      }
+      return out
+    }
+
+    private fun extractMinDistanceKm(
+      item: org.json.JSONObject,
+      props: org.json.JSONObject,
+      targetLat: Double,
+      targetLon: Double,
+    ): Double? {
+      var minKm: Double? = null
+      fun considerPoint(lat: Double, lon: Double) {
+        if (lat !in -90.0..90.0 || lon !in -180.0..180.0) return
+        val d = com.example.domain.AirportMapProjection.haversineKm(targetLat, targetLon, lat, lon).toDouble()
+        if (minKm == null || d < minKm!!) {
+          minKm = d
+        }
+      }
+
+      // 1. AWC JSON "coords": [{"lat": ..., "lon": ...}]
+      val coordsArr = props.optJSONArray("coords") ?: item.optJSONArray("coords")
+      if (coordsArr != null) {
+        for (j in 0 until coordsArr.length()) {
+          val pt = coordsArr.optJSONObject(j) ?: continue
+          val lat = pt.optDouble("lat", Double.NaN)
+          val lon = pt.optDouble("lon", Double.NaN)
+          if (!lat.isNaN() && !lon.isNaN()) considerPoint(lat, lon)
+        }
+      }
+
+      // 2. Optional GeoJSON geometry.coordinates [[[lon, lat], ...]]
+      val geom = item.optJSONObject("geometry")
+      val geomCoords = geom?.optJSONArray("coordinates")
+      if (geomCoords != null) {
+        fun walk(arr: org.json.JSONArray) {
+          if (arr.length() >= 2 && arr.opt(0) is Number && arr.opt(1) is Number) {
+            considerPoint(arr.optDouble(1), arr.optDouble(0))
+          } else {
+            for (k in 0 until arr.length()) {
+              val child = arr.optJSONArray(k) ?: continue
+              walk(child)
+            }
+          }
+        }
+        walk(geomCoords)
+      }
+      return minKm
+    }
 
     fun defaultOkHttpClient(): OkHttpClient {
       val logging = HttpLoggingInterceptor().apply {

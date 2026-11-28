@@ -36,11 +36,13 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -64,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AirportCatalog
+import com.example.data.AutoRefreshInterval
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.domain.UnitConverter
@@ -89,7 +92,7 @@ fun MeteoTopToolbar(
   isFavorite: Boolean,
   serverConfig: ServerConfig,
   autoRefreshEnabled: Boolean = true,
-  autoRefreshIntervalMinutes: Int = 15,
+  autoRefreshIntervalMinutes: Int = AutoRefreshInterval.ONE_MIN.minutes,
   onRefresh: () -> Unit,
   onToggleNight: () -> Unit,
   onOpenLog: () -> Unit,
@@ -104,6 +107,7 @@ fun MeteoTopToolbar(
   savedPresets: List<SavedWeatherPreset> = emptyList(),
   unreadAlertCount: Int = 0,
   alertsEnabled: Boolean = true,
+  activeSigmetCount: Int = 0,
   onSaveCurrentSetup: () -> Unit = {},
   onApplySavedPreset: (String) -> Unit = {},
   onOpenAlertsDialog: () -> Unit = {},
@@ -112,6 +116,8 @@ fun MeteoTopToolbar(
   onOpenAboutDialog: () -> Unit = {},
   onOpenSettings: () -> Unit = {},
   onOpenMap: () -> Unit = {},
+  onOpenRadar: () -> Unit = {},
+  onOpenSigmetDialog: () -> Unit = {},
   onOpenHistory24h: () -> Unit = {},
   onOpenExportDialog: () -> Unit = {},
   onOpenDecoder: () -> Unit = {},
@@ -485,6 +491,35 @@ fun MeteoTopToolbar(
         )
 
         ToolbarButton(
+          label = "Радар",
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.Radar,
+              contentDescription = "Радар погоды и осадков",
+              tint = palette.metarAmber,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_radar_button",
+          onClick = onOpenRadar,
+        )
+
+        ToolbarButton(
+          label = if (activeSigmetCount > 0) "SIGMET ($activeSigmetCount)" else "SIGMET",
+          isActive = activeSigmetCount > 0,
+          icon = {
+            Icon(
+              imageVector = Icons.Filled.WarningAmber,
+              contentDescription = "Предупреждения SIGMET и AIRMET",
+              tint = if (activeSigmetCount > 0) palette.tailwindNegative else palette.metarAmber,
+              modifier = Modifier.size(14.dp),
+            )
+          },
+          testTag = "toolbar_sigmet_button",
+          onClick = onOpenSigmetDialog,
+        )
+
+        ToolbarButton(
           label = "24ч",
           icon = {
             Icon(
@@ -650,8 +685,9 @@ fun MeteoTopToolbar(
           onClick = onOpenExportDialog,
         )
 
+        val autoIntervalLabel = AutoRefreshInterval.fromMinutes(autoRefreshIntervalMinutes).shortLabel
         Text(
-          text = if (autoRefreshEnabled) "АВТО ${autoRefreshIntervalMinutes}м" else "РУЧН.",
+          text = if (autoRefreshEnabled) "АВТО $autoIntervalLabel" else "РУЧН.",
           color = if (autoRefreshEnabled) palette.headwindPositive else palette.textMuted,
           fontSize = 10.5.sp,
           fontFamily = FontFamily.Monospace,
@@ -730,6 +766,7 @@ fun RunwayColumnPanel(
   onOpenStationDialog: () -> Unit,
   onToggleUnit: () -> Unit,
   onTogglePressureUnit: () -> Unit,
+  onOpenManageRunways: (() -> Unit)? = null,
   maxCrosswindKt: Int? = null,
   compactMode: Boolean = false,
   metarFetchSeq: Long = 0L,
@@ -807,6 +844,23 @@ fun RunwayColumnPanel(
             )
           }
           HorizontalDivider()
+          if (onOpenManageRunways != null) {
+            DropdownMenuItem(
+              text = {
+                Text(
+                  text = "Управлять ВПП (${station.icao})…",
+                  color = palette.metarAmber,
+                  fontWeight = FontWeight.SemiBold,
+                )
+              },
+              onClick = {
+                dropdownExpanded = false
+                onOpenManageRunways()
+              },
+              modifier = Modifier.testTag("runway_manage_button"),
+            )
+            HorizontalDivider()
+          }
           DropdownMenuItem(
             text = { Text("Другой аэропорт / Ввести METAR…") },
             onClick = {
@@ -858,10 +912,11 @@ fun RunwayColumnPanel(
       verticalArrangement = Arrangement.spacedBy(if (compactMode) 3.dp else 5.dp),
       modifier = Modifier.fillMaxWidth(),
     ) {
+      val (rvrVal, rvrUnit) = UnitConverter.formatRvrValueAndUnit(calculation.rvrMeters, pressureUnit)
       InstrumentValueRow(
         label = "RVR",
-        value = calculation.rvrMeters?.toString() ?: "----",
-        unit = "м",
+        value = rvrVal,
+        unit = rvrUnit,
         isHighlighted = true,
         compactMode = compactMode,
       )
@@ -1056,20 +1111,31 @@ fun CenterWeatherPanel(
       }
 
       // Row 5: MOR & ВНГО side by side
+      val (compactMorVal, compactMorUnit) = UnitConverter.formatVisibility(
+        visibilityMeters = weather.visibilityMeters,
+        isCavok = weather.isCavok,
+        pressureUnit = pressureUnit,
+      )
+      val (compactCeilVal, compactCeilUnit) = UnitConverter.formatCeilingValueAndUnit(
+        ceilingMeters = weather.ceilingMeters,
+        ceilingFeet = weather.ceilingFeet,
+        isCavok = weather.isCavok,
+        pressureUnit = pressureUnit,
+      )
       Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.fillMaxWidth(),
       ) {
         CompactInlineMetric(
           label = "MOR",
-          value = weather.visibilityMeters?.toString() ?: "----",
-          unit = "м",
+          value = compactMorVal,
+          unit = compactMorUnit,
           modifier = Modifier.weight(1f),
         )
         CompactInlineMetric(
           label = "ВНГО",
-          value = weather.ceilingFeet?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
-          unit = if (weather.ceilingFeet != null) "ft" else "",
+          value = compactCeilVal,
+          unit = if (weather.ceilingFeet != null || weather.ceilingMeters != null) compactCeilUnit else "",
           modifier = Modifier.weight(1f),
         )
       }
@@ -1273,16 +1339,27 @@ fun CenterWeatherPanel(
     }
 
     // MOR & ВНГО
+    val (morVal, morUnit) = UnitConverter.formatVisibility(
+      visibilityMeters = weather.visibilityMeters,
+      isCavok = weather.isCavok,
+      pressureUnit = pressureUnit,
+    )
+    val (ceilVal, ceilUnit) = UnitConverter.formatCeilingValueAndUnit(
+      ceilingMeters = weather.ceilingMeters,
+      ceilingFeet = weather.ceilingFeet,
+      isCavok = weather.isCavok,
+      pressureUnit = pressureUnit,
+    )
     InstrumentValueRow(
       label = "MOR",
-      value = weather.visibilityMeters?.toString() ?: "----",
-      unit = "м",
+      value = morVal,
+      unit = morUnit,
       isHighlighted = true,
     )
     InstrumentValueRow(
       label = "ВНГО",
-      value = weather.ceilingFeet?.toString() ?: if (weather.isCavok) "CAVOK" else "---",
-      unit = if (weather.ceilingFeet != null) "ft" else "",
+      value = ceilVal,
+      unit = if (weather.ceilingFeet != null || weather.ceilingMeters != null) ceilUnit else "",
       isHighlighted = true,
     )
 

@@ -110,4 +110,63 @@ object DesktopMapTileCache {
       return decoded
     }
   }
+
+  fun getOrFetchUrl(
+    cacheKey: String,
+    url: String,
+    onLoaded: () -> Unit,
+  ): BufferedImage? {
+    synchronized(memoryCache) {
+      memoryCache[cacheKey]?.let { return it }
+    }
+    val lastFail = recentFailures[cacheKey]
+    if (lastFail != null && System.currentTimeMillis() - lastFail < FAILURE_COOLDOWN_MS) {
+      return null
+    }
+    if (inFlight.add(cacheKey)) {
+      executor.submit {
+        try {
+          val img = loadUrlFromDiskOrNetwork(cacheKey, url)
+          if (img != null) {
+            synchronized(memoryCache) { memoryCache[cacheKey] = img }
+            recentFailures.remove(cacheKey)
+            SwingUtilities.invokeLater { onLoaded() }
+          } else {
+            recentFailures[cacheKey] = System.currentTimeMillis()
+          }
+        } catch (_: Exception) {
+          recentFailures[cacheKey] = System.currentTimeMillis()
+        } finally {
+          inFlight.remove(cacheKey)
+        }
+      }
+    }
+    return null
+  }
+
+  private fun loadUrlFromDiskOrNetwork(
+    cacheKey: String,
+    url: String,
+  ): BufferedImage? {
+    val radarDir = File(cacheRoot, "radar").apply { mkdirs() }
+    val safeName = cacheKey.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+    val tileFile = File(radarDir, "$safeName.png")
+    if (tileFile.exists() && tileFile.length() > 80L) {
+      val cached = runCatching { ImageIO.read(tileFile) }.getOrNull()
+      if (cached != null) return cached
+    }
+    val req = Request.Builder()
+      .url(url)
+      .header("User-Agent", "Meteotablo/1.0 (Aviation Weather Radar)")
+      .header("Accept", "image/png,image/*")
+      .build()
+    client.newCall(req).execute().use { resp ->
+      if (!resp.isSuccessful) return null
+      val bytes = resp.body?.bytes() ?: return null
+      if (bytes.size < 80) return null
+      val decoded = runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull() ?: return null
+      runCatching { tileFile.writeBytes(bytes) }
+      return decoded
+    }
+  }
 }

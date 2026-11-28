@@ -33,22 +33,27 @@ jobs:
           fi
 
           USER_SDK="$HOME/android-sdk"
-          mkdir -p "$USER_SDK"
-
-          SDKMANAGER=""
-          if command -v sdkmanager >/dev/null 2>&1; then
-            SDKMANAGER="$(command -v sdkmanager)"
-          elif [ -x "$SYS_SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$SYS_SDK/cmdline-tools/latest/bin/sdkmanager"
-          else
-            SDKMANAGER="$(find "$SYS_SDK" -maxdepth 4 -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+          mkdir -p "$USER_SDK/cmdline-tools"
+          if [ -d "$SYS_SDK/licenses" ]; then
+            mkdir -p "$USER_SDK/licenses"
+            cp -rn "$SYS_SDK/licenses/." "$USER_SDK/licenses/" || true
           fi
 
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "Downloading Android command-line tools into $USER_SDK..."
-            mkdir -p "$USER_SDK/cmdline-tools"
+          SDKMANAGER=""
+          for candidate in \
+            "$USER_SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "$SYS_SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "$SYS_SDK"/cmdline-tools/*/bin/sdkmanager; do
+            if [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Downloading latest Android command-line tools into $USER_SDK..."
             rm -rf /tmp/cmdline-extract /tmp/cmdline-tools.zip
-            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip" -o /tmp/cmdline-tools.zip
             unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-extract
             rm -rf "$USER_SDK/cmdline-tools/latest"
             if [ -d /tmp/cmdline-extract/cmdline-tools ]; then
@@ -66,10 +71,18 @@ jobs:
 
           echo "Using sdkmanager: $SDKMANAGER (installing into $USER_SDK)"
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$USER_SDK" --licenses >/dev/null || true
+          yes | "$SDKMANAGER" --sdk_root="$USER_SDK" --licenses >/dev/null 2>&1 || true
+          yes | "$SDKMANAGER" --sdk_root="$USER_SDK" --install \
+            "platform-tools" \
+            "platforms;android-36.1" \
+            "build-tools;36.0.0"
           set -o pipefail
 
-          "$SDKMANAGER" --sdk_root="$USER_SDK" --install "platform-tools" "platforms;android-36.1" "build-tools;36.0.0"
+          if [ ! -d "$USER_SDK/platforms/android-36.1" ] || [ ! -d "$USER_SDK/build-tools/36.0.0" ]; then
+            echo "Missing android-36.1 platform or build-tools 36.0.0 after sdkmanager install"
+            ls -la "$USER_SDK" "$USER_SDK/platforms" "$USER_SDK/build-tools" || true
+            exit 1
+          fi
 
           echo "ANDROID_HOME=$USER_SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$USER_SDK" >> "$GITHUB_ENV"

@@ -540,5 +540,83 @@ class DesktopSmokeTest {
     assertEquals(NightDesktopPalette.fieldBackground, combo.background)
     assertEquals(NightDesktopPalette.textPrimary, combo.foreground)
   }
+
+  @Test
+  fun `desktop controller defaults to 60s auto refresh manages runways and themes tabs tables popups in Night mode`() {
+    val runwaysFile = File.createTempFile("meteotablo_win_runways", ".properties")
+    runwaysFile.deleteOnExit()
+    runwaysFile.delete()
+
+    val controller = DesktopController(
+      airportRunwaysStorage = DesktopAirportRunwaysStorage(runwaysFile),
+      autoFetch = false,
+    )
+    try {
+      assertEquals(1, com.example.data.AutoRefreshInterval.ONE_MIN.minutes)
+      assertEquals(1, controller.state.autoRefreshIntervalMinutes)
+      assertEquals(35, com.example.model.AircraftTypePreset.B737.defaultMaxCrosswindKt)
+      assertEquals(36, com.example.model.AircraftTypePreset.B738.defaultMaxCrosswindKt)
+      assertEquals(38, com.example.model.AircraftTypePreset.B773.defaultMaxCrosswindKt)
+
+      controller.selectStation("UTAA")
+      val baseCount = controller.state.station.runways.size
+      controller.addRunwayPair("09L", 92)
+      assertEquals(baseCount + 1, controller.state.station.runways.size)
+      assertEquals("09L", controller.state.activeRunwayPair.primaryDesignator)
+
+      val briefing = com.example.domain.DispatcherBriefingHelper.evaluate(
+        controller.state.station,
+        controller.state.weather,
+        controller.state.alertConfig,
+      )
+      assertTrue(briefing.runwayEvaluations.isNotEmpty())
+
+      controller.removeRunwayPair(baseCount)
+      assertEquals(baseCount, controller.state.station.runways.size)
+      controller.resetRunwaysToDefault()
+      assertEquals(baseCount, controller.state.station.runways.size)
+    } finally {
+      controller.shutdown()
+    }
+
+    // Verify Night mode fixes previously invisible white/black text in JTabbedPane, JTableHeader, JPopupMenu, and HTML JLabels
+    val tabs = javax.swing.JTabbedPane().apply {
+      addTab("Станции", javax.swing.JPanel())
+    }
+    val table = javax.swing.JTable(arrayOf(arrayOf("Ветер", "10 kt")), arrayOf("Параметр", "Значение"))
+    val htmlLabel = javax.swing.JLabel().apply {
+      putClientProperty("htmlBody", "<b>SIGMET TS</b>")
+    }
+    val container = javax.swing.JPanel().apply {
+      add(tabs)
+      add(javax.swing.JScrollPane(table))
+      add(htmlLabel)
+    }
+    DesktopThemeHelper.applyThemeTree(container, NightDesktopPalette)
+    assertEquals(NightDesktopPalette.panelSurface, tabs.background)
+    assertEquals(NightDesktopPalette.textPrimary, tabs.foreground)
+    assertEquals(NightDesktopPalette.secondaryFieldBackground, table.tableHeader.background)
+    assertEquals(NightDesktopPalette.textPrimary, table.tableHeader.foreground)
+    assertTrue(htmlLabel.text.contains(DesktopThemeHelper.toHexColor(NightDesktopPalette.textPrimary)))
+
+    val popup = javax.swing.JPopupMenu().apply {
+      add(javax.swing.JMenuItem("Профиль 1"))
+    }
+    DesktopThemeHelper.stylePopupMenu(popup, NightDesktopPalette)
+    assertEquals(NightDesktopPalette.panelSurface, popup.background)
+    assertEquals(NightDesktopPalette.textPrimary, (popup.getComponent(0) as javax.swing.JMenuItem).foreground)
+
+    // Verify radar zoom<=7 clamping & no-key NASA GIBS / LibreWXR source modes
+    val rvSnap = com.example.data.WeatherRadarRepository.parseRainViewerJson(
+      """{"host":"https://tilecache.rainviewer.com","radar":{"past":[{"time":1764320400,"path":"/v2/radar/1764320400"}]}}""",
+    )
+    val zoomedReq = rvSnap.frames.first().resolveTileRequest(rvSnap.host, z = 9, x = 340, y = 195)
+    assertEquals(7, zoomedReq.fetchZ)
+    assertEquals(4, zoomedReq.subGridSize)
+    assertFalse(com.example.data.RadarSourceMode.AUTO.requiresKey)
+    assertFalse(com.example.data.RadarSourceMode.LIBREWXR.requiresKey)
+    assertFalse(com.example.data.RadarSourceMode.NASA_GIBS.requiresKey)
+  }
 }
+
 

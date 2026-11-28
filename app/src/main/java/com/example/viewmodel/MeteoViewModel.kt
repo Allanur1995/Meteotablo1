@@ -4,10 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AirportCatalog
+import com.example.data.AirportRunwaysSerializer
+import com.example.data.AirportRunwaysStorage
 import com.example.data.AutoRefreshInterval
 import com.example.data.AviationWeatherRepository
 import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
+import com.example.data.InMemoryAirportRunwaysStorage
 import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryUnitPreferencesStorage
@@ -43,6 +46,7 @@ import com.example.model.QnhTrendSummary
 import com.example.model.RunwayCalculation
 import com.example.model.RunwayPair
 import com.example.model.SavedWeatherPreset
+import com.example.model.SigmetAlert
 import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherChangeAlert
@@ -76,7 +80,7 @@ data class MeteoUiState(
   val windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   val pressureUnit: PressureUnit = PressureUnit.HPA,
   val autoRefreshEnabled: Boolean = true,
-  val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
+  val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.ONE_MIN.minutes,
   val favoriteIcaos: List<String> = emptyList(),
   val recentSearches: List<String> = emptyList(),
   val savedPresets: List<SavedWeatherPreset> = emptyList(),
@@ -84,6 +88,8 @@ data class MeteoUiState(
   val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
   val latestWeatherAlert: WeatherChangeAlert? = null,
+  val activeSigmets: List<SigmetAlert> = emptyList(),
+  val isLoadingSigmets: Boolean = false,
   val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
   val weatherHistory24h: List<WeatherHistoryEntry> = emptyList(),
   val weatherHistoryByIcaoMap: Map<String, List<WeatherHistoryEntry>> = emptyMap(),
@@ -135,6 +141,7 @@ class MeteoViewModel(
   private val locationService: LocationService = NoOpLocationService,
   private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
   private val weatherCacheRepository: WeatherCacheRepository = InMemoryWeatherCacheRepository(),
+  private val airportRunwaysStorage: AirportRunwaysStorage = InMemoryAirportRunwaysStorage(),
   private val repository: AviationWeatherRepository = AviationWeatherRepository(),
 ) : ViewModel() {
   private val weatherSnapshots: MutableMap<String, FavoriteWeatherSnapshot> =
@@ -143,17 +150,21 @@ class MeteoViewModel(
     windHistoryStorage.loadAll().toMutableMap()
   private val weatherHistoryByIcao: MutableMap<String, List<WeatherHistoryEntry>> =
     weatherHistoryStorage.loadAll().toMutableMap()
+  private val customRunwaysByIcao: MutableMap<String, List<RunwayPair>> =
+    airportRunwaysStorage.loadAll().toMutableMap()
   private val resolvedStationsByIcao: MutableMap<String, AirportStation> =
     AirportCatalog.presets.associateBy { it.icao }.toMutableMap()
   private var activeFetchJob: Job? = null
   private var historyFetchJob: Job? = null
   private var autoRefreshJob: Job? = null
+  private var sigmetFetchJob: Job? = null
 
   private val _uiState: MutableStateFlow<MeteoUiState>
   val uiState: StateFlow<MeteoUiState>
 
   init {
-    val defaultStation = AirportCatalog.findOrDefault("UTAM")
+    val defaultStation = withCustomRunways(AirportCatalog.findOrDefault("UTAM"))
+    resolvedStationsByIcao[defaultStation.icao] = defaultStation
     val initialWeather = repository.createEmptyWeather(
       station = defaultStation,
       sourceLabel = if (autoFetch) "загрузка с сервера..." else "ожидание обновления",
@@ -240,20 +251,22 @@ class MeteoViewModel(
         val activeRec = cachedAll[state.station.icao]
         val shouldApplyActive = activeRec != null && state.weather.observationTimeUtc == "--:--Z"
         if (shouldApplyActive && activeRec != null) {
+          val resolvedActiveStation = withCustomRunways(activeRec.station)
+          resolvedStationsByIcao[resolvedActiveStation.icao] = resolvedActiveStation
           val activeDecoded = activeRec.toDecodedWeather(isOfflineFallback = false)
-          val pair = activeRec.station.runways.getOrElse(state.selectedRunwayPairIndex) {
-            activeRec.station.runways.first()
+          val pair = resolvedActiveStation.runways.getOrElse(state.selectedRunwayPairIndex) {
+            resolvedActiveStation.runways.first()
           }
           val (pCalc, rCalc) = computeRunwayCalcs(pair, activeDecoded)
           state.copy(
-            station = activeRec.station,
+            station = resolvedActiveStation,
             weather = activeDecoded,
             primaryRunwayCalc = pCalc,
             reciprocalRunwayCalc = rCalc,
             isOfflineCachedWeather = !autoFetch,
-            mapStations = buildMapStationList(activeRec.station, state.favoriteIcaos),
+            mapStations = buildMapStationList(resolvedActiveStation, state.favoriteIcaos),
             mapWeatherByIcao = mergedMap,
-            logs = appendLog(state.logs, "INFO", "Загружен локальный кэш Room для ${activeRec.station.icao}"),
+            logs = appendLog(state.logs, "INFO", "Загружен локальный кэш Room для ${resolvedActiveStation.icao}"),
           )
         } else {
           state.copy(
@@ -429,8 +442,9 @@ class MeteoViewModel(
         enabled,
         state.autoRefreshIntervalMinutes,
       )
+      val intervalLabel = AutoRefreshInterval.fromMinutes(state.autoRefreshIntervalMinutes).descriptionLabel
       val msg = if (enabled) {
-        "Автообновление включено (${state.autoRefreshIntervalMinutes} мин)"
+        "Автообновление включено ($intervalLabel)"
       } else {
         "Автообновление отключено"
       }
@@ -443,7 +457,8 @@ class MeteoViewModel(
   }
 
   fun setAutoRefreshInterval(minutes: Int) {
-    val valid = AutoRefreshInterval.fromMinutes(minutes).minutes
+    val interval = AutoRefreshInterval.fromMinutes(minutes)
+    val valid = interval.minutes
     _uiState.update { state ->
       if (state.autoRefreshIntervalMinutes == valid) return@update state
       persistPreferences(
@@ -454,7 +469,7 @@ class MeteoViewModel(
       )
       state.copy(
         autoRefreshIntervalMinutes = valid,
-        logs = appendLog(state.logs, "NET", "Интервал автообновления: $valid мин"),
+        logs = appendLog(state.logs, "NET", "Интервал автообновления: ${interval.descriptionLabel}"),
       )
     }
     scheduleAutoRefreshLoop()
@@ -557,7 +572,7 @@ class MeteoViewModel(
 
   fun applySavedPreset(presetId: String) {
     val target = _uiState.value.savedPresets.firstOrNull { it.id == presetId } ?: return
-    val station = AirportCatalog.findOrDefault(target.icao)
+    val station = withCustomRunways(AirportCatalog.findOrDefault(target.icao))
     val safeRunwayIdx = target.runwayPairIndex.coerceIn(0, station.runways.lastIndex)
     val current = _uiState.value
     val nextServerConfig = target.sourceMode?.let { mode ->
@@ -675,11 +690,102 @@ class MeteoViewModel(
     }
   }
 
+  fun addRunwayPair(
+    primaryDesignator: String,
+    primaryHeadingDeg: Int,
+    reciprocalDesignator: String? = null,
+    reciprocalHeadingDeg: Int? = null,
+  ) {
+    val newPair = AirportRunwaysSerializer.buildRunwayPair(
+      primaryDesignatorInput = primaryDesignator,
+      primaryMagneticHeadingDeg = primaryHeadingDeg,
+      reciprocalDesignatorInput = reciprocalDesignator,
+      reciprocalMagneticHeadingDegInput = reciprocalHeadingDeg,
+    )
+    _uiState.update { state ->
+      val cleanIcao = state.station.icao.trim().uppercase()
+      val updatedRunways = (state.station.runways + newPair).distinctBy {
+        "${it.primaryDesignator}_${it.primaryHeadingDeg}_${it.reciprocalDesignator}"
+      }
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao[cleanIcao] = updatedRunways
+      }
+      airportRunwaysStorage.saveForAirport(cleanIcao, updatedRunways)
+      val updatedStation = state.station.copy(runways = updatedRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val newIdx = (updatedRunways.size - 1).coerceAtLeast(0)
+      val (pCalc, rCalc) = computeRunwayCalcs(updatedRunways[newIdx], state.weather)
+      state.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = newIdx,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, state.favoriteIcaos),
+        logs = appendLog(
+          state.logs,
+          "INFO",
+          "Добавлена ВПП ${newPair.primaryDesignator}/${newPair.reciprocalDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(newPair.primaryHeadingDeg)}) для $cleanIcao",
+        ),
+      )
+    }
+  }
+
+  fun removeRunwayPair(index: Int) {
+    _uiState.update { state ->
+      if (state.station.runways.size <= 1 || index !in state.station.runways.indices) return@update state
+      val cleanIcao = state.station.icao.trim().uppercase()
+      val removed = state.station.runways[index]
+      val updatedRunways = state.station.runways.filterIndexed { idx, _ -> idx != index }
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao[cleanIcao] = updatedRunways
+      }
+      airportRunwaysStorage.saveForAirport(cleanIcao, updatedRunways)
+      val updatedStation = state.station.copy(runways = updatedRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val nextIdx = state.selectedRunwayPairIndex.coerceIn(0, updatedRunways.lastIndex)
+      val (pCalc, rCalc) = computeRunwayCalcs(updatedRunways[nextIdx], state.weather)
+      state.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = nextIdx,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, state.favoriteIcaos),
+        logs = appendLog(
+          state.logs,
+          "INFO",
+          "Удалена ВПП ${removed.primaryDesignator}/${removed.reciprocalDesignator} для $cleanIcao",
+        ),
+      )
+    }
+  }
+
+  fun resetRunwaysToDefault() {
+    _uiState.update { state ->
+      val cleanIcao = state.station.icao.trim().uppercase()
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao.remove(cleanIcao)
+      }
+      airportRunwaysStorage.clearForAirport(cleanIcao)
+      val defaultRunways = AirportCatalog.findOrDefault(cleanIcao).runways
+      val updatedStation = state.station.copy(runways = defaultRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val (pCalc, rCalc) = computeRunwayCalcs(defaultRunways.first(), state.weather)
+      state.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = 0,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, state.favoriteIcaos),
+        logs = appendLog(state.logs, "INFO", "ВПП для $cleanIcao сброшены к справочнику"),
+      )
+    }
+  }
+
   fun selectStation(icaoInput: String) {
     val clean = icaoInput.trim().uppercase()
     if (clean.length != 4) return
-    val station = resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean)
-    resolvedStationsByIcao.putIfAbsent(clean, station)
+    val station = withCustomRunways(resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean))
+    resolvedStationsByIcao[clean] = station
     val cachedWeather = _uiState.value.mapWeatherByIcao[clean]
     val initialStationWeather = cachedWeather ?: repository.createEmptyWeather(
       station = station,
@@ -721,12 +827,13 @@ class MeteoViewModel(
             val decoded = cachedRec.toDecodedWeather(isOfflineFallback = !autoFetch)
             val updatedMap = cur.mapWeatherByIcao + (clean to decoded)
             if (cur.station.icao == clean && cur.weather.observationTimeUtc == "--:--Z") {
-              val pair = cachedRec.station.runways.getOrElse(cur.selectedRunwayPairIndex) {
-                cachedRec.station.runways.first()
+              val resolvedStation = withCustomRunways(cachedRec.station)
+              val pair = resolvedStation.runways.getOrElse(cur.selectedRunwayPairIndex) {
+                resolvedStation.runways.first()
               }
               val (pCalc, rCalc) = computeRunwayCalcs(pair, decoded)
               cur.copy(
-                station = cachedRec.station,
+                station = resolvedStation,
                 weather = decoded,
                 primaryRunwayCalc = pCalc,
                 reciprocalRunwayCalc = rCalc,
@@ -793,7 +900,7 @@ class MeteoViewModel(
         serverConfig = _uiState.value.serverConfig,
       )
       result.onSuccess { fetched ->
-        val resolved = fetched.resolvedStation
+        val resolved = withCustomRunways(fetched.resolvedStation)
         resolvedStationsByIcao[resolved.icao] = resolved
         val pair = resolved.runways.first()
         val (pCalc, rCalc) = computeRunwayCalcs(pair, fetched.weather)
@@ -839,6 +946,7 @@ class MeteoViewModel(
         }
         syncCrashStationContext()
         evaluateFavoriteObservation(resolved, fetched.weather)
+        refreshSigmets(targetStation = resolved, force = false)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки погоды по координатам"
         val currentIcao = _uiState.value.station.icao
@@ -1210,7 +1318,7 @@ class MeteoViewModel(
       _uiState.update { it.copy(isLoading = true, statusBanner = null) }
       val result = repository.fetchLiveWeather(station, _uiState.value.serverConfig)
       result.onSuccess { fetched ->
-        val resolved = fetched.resolvedStation
+        val resolved = withCustomRunways(fetched.resolvedStation)
         resolvedStationsByIcao[resolved.icao] = resolved
         runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val pair = resolved.runways.getOrElse(_uiState.value.selectedRunwayPairIndex) { resolved.runways.first() }
@@ -1243,6 +1351,7 @@ class MeteoViewModel(
           )
         }
         evaluateFavoriteObservation(resolved, fetched.weather)
+        refreshSigmets(targetStation = resolved, force = false)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки METAR"
         CrashReporter.recordNonFatal(
@@ -1256,19 +1365,20 @@ class MeteoViewModel(
         val cachedFallback = runCatching { weatherCacheRepository.getCachedWeather(station.icao) }.getOrNull()
         _uiState.update { state ->
           if (cachedFallback != null && state.station.icao.equals(station.icao, ignoreCase = true)) {
+            val resolvedFallback = withCustomRunways(cachedFallback.station)
             val cachedDecoded = cachedFallback.toDecodedWeather(isOfflineFallback = true)
-            val pair = cachedFallback.station.runways.getOrElse(state.selectedRunwayPairIndex) {
-              cachedFallback.station.runways.first()
+            val pair = resolvedFallback.runways.getOrElse(state.selectedRunwayPairIndex) {
+              resolvedFallback.runways.first()
             }
             val (pCalc, rCalc) = computeRunwayCalcs(pair, cachedDecoded)
             state.copy(
-              station = cachedFallback.station,
+              station = resolvedFallback,
               weather = cachedDecoded,
               primaryRunwayCalc = pCalc,
               reciprocalRunwayCalc = rCalc,
               isLoading = false,
               isOfflineCachedWeather = true,
-              mapWeatherByIcao = state.mapWeatherByIcao + (cachedFallback.station.icao to cachedDecoded),
+              mapWeatherByIcao = state.mapWeatherByIcao + (resolvedFallback.icao to cachedDecoded),
               statusBanner = "Нет интернета/ответа сервера — показан кэш Room от ${cachedFallback.observationTimeUtc}",
               logs = appendLog(state.logs, "WARN", "Оффлайн-кэш Room (${station.icao}): $msg"),
             )
@@ -1283,6 +1393,44 @@ class MeteoViewModel(
         }
       }
     }
+  }
+
+  fun refreshSigmets(
+    targetStation: AirportStation = _uiState.value.station,
+    force: Boolean = true,
+  ) {
+    if (!autoFetch && !force) return
+    sigmetFetchJob?.cancel()
+    sigmetFetchJob = viewModelScope.launch {
+      _uiState.update { it.copy(isLoadingSigmets = true) }
+      val res = repository.fetchActiveSigmets(targetStation, _uiState.value.serverConfig)
+      res.onSuccess { sigmets ->
+        _uiState.update { state ->
+          if (!state.station.icao.equals(targetStation.icao, ignoreCase = true)) {
+            state.copy(isLoadingSigmets = false)
+          } else {
+            state.copy(
+              activeSigmets = sigmets,
+              isLoadingSigmets = false,
+              logs = appendLog(state.logs, "SIGMET", "SIGMET для ${targetStation.icao}: ${sigmets.size}"),
+            )
+          }
+        }
+      }.onFailure { err ->
+        _uiState.update { state ->
+          state.copy(
+            isLoadingSigmets = false,
+            logs = appendLog(state.logs, "SIGMET", "SIGMET ошибка: ${err.message ?: "нет данных"}"),
+          )
+        }
+      }
+    }
+  }
+
+  private fun withCustomRunways(station: AirportStation): AirportStation {
+    val clean = station.icao.trim().uppercase()
+    val custom = synchronized(customRunwaysByIcao) { customRunwaysByIcao[clean] }
+    return if (!custom.isNullOrEmpty()) station.copy(runways = custom) else station
   }
 
   private fun syncCrashStationContext() {

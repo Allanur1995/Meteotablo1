@@ -151,23 +151,28 @@ fun rememberRadarTileSnapshot(
   tiles: List<TilePlacement>,
   host: String,
   frame: com.example.data.RadarFrame?,
+  owmApiKey: String = "",
 ): Int {
   var revision by remember { mutableIntStateOf(0) }
-  val signature = remember(tiles, host, frame) {
-    if (frame == null) "none" else "${frame.timestampEpochSec}:${tiles.joinToString(",") { "${it.z}/${it.x}/${it.y}" }}"
+  val requests = remember(tiles, host, frame, owmApiKey) {
+    val f = frame ?: return@remember emptyList()
+    tiles
+      .map { tile -> f.resolveTileRequest(host, tile.z, tile.x, tile.y, owmApiKey) }
+      .distinctBy { it.cacheKey }
+  }
+  val signature = remember(requests, frame) {
+    if (frame == null) "none" else "${frame.sourceMode.id}:${frame.timestampEpochSec}:${requests.joinToString(",") { it.cacheKey }}"
   }
 
   LaunchedEffect(signature) {
-    val f = frame ?: return@LaunchedEffect
-    val missing = tiles.filter { AndroidMapTileLoader.getCached(f.cacheKey(it.z, it.x, it.y)) == null }
+    if (frame == null) return@LaunchedEffect
+    val missing = requests.filter { AndroidMapTileLoader.getCached(it.cacheKey) == null }
     if (missing.isEmpty()) return@LaunchedEffect
 
     coroutineScope {
-      missing.take(24).map { tile ->
+      missing.take(24).map { req ->
         async {
-          val key = f.cacheKey(tile.z, tile.x, tile.y)
-          val url = f.tileUrl(host, tile.z, tile.x, tile.y)
-          val loaded = AndroidMapTileLoader.loadUrlBitmap(key, url)
+          val loaded = AndroidMapTileLoader.loadUrlBitmap(req.cacheKey, req.url)
           if (loaded != null) {
             revision++
           }

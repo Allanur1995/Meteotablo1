@@ -49,6 +49,16 @@ interface PublicAviationWeatherApi {
     @Query("hours") hours: Int? = null,
   ): Response<List<PublicTafDto>>
 
+  @GET("api/data/isigmet")
+  suspend fun getISigmets(
+    @Query("format") format: String = "json",
+  ): Response<ResponseBody>
+
+  @GET("api/data/airsigmet")
+  suspend fun getAirSigmets(
+    @Query("format") format: String = "json",
+  ): Response<ResponseBody>
+
   @GET
   suspend fun fetchRawTextFeed(
     @Url fullUrl: String,

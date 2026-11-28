@@ -225,13 +225,32 @@ class RunwayWindRosePanel(
     g2.draw(Line2D.Double(cx, cy - rwH * 0.42, cx, cy + rwH * 0.42))
     g2.transform = oldTx
 
-    // Wind arrow (direction wind is blowing FROM -> toward center)
+    // Wind arrow (direction wind is blowing FROM -> toward center) + orthogonal headwind/crosswind component vectors
     if (!w.isCalm && w.directionDeg != null) {
       val fromRad = (w.directionDeg!! + pulseDeg - 90.0) * PI / 180.0
+      val rwyRad = (calc.headingDeg - 90.0) * PI / 180.0
       val startX = cx + cos(fromRad) * (radius * 0.96)
       val startY = cy + sin(fromRad) * (radius * 0.96)
       val endX = cx + cos(fromRad) * (radius * 0.46)
       val endY = cy + sin(fromRad) * (radius * 0.46)
+
+      val ux = cos(rwyRad)
+      val uy = sin(rwyRad)
+      val dot = (startX - cx) * ux + (startY - cy) * uy
+      val projX = cx + dot * ux
+      val projY = cy + dot * uy
+
+      g2.color = if (isTailwind) {
+        Color(palette.tailwindNegative.red, palette.tailwindNegative.green, palette.tailwindNegative.blue, 175)
+      } else {
+        Color(palette.headwindPositive.red, palette.headwindPositive.green, palette.headwindPositive.blue, 175)
+      }
+      g2.stroke = BasicStroke(2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+      g2.draw(Line2D.Double(cx, cy, projX, projY))
+
+      g2.color = Color(palette.metarAmber.red, palette.metarAmber.green, palette.metarAmber.blue, 175)
+      g2.stroke = BasicStroke(1.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(5f, 4f), 0f)
+      g2.draw(Line2D.Double(startX, startY, projX, projY))
 
       g2.color = palette.windArrow
       g2.stroke = BasicStroke(3.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)

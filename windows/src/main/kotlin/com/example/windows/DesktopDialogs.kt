@@ -1,15 +1,18 @@
 package com.example.windows
 
 import com.example.data.AirportCatalog
+import com.example.data.AirportRunwaysSerializer
 import com.example.data.AutoRefreshInterval
 import com.example.data.DataSourceMode
 import com.example.data.ServerConfig
 import com.example.domain.AviationWeatherParser
 import com.example.domain.DecodedTokenSeverity
+import com.example.domain.DispatcherBriefingHelper
 import com.example.domain.MetarTafDecoder
 import com.example.domain.UnitConverter
 import com.example.domain.WeatherExportPayload
 import com.example.domain.WeatherReportFormatter
+import com.example.model.AircraftTypePreset
 import com.example.model.AirportStation
 import com.example.model.AuthorBrand
 import com.example.model.DecodedWeather
@@ -47,10 +50,12 @@ import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JSpinner
 import javax.swing.JTabbedPane
 import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.SpinnerNumberModel
 import javax.swing.SwingConstants
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -384,7 +389,7 @@ object DesktopDialogs {
             DataSourceMode.AUTO_IP_FIRST
           }
           val interval = AutoRefreshInterval.entries.getOrElse(intervalCombo.selectedIndex) {
-            AutoRefreshInterval.FIFTEEN_MIN
+            AutoRefreshInterval.ONE_MIN
           }
           controller.setAutoRefreshEnabled(autoRefreshCheck.isSelected)
           controller.setAutoRefreshInterval(interval.minutes)
@@ -1414,9 +1419,9 @@ object DesktopDialogs {
     owner: Frame,
     controller: DesktopController,
   ) {
-    val dialog = JDialog(owner, "Оповещения, пороги таблицы и минимумы VFR", true)
+    val dialog = JDialog(owner, "Оповещения, ВС (боковой ветер), таблица и минимумы VFR", true)
     dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-    dialog.setSize(740, 560)
+    dialog.setSize(780, 620)
     dialog.setLocationRelativeTo(owner)
 
     val state = controller.state
@@ -1436,6 +1441,14 @@ object DesktopDialogs {
         else -> 1
       }
     }
+
+    val crosswindWarnCheck = JCheckBox("Предупреждать о превышении бок. ветра", cfg.crosswindWarningEnabled)
+    val aircraftPresets = AircraftTypePreset.entries
+    val aircraftCombo = JComboBox(aircraftPresets.map { "${it.displayName} (${it.defaultMaxCrosswindKt} kt)" }.toTypedArray()).apply {
+      selectedIndex = aircraftPresets.indexOfFirst { it.id == cfg.aircraftTypeId }.coerceAtLeast(0)
+    }
+    val maxCrosswindSpinner = JSpinner(SpinnerNumberModel(cfg.maxCrosswindKt.coerceIn(5, 60), 5, 60, 1))
+    val customAircraftField = JTextField(cfg.customAircraftName, 14)
 
     val tableAlertCheck = JCheckBox("Подсветка в таблице METAR", cfg.tableAlertsEnabled)
     val tableWindCombo = JComboBox(arrayOf("≥ 15 kt", "≥ 20 kt", "≥ 25 kt", "≥ 30 kt")).apply {
@@ -1478,7 +1491,10 @@ object DesktopDialogs {
     }
     val vfrAllCheck = JCheckBox("Все избранные аэропорты VFR", cfg.vfrMonitorAllFavorites)
 
+    var syncingUi = false
+
     fun applyAlertPrefs() {
+      if (syncingUi) return
       val windKt = when (windCombo.selectedIndex) {
         0 -> 5
         2 -> 12
@@ -1515,12 +1531,18 @@ object DesktopDialogs {
         2 -> 25
         else -> 20
       }
+      val selPreset = aircraftPresets.getOrElse(aircraftCombo.selectedIndex) { AircraftTypePreset.ATR_72 }
+      val maxCrossKt = (maxCrosswindSpinner.value as? Int ?: cfg.maxCrosswindKt).coerceIn(5, 60)
       controller.updateAlertConfig(
         controller.state.alertConfig.copy(
           enabled = enabledCheck.isSelected,
           windChangeThresholdKt = windKt,
           visibilityThresholdMeters = visM,
           ceilingThresholdMeters = ceilM,
+          crosswindWarningEnabled = crosswindWarnCheck.isSelected,
+          aircraftTypeId = selPreset.id,
+          customAircraftName = customAircraftField.text.trim().ifBlank { "Мой самолёт" },
+          maxCrosswindKt = maxCrossKt,
           tableAlertsEnabled = tableAlertCheck.isSelected,
           tableWindAlertKt = tWind,
           tableVisibilityAlertMeters = tVis,
@@ -1533,6 +1555,19 @@ object DesktopDialogs {
       )
     }
 
+    aircraftCombo.addActionListener {
+      if (syncingUi) return@addActionListener
+      val selPreset = aircraftPresets.getOrElse(aircraftCombo.selectedIndex) { AircraftTypePreset.ATR_72 }
+      syncingUi = true
+      if (selPreset != AircraftTypePreset.CUSTOM) {
+        maxCrosswindSpinner.value = selPreset.defaultMaxCrosswindKt.coerceIn(5, 60)
+      }
+      syncingUi = false
+      applyAlertPrefs()
+    }
+    maxCrosswindSpinner.addChangeListener { applyAlertPrefs() }
+    crosswindWarnCheck.addActionListener { applyAlertPrefs() }
+    customAircraftField.addActionListener { applyAlertPrefs() }
     enabledCheck.addActionListener { applyAlertPrefs() }
     windCombo.addActionListener { applyAlertPrefs() }
     visCombo.addActionListener { applyAlertPrefs() }
@@ -1555,6 +1590,16 @@ object DesktopDialogs {
           add(windCombo)
           add(JLabel("Порог видимости:"))
           add(visCombo)
+        },
+      )
+      add(
+        JPanel(FlowLayout(FlowLayout.LEFT, 8, 3)).apply {
+          add(crosswindWarnCheck)
+          add(JLabel("Тип ВС:"))
+          add(aircraftCombo)
+          add(JLabel("Лимит (kt):"))
+          add(maxCrosswindSpinner)
+          add(customAircraftField)
         },
       )
       add(
@@ -1586,6 +1631,8 @@ object DesktopDialogs {
     } else {
       state.weatherAlerts.forEach { alert ->
         val card = JPanel(BorderLayout(6, 4)).apply {
+          putClientProperty("preserveBackground", true)
+          background = state.palette.secondaryFieldBackground
           border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(
               if (alert.severity == com.example.model.WeatherAlertSeverity.CRITICAL) Color(0xC6, 0x28, 0x28)
@@ -1594,13 +1641,14 @@ object DesktopDialogs {
             ),
             BorderFactory.createEmptyBorder(6, 8, 6, 8),
           )
-          maximumSize = Dimension(Int.MAX_VALUE, 90)
+          maximumSize = Dimension(Int.MAX_VALUE, 96)
         }
         val titleLbl = JLabel("${alert.icao} (${alert.airportName}) · ${alert.severity.label} · ${alert.observationTimeUtc}").apply {
           font = Font("Segoe UI", Font.BOLD, 12)
         }
-        val bodyLbl = JLabel("<html><b>${alert.summary}</b><br/><code>${alert.rawMetar}</code></html>").apply {
+        val bodyLbl = JLabel().apply {
           font = Font("Segoe UI", Font.PLAIN, 11)
+          putClientProperty("htmlBody", "<b>${alert.summary}</b><br/><code>${alert.rawMetar}</code>")
         }
         val openBtn = JButton("Открыть").apply {
           addActionListener {
@@ -1654,6 +1702,289 @@ object DesktopDialogs {
     dialog.isVisible = true
   }
 
+  fun showRunwaysDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val dialog = JDialog(owner, "Управление ВПП аэропорта · ${controller.state.station.icao}", false)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(680, 480)
+    dialog.setLocationRelativeTo(owner)
+
+    val listPanel = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
+    }
+    val desigField = JTextField(6)
+    val hdgField = JTextField("120", 5)
+    val recipField = JTextField(6)
+    val previewLbl = JLabel("", SwingConstants.LEFT).apply {
+      font = Font("Consolas", Font.PLAIN, 12)
+    }
+
+    fun updatePreview() {
+      val hdg = hdgField.text.trim().toIntOrNull()
+      if (hdg == null || hdg !in 1..360) {
+        previewLbl.text = "Введите магнитный курс 1–360°"
+      } else {
+        val pair = AirportRunwaysSerializer.buildRunwayPair(
+          primaryDesignatorInput = desigField.text,
+          primaryMagneticHeadingDeg = hdg,
+          reciprocalDesignatorInput = recipField.text.takeIf { it.isNotBlank() },
+        )
+        previewLbl.text = "Будет добавлена пара: ${pair.primaryDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(pair.primaryHeadingDeg)}) / " +
+          "${pair.reciprocalDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(pair.reciprocalHeadingDeg)})"
+      }
+    }
+
+    val previewDoc = object : DocumentListener {
+      override fun insertUpdate(e: DocumentEvent?) = updatePreview()
+      override fun removeUpdate(e: DocumentEvent?) = updatePreview()
+      override fun changedUpdate(e: DocumentEvent?) = updatePreview()
+    }
+    desigField.document.addDocumentListener(previewDoc)
+    hdgField.document.addDocumentListener(previewDoc)
+    recipField.document.addDocumentListener(previewDoc)
+    updatePreview()
+
+    val addBtn = JButton("+ Добавить ВПП").apply {
+      addActionListener {
+        val hdg = hdgField.text.trim().toIntOrNull()
+        if (hdg == null || hdg !in 1..360) {
+          JOptionPane.showMessageDialog(dialog, "Укажите магнитный курс ВПП (число от 1 до 360)", "Некорректный курс", JOptionPane.WARNING_MESSAGE)
+          return@addActionListener
+        }
+        controller.addRunwayPair(
+          primaryDesignator = desigField.text.trim(),
+          primaryHeadingDeg = hdg,
+          reciprocalDesignator = recipField.text.trim().takeIf { it.isNotBlank() },
+        )
+        desigField.text = ""
+        recipField.text = ""
+      }
+    }
+
+    val resetBtn = JButton("Сбросить к справочнику").apply {
+      addActionListener { controller.resetRunwaysToDefault() }
+    }
+
+    val addFormPanel = JPanel(BorderLayout(6, 4)).apply {
+      border = BorderFactory.createCompoundBorder(
+        BorderFactory.createTitledBorder("Добавить новую полосу (ВПП)"),
+        BorderFactory.createEmptyBorder(6, 8, 6, 8),
+      )
+      add(
+        JPanel(FlowLayout(FlowLayout.LEFT, 6, 3)).apply {
+          add(JLabel("Обозначение (напр. 12L):"))
+          add(desigField)
+          add(JLabel("Магн. курс (°):"))
+          add(hdgField)
+          add(JLabel("Обратный (опц.):"))
+          add(recipField)
+          add(addBtn)
+        },
+        BorderLayout.NORTH,
+      )
+      add(previewLbl, BorderLayout.SOUTH)
+    }
+
+    val listener: (DesktopUiState) -> Unit = { st ->
+      val pal = st.palette
+      dialog.title = "Управление ВПП аэропорта · ${st.station.icao} (${st.station.city})"
+      listPanel.removeAll()
+      st.station.runways.forEachIndexed { idx, pair ->
+        val isSel = idx == st.selectedRunwayPairIndex
+        val row = JPanel(BorderLayout(8, 4)).apply {
+          putClientProperty("preserveBackground", true)
+          background = if (isSel) pal.buttonActiveBackground else pal.secondaryFieldBackground
+          border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(if (isSel) pal.accentCyan else pal.border, if (isSel) 2 else 1),
+            BorderFactory.createEmptyBorder(6, 10, 6, 10),
+          )
+          maximumSize = Dimension(Int.MAX_VALUE, 52)
+        }
+        val lbl = JLabel(
+          "${if (isSel) "● " else ""}ВПП ${pair.primaryDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(pair.primaryHeadingDeg)})  ↔  " +
+            "${pair.reciprocalDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(pair.reciprocalHeadingDeg)})",
+        ).apply {
+          font = Font("Segoe UI", if (isSel) Font.BOLD else Font.PLAIN, 13)
+        }
+        val btns = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+          isOpaque = false
+          add(JButton(if (isSel) "Активна" else "Выбрать").apply {
+            isEnabled = !isSel
+            addActionListener { controller.selectRunwayPair(idx) }
+          })
+          if (st.station.runways.size > 1) {
+            add(JButton("Удалить").apply {
+              addActionListener { controller.removeRunwayPair(idx) }
+            })
+          }
+        }
+        row.add(lbl, BorderLayout.CENTER)
+        row.add(btns, BorderLayout.EAST)
+        listPanel.add(row)
+        listPanel.add(Box.createVerticalStrut(6))
+      }
+      listPanel.revalidate()
+      listPanel.repaint()
+      DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
+    }
+
+    controller.addListener(listener)
+    dialog.addWindowListener(object : WindowAdapter() {
+      override fun windowClosed(e: WindowEvent?) {
+        controller.removeListener(listener)
+      }
+    })
+
+    dialog.contentPane.layout = BorderLayout(8, 8)
+    dialog.contentPane.add(addFormPanel, BorderLayout.NORTH)
+    dialog.contentPane.add(JScrollPane(listPanel), BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT, 8, 6)).apply {
+        add(resetBtn)
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, controller.state.palette)
+    dialog.isVisible = true
+  }
+
+  fun showSigmetsAndBriefingDialog(
+    owner: Frame,
+    controller: DesktopController,
+  ) {
+    val dialog = JDialog(owner, "Диспетчерский брифинг и SIGMET · ${controller.state.station.icao}", false)
+    dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+    dialog.setSize(780, 600)
+    dialog.setLocationRelativeTo(owner)
+
+    val briefingArea = JTextArea(7, 60).apply {
+      isEditable = false
+      lineWrap = true
+      wrapStyleWord = true
+      font = Font("Consolas", Font.PLAIN, 12)
+      border = BorderFactory.createEmptyBorder(8, 10, 8, 10)
+    }
+    val sigmetHeaderLbl = JLabel("Активные SIGMET / AIRSIGMET").apply {
+      font = Font("Segoe UI", Font.BOLD, 13)
+    }
+    val refreshSigmetBtn = JButton("↻ Обновить SIGMET").apply {
+      addActionListener { controller.refreshSigmets(targetStation = controller.state.station, force = true) }
+    }
+    val sigmetListPanel = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      border = BorderFactory.createEmptyBorder(6, 10, 6, 10)
+    }
+
+    val listener: (DesktopUiState) -> Unit = { st ->
+      val pal = st.palette
+      dialog.title = "Диспетчерский брифинг и SIGMET · ${st.station.icao}"
+      val summary = DispatcherBriefingHelper.evaluate(st.station, st.weather, st.alertConfig)
+      val bestText = summary.recommendedRunway?.let { rwy ->
+        val h = UnitConverter.convertWindFromKnots(rwy.headwindKt, st.windUnit)
+        val c = UnitConverter.convertWindFromKnots(rwy.crosswindKt, st.windUnit)
+        val within = !st.alertConfig.isCrosswindExceeded(rwy.crosswindKt, null)
+        val status = if (within) "В ДОПУСКЕ" else "⚠ ПРЕВЫШЕНИЕ"
+        String.format(Locale.US, "ВПП %s (%03d°): Встр %.1f / Бок %.1f %s [%s]", rwy.designator, rwy.headingDeg, h, c, st.windUnit.label, status)
+      } ?: "--"
+      val ageText = summary.metarAgeMinutes?.let { min ->
+        "$min мин назад${if (summary.isMetarStale) " (УСТАРЕЛ)" else ""}"
+      } ?: "нет данных"
+      val spreadText = summary.tempDewSpreadC?.let { "$it°C" } ?: "--"
+      val gustText = summary.gustSpreadKt?.let { "+$it kt" } ?: "нет"
+      val limitDisp = UnitConverter.convertWindFromKnots(st.alertConfig.maxCrosswindKt.toDouble(), st.windUnit)
+      briefingArea.text = buildString {
+        appendLine("Станция: ${st.station.icao} (${st.station.name}) · Превышение: ${UnitConverter.formatElevation(st.station.elevationMeters, st.pressureUnit)}")
+        appendLine("Категория полётов: ${summary.flightCategory.code} · Возраст METAR: $ageText")
+        appendLine("Рекомендуемая ВПП: $bestText")
+        appendLine(String.format(Locale.US, "ВС / Лимит бок. ветра: %s (≤ %.0f %s)", st.alertConfig.resolvedAircraftName(), limitDisp, st.windUnit.label))
+        appendLine("T−Td спред: $spreadText · Порывистость: $gustText")
+        if (summary.hazards.isEmpty()) {
+          append("Опасные факторы по METAR: не выявлено")
+        } else {
+          append("Опасные факторы: ${summary.hazards.joinToString("; ")}")
+        }
+      }
+
+      refreshSigmetBtn.isEnabled = !st.isLoadingSigmets
+      refreshSigmetBtn.text = if (st.isLoadingSigmets) "Загрузка…" else "↻ Обновить SIGMET"
+      sigmetHeaderLbl.text = "Активные SIGMET / AIRSIGMET (${st.activeSigmets.size})"
+
+      sigmetListPanel.removeAll()
+      if (st.activeSigmets.isEmpty()) {
+        sigmetListPanel.add(
+          JLabel(
+            if (st.isLoadingSigmets) "Запрос активных SIGMET с aviationweather.gov…"
+            else "Активных SIGMET рядом с ${st.station.icao} не обнаружено.",
+          ),
+        )
+      } else {
+        st.activeSigmets.forEach { s ->
+          val card = JPanel(BorderLayout(6, 4)).apply {
+            putClientProperty("preserveBackground", true)
+            background = pal.secondaryFieldBackground
+            border = BorderFactory.createCompoundBorder(
+              BorderFactory.createLineBorder(if (s.hazard.isSevere) Color(0xC6, 0x28, 0x28) else pal.metarAmber, 1),
+              BorderFactory.createEmptyBorder(6, 8, 6, 8),
+            )
+            maximumSize = Dimension(Int.MAX_VALUE, 120)
+          }
+          val distPart = s.distanceKm?.let { " · ~$it км" }.orEmpty()
+          val typeTag = if (s.isAirmet) "AIRSIGMET" else "SIGMET"
+          val hdr = JLabel("[$typeTag · ${s.hazard.label}] ${s.icaoId} ${s.firName}$distPart · ${s.altitudeRangeLabel(st.pressureUnit)}").apply {
+            font = Font("Segoe UI", Font.BOLD, 12)
+          }
+          val body = JLabel().apply {
+            font = Font("Consolas", Font.PLAIN, 11)
+            putClientProperty("htmlBody", "${s.validFromUtc}–${s.validToUtc} (${s.qualifier})<br/>${s.rawText}")
+          }
+          card.add(hdr, BorderLayout.NORTH)
+          card.add(body, BorderLayout.CENTER)
+          sigmetListPanel.add(card)
+          sigmetListPanel.add(Box.createVerticalStrut(6))
+        }
+      }
+      sigmetListPanel.revalidate()
+      sigmetListPanel.repaint()
+      DesktopThemeHelper.applyThemeTree(dialog.contentPane, pal)
+    }
+
+    controller.addListener(listener)
+    dialog.addWindowListener(object : WindowAdapter() {
+      override fun windowClosed(e: WindowEvent?) {
+        controller.removeListener(listener)
+      }
+    })
+
+    val sigmetTopRow = JPanel(BorderLayout(8, 4)).apply {
+      border = BorderFactory.createEmptyBorder(4, 10, 4, 10)
+      add(sigmetHeaderLbl, BorderLayout.WEST)
+      add(refreshSigmetBtn, BorderLayout.EAST)
+    }
+    val topContainer = JPanel(BorderLayout(4, 4)).apply {
+      add(JScrollPane(briefingArea).apply {
+        preferredSize = Dimension(740, 148)
+        border = BorderFactory.createTitledBorder("Оперативный брифинг диспетчера")
+      }, BorderLayout.CENTER)
+      add(sigmetTopRow, BorderLayout.SOUTH)
+    }
+
+    dialog.contentPane.layout = BorderLayout(8, 8)
+    dialog.contentPane.add(topContainer, BorderLayout.NORTH)
+    dialog.contentPane.add(JScrollPane(sigmetListPanel), BorderLayout.CENTER)
+    dialog.contentPane.add(
+      JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+        add(JButton("Закрыть").apply { addActionListener { dialog.dispose() } })
+      },
+      BorderLayout.SOUTH,
+    )
+    DesktopThemeHelper.applyThemeTree(dialog.contentPane, controller.state.palette)
+    dialog.isVisible = true
+  }
+
   private fun buildTableRows(
     station: AirportStation,
     weather: DecodedWeather,
@@ -1669,17 +2000,32 @@ object DesktopDialogs {
     }
     val spd = UnitConverter.formatWindSpeedValue(w.speedKt, windUnit)
     val gust = w.gustKt?.let { " порывы ${UnitConverter.formatWindSpeedValue(it, windUnit)} ${windUnit.label}" }.orEmpty()
-    val visText = when {
-      weather.isCavok -> "CAVOK (> 10 км)"
-      weather.visibilityMeters != null && weather.visibilityMeters >= 9999 -> "≥ 10 км (9999 м)"
-      weather.visibilityMeters != null -> "${weather.visibilityMeters} м"
-      else -> "--"
+    val (visVal, visUnit) = UnitConverter.formatVisibility(weather.visibilityMeters, weather.isCavok, pressureUnit)
+    val visText = if (weather.isCavok) {
+      if (pressureUnit == PressureUnit.HPA) "CAVOK (> 10 км)" else "CAVOK (≥ 6 SM)"
+    } else if (visVal == "----") {
+      "--"
+    } else {
+      "$visVal $visUnit"
     }
     val cloudText = if (weather.clouds.isEmpty()) {
       if (weather.isCavok) "Нет значимой" else "--"
     } else {
-      weather.clouds.joinToString(", ") { "${it.cover} ${it.baseFeet} ft" }
+      weather.clouds.joinToString(", ") { c ->
+        if (pressureUnit == PressureUnit.HPA) {
+          "${c.cover} ${UnitConverter.feetToMeters(c.baseFeet)} м"
+        } else {
+          "${c.cover} ${c.baseFeet} ft"
+        }
+      }
     }
+    val (ceilVal, ceilUnit) = UnitConverter.formatCeilingValueAndUnit(
+      weather.ceilingMeters,
+      weather.ceilingFeet,
+      weather.isCavok,
+      pressureUnit,
+    )
+    val elevText = UnitConverter.formatElevation(station.elevationMeters, pressureUnit)
     val qnhPrimary = when (pressureUnit) {
       PressureUnit.HPA -> weather.qnhHpa?.let { "$it гПа" } ?: "--"
       PressureUnit.INHG -> weather.qnhInHg?.let { String.format(Locale.forLanguageTag("ru-RU"), "%.2f дм", it) } ?: "--"
@@ -1692,8 +2038,8 @@ object DesktopDialogs {
       arrayOf("Время (UTC / Мест.)", "${weather.observationTimeUtc} / ${weather.localObsTime}", station.timezoneLabel, station.icao),
       arrayOf("Ветер", "$dirStr, $spd ${windUnit.label}$gust", if (w.variableFromDeg != null) "${w.variableFromDeg}°..${w.variableToDeg}°" else "", ""),
       arrayOf("Видимость", visText, weather.weatherPhenomena, ""),
-      arrayOf("Облачность / ВНГО", cloudText, weather.ceilingFeet?.let { "ВНГО: $it ft" } ?: "ВНГО: --", weather.ceilingCode ?: ""),
-      arrayOf("Температура / Роса", "$tempText / $dewText", "Превышение: ${station.elevationMeters} м", ""),
+      arrayOf("Облачность / ВНГО", cloudText, "ВНГО: $ceilVal $ceilUnit", weather.ceilingCode ?: ""),
+      arrayOf("Температура / Роса", "$tempText / $dewText", "Превышение: $elevText", ""),
       arrayOf("QNH / QFE", qnhPrimary, "QFE: $qfeText", weather.qnhHpa?.let { "Q$it" } ?: ""),
       arrayOf("Солнце (Восх. / Зак.)", "${weather.sunriseLocal} / ${weather.sunsetLocal}", weather.specialConditions, weather.sourceLabel),
     )

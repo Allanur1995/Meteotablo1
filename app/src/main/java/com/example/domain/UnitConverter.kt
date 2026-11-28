@@ -177,4 +177,70 @@ object UnitConverter {
       }
     }
   }
+
+  fun metersToFeet(meters: Int): Int = (meters * METERS_TO_FEET).roundToInt()
+
+  fun feetToMeters(feet: Int): Int = (feet / METERS_TO_FEET).roundToInt()
+
+  fun formatElevation(elevationMeters: Int, pressureUnit: PressureUnit): String {
+    return if (pressureUnit == PressureUnit.HPA) {
+      "$elevationMeters м"
+    } else {
+      "${metersToFeet(elevationMeters)} ft"
+    }
+  }
+
+  fun formatCeilingValueAndUnit(
+    ceilingMeters: Int?,
+    ceilingFeet: Int?,
+    isCavok: Boolean,
+    pressureUnit: PressureUnit,
+  ): Pair<String, String> {
+    if (isCavok) {
+      return "CAVOK" to if (pressureUnit == PressureUnit.HPA) "м" else "ft"
+    }
+    return if (pressureUnit == PressureUnit.HPA) {
+      val m = ceilingMeters ?: ceilingFeet?.let { feetToMeters(it) }
+      (m?.toString() ?: "---") to "м"
+    } else {
+      val ft = ceilingFeet ?: ceilingMeters?.let { metersToFeet(it) }
+      (ft?.toString() ?: "---") to "ft"
+    }
+  }
+
+  fun formatRvrValueAndUnit(rvrMeters: Int?, pressureUnit: PressureUnit): Pair<String, String> {
+    return if (pressureUnit == PressureUnit.HPA) {
+      (rvrMeters?.toString() ?: "----") to "м"
+    } else {
+      (rvrMeters?.let { metersToFeet(it).toString() } ?: "----") to "ft"
+    }
+  }
+
+  fun formatVisibility(
+    visibilityMeters: Int?,
+    isCavok: Boolean,
+    pressureUnit: PressureUnit,
+    locale: Locale = Locale.US,
+  ): Pair<String, String> {
+    if (isCavok || (visibilityMeters != null && visibilityMeters >= 9999)) {
+      return if (pressureUnit == PressureUnit.HPA) {
+        (visibilityMeters?.toString() ?: "9999") to "м"
+      } else {
+        "≥ 6" to "SM"
+      }
+    }
+    if (visibilityMeters == null) {
+      return "----" to if (pressureUnit == PressureUnit.HPA) "м" else "SM"
+    }
+    return if (pressureUnit == PressureUnit.HPA) {
+      visibilityMeters.toString() to "м"
+    } else {
+      val miles = visibilityMeters / 1609.34
+      if (miles >= 1.0) {
+        String.format(locale, "%.1f", miles) to "SM"
+      } else {
+        metersToFeet(visibilityMeters).toString() to "ft"
+      }
+    }
+  }
 }

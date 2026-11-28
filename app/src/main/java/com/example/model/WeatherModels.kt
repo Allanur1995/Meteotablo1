@@ -99,14 +99,14 @@ enum class UnitSystem(
   val pressureUnit: PressureUnit,
 ) {
   METRIC(
-    displayName = "Метрическая (hPa, м/с)",
-    shortTag = "METRIC · hPa / м/с",
+    displayName = "Метрическая (hPa, м, м/с)",
+    shortTag = "METRIC · hPa / м",
     windUnit = WindSpeedUnit.MPS,
     pressureUnit = PressureUnit.HPA,
   ),
   IMPERIAL(
-    displayName = "Имперская (inHg, kt)",
-    shortTag = "IMPERIAL · inHg / kt",
+    displayName = "Имперская (inHg, ft, kt)",
+    shortTag = "IMPERIAL · inHg / ft",
     windUnit = WindSpeedUnit.KT,
     pressureUnit = PressureUnit.INHG,
   ),

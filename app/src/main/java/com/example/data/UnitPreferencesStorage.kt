@@ -20,7 +20,7 @@ enum class AutoRefreshInterval(
 
   companion object {
     fun fromMinutes(minutes: Int): AutoRefreshInterval =
-      entries.firstOrNull { it.minutes == minutes } ?: FIFTEEN_MIN
+      entries.firstOrNull { it.minutes == minutes } ?: ONE_MIN
   }
 }
 

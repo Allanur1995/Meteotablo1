@@ -350,12 +350,39 @@ fun RunwayWindRose(
         drawPath(rwyHead, color = palette.textPrimary)
       }
 
-      // Orange wind direction arrow pointing INWARD from wind origin direction
+      // Orange wind direction arrow pointing INWARD from wind origin direction + headwind/crosswind component guides
       if (!wind.isCalm && !wind.isVariable && wind.directionDeg != null) {
+        val windRad = (animatedWindDir + fetchRotatePulse.value - 90.0) * PI / 180.0
+        val rwyRad = (animatedHeading - 90.0) * PI / 180.0
+        val tipR = radius * 0.87f
+        val tipX = cx + tipR * cos(windRad).toFloat()
+        val tipY = cy + tipR * sin(windRad).toFloat()
+        val ux = cos(rwyRad).toFloat()
+        val uy = sin(rwyRad).toFloat()
+        val dot = (tipX - cx) * ux + (tipY - cy) * uy
+        val projX = cx + dot * ux
+        val projY = cy + dot * uy
+
+        val headGuideColor = if (isTailwind) palette.tailwindNegative else palette.headwindPositive
+        val crossGuideColor = if (crosswindExceeded) palette.tailwindNegative else palette.metarAmber
+        drawLine(
+          color = headGuideColor.copy(alpha = 0.65f),
+          start = Offset(cx, cy),
+          end = Offset(projX, projY),
+          strokeWidth = 2.dp.toPx(),
+          cap = StrokeCap.Round,
+        )
+        drawLine(
+          color = crossGuideColor.copy(alpha = 0.65f),
+          start = Offset(tipX, tipY),
+          end = Offset(projX, projY),
+          strokeWidth = 1.6.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f), 0f),
+        )
+
         rotate(degrees = animatedWindDir + fetchRotatePulse.value, pivot = Offset(cx, cy)) {
           val outerTipY = cy - radius * 0.87f
           val innerTipY = cy - radius * 0.57f
-          val shaftEndY = innerTipY + 10.dp.toPx()
 
           drawLine(
             color = palette.windArrow,

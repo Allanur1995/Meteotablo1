@@ -61,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.AviationWeatherParser
+import com.example.domain.UnitConverter
 import com.example.model.AirportStation
 import com.example.model.DecodedWeather
 import com.example.model.PressureUnit
@@ -178,7 +179,7 @@ fun MetarTableScreen(
               fontWeight = FontWeight.Bold,
             )
             Text(
-              text = "${station.name} (${station.city}, ${station.elevationMeters} м)",
+              text = "${station.name} (${station.city}, ${UnitConverter.formatElevation(station.elevationMeters, pressureUnit)})",
               color = palette.textSecondary,
               fontSize = 11.sp,
             )

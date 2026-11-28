@@ -465,4 +465,17 @@ DataSourceMode.AUTO_IP_FIRST -> {
       )
     }
   }
+
+  suspend fun fetchActiveSigmets(
+    station: AirportStation,
+    serverConfig: ServerConfig = ServerConfig(),
+  ): Result<List<com.example.model.SigmetAlert>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val mode = serverConfig.resolvedMode()
+      if (mode == DataSourceMode.IP_ONLY || !serverConfig.useAviationWeatherGov) {
+        return@runCatching emptyList()
+      }
+      publicNetworkManager.fetchActiveSigmets(station = station)
+    }
+  }
 }

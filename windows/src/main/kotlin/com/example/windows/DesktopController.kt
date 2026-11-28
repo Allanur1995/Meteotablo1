@@ -1,11 +1,14 @@
 package com.example.windows
 
 import com.example.data.AirportCatalog
+import com.example.data.AirportRunwaysSerializer
+import com.example.data.AirportRunwaysStorage
 import com.example.data.AutoRefreshInterval
 import com.example.data.AviationWeatherRepository
 import com.example.data.CustomMeteoServerClient
 import com.example.data.DataSourceMode
 import com.example.data.FavoriteAirportsStorage
+import com.example.data.InMemoryAirportRunwaysStorage
 import com.example.data.InMemoryFavoriteStorage
 import com.example.data.InMemoryServerConfigStorage
 import com.example.data.InMemoryUnitPreferencesStorage
@@ -43,6 +46,7 @@ import com.example.model.QnhTrendSummary
 import com.example.model.RunwayCalculation
 import com.example.model.RunwayPair
 import com.example.model.SavedWeatherPreset
+import com.example.model.SigmetAlert
 import com.example.model.UnitSystem
 import com.example.model.WeatherAlertConfig
 import com.example.model.WeatherChangeAlert
@@ -74,7 +78,7 @@ data class DesktopUiState(
   val windUnit: WindSpeedUnit = WindSpeedUnit.KT,
   val pressureUnit: PressureUnit = PressureUnit.HPA,
   val autoRefreshEnabled: Boolean = true,
-  val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
+  val autoRefreshIntervalMinutes: Int = AutoRefreshInterval.ONE_MIN.minutes,
   val favoriteIcaos: List<String> = emptyList(),
   val recentSearches: List<String> = emptyList(),
   val savedPresets: List<SavedWeatherPreset> = emptyList(),
@@ -82,6 +86,8 @@ data class DesktopUiState(
   val alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   val weatherAlerts: List<WeatherChangeAlert> = emptyList(),
   val latestWeatherAlert: WeatherChangeAlert? = null,
+  val activeSigmets: List<SigmetAlert> = emptyList(),
+  val isLoadingSigmets: Boolean = false,
   val windTrend: WindTrendSummary = WindTrendAnalyzer.analyze("UTAM", emptyList()),
   val weatherHistory24h: List<WeatherHistoryEntry> = emptyList(),
   val weatherHistoryByIcaoMap: Map<String, List<WeatherHistoryEntry>> = emptyMap(),
@@ -134,6 +140,7 @@ class DesktopController(
   private val weatherHistoryStorage: WeatherHistoryStorage = InMemoryWeatherHistoryStorage(),
   private val recentSearchesStorage: RecentSearchesStorage = InMemoryRecentSearchesStorage(),
   private val weatherCacheRepository: WeatherCacheRepository = InMemoryWeatherCacheRepository(),
+  private val airportRunwaysStorage: AirportRunwaysStorage = InMemoryAirportRunwaysStorage(),
 ) {
   private val repository = AviationWeatherRepository()
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -147,6 +154,8 @@ class DesktopController(
     windHistoryStorage.loadAll().toMutableMap()
   private val weatherHistoryByIcao: MutableMap<String, List<WeatherHistoryEntry>> =
     weatherHistoryStorage.loadAll().toMutableMap()
+  private val customRunwaysByIcao: MutableMap<String, List<RunwayPair>> =
+    airportRunwaysStorage.loadAll().toMutableMap()
   private val resolvedStationsByIcao: MutableMap<String, AirportStation> =
     AirportCatalog.presets.associateBy { it.icao }.toMutableMap()
   private var autoRefreshFuture: ScheduledFuture<*>? = null
@@ -156,7 +165,8 @@ class DesktopController(
     private set
 
   init {
-    val defaultStation = AirportCatalog.findOrDefault("UTAM")
+    val defaultStation = withCustomRunways(AirportCatalog.findOrDefault("UTAM"))
+    resolvedStationsByIcao[defaultStation.icao] = defaultStation
     val initialWeather = repository.createEmptyWeather(
       station = defaultStation,
       sourceLabel = if (autoFetch) "загрузка с сервера..." else "ожидание обновления",
@@ -413,8 +423,9 @@ class DesktopController(
     updateState { cur ->
       if (cur.autoRefreshEnabled == enabled) return@updateState cur
       persistUnitPreferences(cur.windUnit, cur.pressureUnit, enabled, cur.autoRefreshIntervalMinutes, cur.isNightMode)
+      val intervalLabel = AutoRefreshInterval.fromMinutes(cur.autoRefreshIntervalMinutes).descriptionLabel
       val msg = if (enabled) {
-        "Автообновление включено (${cur.autoRefreshIntervalMinutes} мин)"
+        "Автообновление включено ($intervalLabel)"
       } else {
         "Автообновление отключено"
       }
@@ -427,13 +438,14 @@ class DesktopController(
   }
 
   fun setAutoRefreshInterval(minutes: Int) {
-    val valid = AutoRefreshInterval.fromMinutes(minutes).minutes
+    val interval = AutoRefreshInterval.fromMinutes(minutes)
+    val valid = interval.minutes
     updateState { cur ->
       if (cur.autoRefreshIntervalMinutes == valid) return@updateState cur
       persistUnitPreferences(cur.windUnit, cur.pressureUnit, cur.autoRefreshEnabled, valid, cur.isNightMode)
       cur.copy(
         autoRefreshIntervalMinutes = valid,
-        logs = appendLog(cur.logs, "NET", "Интервал автообновления: $valid мин", cur.station),
+        logs = appendLog(cur.logs, "NET", "Интервал автообновления: ${interval.descriptionLabel}", cur.station),
       )
     }
     rescheduleAutoRefreshLoop()
@@ -453,11 +465,99 @@ class DesktopController(
     }
   }
 
+  fun addRunwayPair(
+    primaryDesignator: String,
+    primaryHeadingDeg: Int,
+    reciprocalDesignator: String? = null,
+    reciprocalHeadingDeg: Int? = null,
+  ) {
+    val newPair = AirportRunwaysSerializer.buildRunwayPair(
+      primaryDesignatorInput = primaryDesignator,
+      primaryMagneticHeadingDeg = primaryHeadingDeg,
+      reciprocalDesignatorInput = reciprocalDesignator,
+      reciprocalMagneticHeadingDegInput = reciprocalHeadingDeg,
+    )
+    updateState { cur ->
+      val cleanIcao = cur.station.icao.trim().uppercase()
+      val updatedRunways = (cur.station.runways + newPair).distinctBy {
+        "${it.primaryDesignator}_${it.primaryHeadingDeg}_${it.reciprocalDesignator}"
+      }
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao[cleanIcao] = updatedRunways
+      }
+      airportRunwaysStorage.saveForAirport(cleanIcao, updatedRunways)
+      val updatedStation = cur.station.copy(runways = updatedRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val newIdx = (updatedRunways.size - 1).coerceAtLeast(0)
+      val (pCalc, rCalc) = computeRunwayCalcs(updatedRunways[newIdx], cur.weather)
+      cur.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = newIdx,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, cur.favoriteIcaos),
+        logs = appendLog(
+          cur.logs,
+          "INFO",
+          "Добавлена ВПП ${newPair.primaryDesignator}/${newPair.reciprocalDesignator} (${AirportRunwaysSerializer.formatMagneticHeading(newPair.primaryHeadingDeg)})",
+          updatedStation,
+        ),
+      )
+    }
+  }
+
+  fun removeRunwayPair(index: Int) {
+    updateState { cur ->
+      if (cur.station.runways.size <= 1 || index !in cur.station.runways.indices) return@updateState cur
+      val cleanIcao = cur.station.icao.trim().uppercase()
+      val removed = cur.station.runways[index]
+      val updatedRunways = cur.station.runways.filterIndexed { idx, _ -> idx != index }
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao[cleanIcao] = updatedRunways
+      }
+      airportRunwaysStorage.saveForAirport(cleanIcao, updatedRunways)
+      val updatedStation = cur.station.copy(runways = updatedRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val nextIdx = cur.selectedRunwayPairIndex.coerceIn(0, updatedRunways.lastIndex)
+      val (pCalc, rCalc) = computeRunwayCalcs(updatedRunways[nextIdx], cur.weather)
+      cur.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = nextIdx,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, cur.favoriteIcaos),
+        logs = appendLog(cur.logs, "INFO", "Удалена ВПП ${removed.primaryDesignator}/${removed.reciprocalDesignator}", updatedStation),
+      )
+    }
+  }
+
+  fun resetRunwaysToDefault() {
+    updateState { cur ->
+      val cleanIcao = cur.station.icao.trim().uppercase()
+      synchronized(customRunwaysByIcao) {
+        customRunwaysByIcao.remove(cleanIcao)
+      }
+      airportRunwaysStorage.clearForAirport(cleanIcao)
+      val defaultRunways = AirportCatalog.findOrDefault(cleanIcao).runways
+      val updatedStation = cur.station.copy(runways = defaultRunways)
+      resolvedStationsByIcao[cleanIcao] = updatedStation
+      val (pCalc, rCalc) = computeRunwayCalcs(defaultRunways.first(), cur.weather)
+      cur.copy(
+        station = updatedStation,
+        selectedRunwayPairIndex = 0,
+        primaryRunwayCalc = pCalc,
+        reciprocalRunwayCalc = rCalc,
+        mapStations = buildMapStationList(updatedStation, cur.favoriteIcaos),
+        logs = appendLog(cur.logs, "INFO", "ВПП для $cleanIcao сброшены к справочнику", updatedStation),
+      )
+    }
+  }
+
   fun selectStation(icaoInput: String) {
     val clean = icaoInput.trim().uppercase()
     if (clean.length != 4) return
-    val station = resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean)
-    resolvedStationsByIcao.putIfAbsent(clean, station)
+    val station = withCustomRunways(resolvedStationsByIcao[clean] ?: AirportCatalog.findOrDefault(clean))
+    resolvedStationsByIcao[clean] = station
     val cachedWeather = state.mapWeatherByIcao[station.icao]
     val emptyWeather = cachedWeather ?: repository.createEmptyWeather(
       station = station,
@@ -530,7 +630,7 @@ class DesktopController(
         serverConfig = state.serverConfig,
       )
       result.onSuccess { fetched ->
-        val resolved = fetched.resolvedStation
+        val resolved = withCustomRunways(fetched.resolvedStation)
         resolvedStationsByIcao[resolved.icao] = resolved
         runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
@@ -574,6 +674,7 @@ class DesktopController(
           )
         }
         evaluateFavoriteObservation(resolved, fetched.weather)
+        refreshSigmets(targetStation = resolved, force = false)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки погоды по координатам"
         val fallbackRecord = runCatching { weatherCacheRepository.getCachedWeather(state.station.icao) }.getOrNull()
@@ -690,7 +791,7 @@ class DesktopController(
 
   fun applySavedPreset(presetId: String) {
     val target = state.savedPresets.firstOrNull { it.id == presetId } ?: return
-    val station = AirportCatalog.findOrDefault(target.icao)
+    val station = withCustomRunways(AirportCatalog.findOrDefault(target.icao))
     val safeRunwayIdx = target.runwayPairIndex.coerceIn(0, station.runways.lastIndex)
     val sameStation = state.station.icao.equals(station.icao, ignoreCase = true)
     val nextServerConfig = target.sourceMode?.let { mode ->
@@ -1076,7 +1177,7 @@ class DesktopController(
       }
       val result = repository.fetchLiveWeather(station, state.serverConfig)
       result.onSuccess { fetched ->
-        val resolved = fetched.resolvedStation
+        val resolved = withCustomRunways(fetched.resolvedStation)
         resolvedStationsByIcao[resolved.icao] = resolved
         runCatching { weatherCacheRepository.saveWeather(resolved, fetched.weather) }
         val nextTrend = recordWindObservation(resolved.icao, fetched.weather)
@@ -1110,6 +1211,7 @@ class DesktopController(
           )
         }
         evaluateFavoriteObservation(resolved, fetched.weather)
+        refreshSigmets(targetStation = resolved, force = false)
       }.onFailure { err ->
         val msg = err.message ?: "Ошибка загрузки METAR"
         val fallbackRecord = preCachedRecord ?: runCatching { weatherCacheRepository.getCachedWeather(station.icao) }.getOrNull()
@@ -1143,6 +1245,42 @@ class DesktopController(
         }
       }
     }
+  }
+
+  fun refreshSigmets(
+    targetStation: AirportStation = state.station,
+    force: Boolean = true,
+  ) {
+    if (!autoFetch && !force) return
+    scope.launch {
+      updateState { it.copy(isLoadingSigmets = true) }
+      repository.fetchActiveSigmets(targetStation, state.serverConfig).onSuccess { sigmets ->
+        updateState { cur ->
+          if (!cur.station.icao.equals(targetStation.icao, ignoreCase = true)) {
+            cur.copy(isLoadingSigmets = false)
+          } else {
+            cur.copy(
+              activeSigmets = sigmets,
+              isLoadingSigmets = false,
+              logs = appendLog(cur.logs, "SIGMET", "SIGMET для ${targetStation.icao}: ${sigmets.size}", targetStation),
+            )
+          }
+        }
+      }.onFailure { err ->
+        updateState { cur ->
+          cur.copy(
+            isLoadingSigmets = false,
+            logs = appendLog(cur.logs, "SIGMET", "SIGMET ошибка: ${err.message ?: "нет данных"}", targetStation),
+          )
+        }
+      }
+    }
+  }
+
+  private fun withCustomRunways(station: AirportStation): AirportStation {
+    val clean = station.icao.trim().uppercase()
+    val custom = synchronized(customRunwaysByIcao) { customRunwaysByIcao[clean] }
+    return if (!custom.isNullOrEmpty()) station.copy(runways = custom) else station
   }
 
   fun selectD3TrendAirport(icaoInput: String, fetchIfMissing: Boolean = true) {

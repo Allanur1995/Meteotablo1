@@ -127,8 +127,8 @@ fun AviationWeatherTable(
   val metarRows = remember(station, weather, windUnit, pressureUnit, alertConfig) {
     buildAviationMetarRows(station, weather, windUnit, pressureUnit, alertConfig)
   }
-  val decodedTaf = remember(weather.rawTaf, windUnit, alertConfig) {
-    TafParser.parse(weather.rawTaf, windUnit, alertConfig)
+  val decodedTaf = remember(weather.rawTaf, windUnit, alertConfig, pressureUnit) {
+    TafParser.parse(weather.rawTaf, windUnit, alertConfig, pressureUnit)
   }
   var containerWidthPx by remember { mutableIntStateOf(0) }
   val isWideLayout = with(LocalDensity.current) { containerWidthPx.toDp() >= 600.dp }
@@ -356,6 +356,7 @@ fun AviationWeatherTable(
       TafStructuredSection(
         decodedTaf = decodedTaf,
         windUnit = windUnit,
+        pressureUnit = pressureUnit,
         alertConfig = alertConfig,
         isWide = isWideLayout,
       )
@@ -611,6 +612,7 @@ private fun AviationMetarRowItem(
 private fun TafStructuredSection(
   decodedTaf: DecodedTaf,
   windUnit: WindSpeedUnit,
+  pressureUnit: PressureUnit,
   alertConfig: WeatherAlertConfig,
   isWide: Boolean,
 ) {
@@ -643,7 +645,7 @@ private fun TafStructuredSection(
           letterSpacing = 0.4.sp,
         )
         Text(
-          text = "Выпущен: ${decodedTaf.issuedUtc} · Действует: ${decodedTaf.validityWindow} (${windUnit.label}, облачность в ft)",
+          text = "Выпущен: ${decodedTaf.issuedUtc} · Действует: ${decodedTaf.validityWindow} (${windUnit.label}, облачность в ${if (pressureUnit == PressureUnit.HPA) "м" else "ft"})",
           color = palette.textSecondary,
           fontSize = 10.5.sp,
         )
@@ -1294,14 +1296,20 @@ private fun buildAviationMetarRows(
     )
     if (weather.qfeHpa != null && weather.qfeMmHg != null) {
       val (qfeVal, qfeUnit) = UnitConverter.formatPressurePrimary(weather.qfeHpa, weather.qfeInHg, pressureUnit)
-      append("\nQFE (${station.elevationMeters} м): $qfeVal $qfeUnit / ${weather.qfeMmHg} мм")
+      append("\nQFE (${UnitConverter.formatElevation(station.elevationMeters, pressureUnit)}): $qfeVal $qfeUnit / ${weather.qfeMmHg} мм")
     }
   }
 
-  val ceilingPrimary = weather.ceilingFeet?.let { "ВНГО $it ft" }
-    ?: if (weather.isCavok) "CAVOK" else "Без значимой облачности"
+  val ceilingPrimary = if (isImperialDisplay) {
+    weather.ceilingFeet?.let { "ВНГО $it ft" }
+  } else {
+    weather.ceilingMeters?.let { "ВНГО $it м" }
+      ?: weather.ceilingFeet?.let { "ВНГО ${UnitConverter.feetToMeters(it)} м" }
+  } ?: if (weather.isCavok) "CAVOK" else "Без значимой облачности"
   val cloudsDetail = if (weather.clouds.isNotEmpty()) {
-    weather.clouds.joinToString(", ") { "${it.cover} ${it.baseFeet} ft" }
+    weather.clouds.joinToString(", ") {
+      if (isImperialDisplay) "${it.cover} ${it.baseFeet} ft" else "${it.cover} ${it.baseMeters} м"
+    }
   } else {
     "Слои облачности не зафиксированы"
   }

@@ -1,6 +1,7 @@
 package com.example.domain
 
 import com.example.model.DecodedTaf
+import com.example.model.PressureUnit
 import com.example.model.TafChangeType
 import com.example.model.TafForecastPeriod
 import com.example.model.WeatherAlertConfig
@@ -58,6 +59,7 @@ object TafParser {
     rawTafInput: String,
     windUnit: WindSpeedUnit = WindSpeedUnit.KT,
     alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
+    pressureUnit: PressureUnit = PressureUnit.INHG,
   ): DecodedTaf {
     val clean = rawTafInput.trim().replace(Regex("\\s+"), " ").trimEnd('=')
     if (clean.isBlank() ||
@@ -114,7 +116,7 @@ object TafParser {
 
     val segments = splitForecastSegments(bodyTokens, validityWindow)
     val parsedPeriods = segments.map { seg ->
-      parseSegment(seg, windUnit, alertConfig)
+      parseSegment(seg, windUnit, alertConfig, pressureUnit)
     }
 
     return DecodedTaf(
@@ -223,6 +225,7 @@ object TafParser {
     seg: RawSegment,
     windUnit: WindSpeedUnit,
     alertConfig: WeatherAlertConfig,
+    pressureUnit: PressureUnit,
   ): TafForecastPeriod {
     val tokens = seg.tokens
     var hazardous = false
@@ -305,7 +308,7 @@ object TafParser {
       else -> "Без изменений"
     }
 
-    // Clouds (strictly in feet!)
+    // Clouds (meters in Metric/HPA, feet in Imperial/INHG)
     val cloudTokens = tokens.mapNotNull { tok ->
       val m = cloudRegex.matchEntire(tok) ?: return@mapNotNull null
       val cover = m.groupValues[1]
@@ -317,7 +320,12 @@ object TafParser {
       }
       if (cb.isNotEmpty()) hazardous = true
       if (feet != null) {
-        if (cb.isNotEmpty()) "$cover $feet ft $cb" else "$cover $feet ft"
+        val heightLabel = if (pressureUnit == PressureUnit.HPA) {
+          "${UnitConverter.feetToMeters(feet)} м"
+        } else {
+          "$feet ft"
+        }
+        if (cb.isNotEmpty()) "$cover $heightLabel $cb" else "$cover $heightLabel"
       } else {
         "$cover $heightCode $cb".trim()
       }

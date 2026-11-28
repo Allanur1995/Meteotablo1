@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Flight
+import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LightMode
@@ -101,7 +102,7 @@ fun SettingsScreen(
   isFullscreen: Boolean,
   alertConfig: WeatherAlertConfig = WeatherAlertConfig(),
   autoRefreshEnabled: Boolean = true,
-  autoRefreshIntervalMinutes: Int = AutoRefreshInterval.FIFTEEN_MIN.minutes,
+  autoRefreshIntervalMinutes: Int = AutoRefreshInterval.ONE_MIN.minutes,
   onBack: () -> Unit,
   onSelectUnitSystem: (UnitSystem) -> Unit,
   onSelectWindUnit: (WindSpeedUnit) -> Unit,
@@ -119,6 +120,7 @@ fun SettingsScreen(
   onOpenExportDialog: () -> Unit = {},
   onOpenDecoder: () -> Unit = {},
   onOpenPressureUtility: () -> Unit = {},
+  onOpenManageRunways: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BackHandler(onBack = onBack)
@@ -277,8 +279,8 @@ fun SettingsScreen(
               )
               Text(
                 text = when (activeSystem) {
-                  UnitSystem.METRIC -> "Активна метрическая система (hPa, м/с)"
-                  UnitSystem.IMPERIAL -> "Активна имперская система (inHg, knots)"
+                  UnitSystem.METRIC -> "Активна метрическая система (hPa, м, м/с)"
+                  UnitSystem.IMPERIAL -> "Активна имперская система (inHg, ft, knots)"
                   null -> "Пользовательская комбинация (${windUnit.label}, ${pressureUnit.label})"
                 },
                 color = palette.textSecondary,
@@ -317,8 +319,8 @@ fun SettingsScreen(
               UnitSystemOptionCard(
                 system = UnitSystem.METRIC,
                 title = "Метрическая (Metric)",
-                unitBadge = "hPa · м/с",
-                description = "Давление QNH/QFE в гектопаскалях (hPa), скорость ветра и порывов в м/с.",
+                unitBadge = "hPa · м · м/с",
+                description = "Давление QNH/QFE в гектопаскалях (hPa), ВНГО и высоты в метрах (м), ветер в м/с.",
                 selected = activeSystem == UnitSystem.METRIC,
                 onClick = { onSelectUnitSystem(UnitSystem.METRIC) },
                 modifier = Modifier.weight(1f),
@@ -326,8 +328,8 @@ fun SettingsScreen(
               UnitSystemOptionCard(
                 system = UnitSystem.IMPERIAL,
                 title = "Имперская (Imperial)",
-                unitBadge = "inHg · knots",
-                description = "Давление QNH/QFE в дюймах рт. ст. (inHg), скорость ветра и порывов в узлах (kt).",
+                unitBadge = "inHg · ft · knots",
+                description = "Давление QNH/QFE в дюймах (inHg), ВНГО и высоты в футах (ft), ветер в узлах (kt).",
                 selected = activeSystem == UnitSystem.IMPERIAL,
                 onClick = { onSelectUnitSystem(UnitSystem.IMPERIAL) },
                 modifier = Modifier.weight(1f),
@@ -341,8 +343,8 @@ fun SettingsScreen(
               UnitSystemOptionCard(
                 system = UnitSystem.METRIC,
                 title = "Метрическая (Metric)",
-                unitBadge = "hPa · м/с",
-                description = "Давление QNH/QFE в гектопаскалях (hPa), скорость ветра и порывов в м/с.",
+                unitBadge = "hPa · м · м/с",
+                description = "Давление QNH/QFE в гектопаскалях (hPa), ВНГО и высоты в метрах (м), ветер в м/с.",
                 selected = activeSystem == UnitSystem.METRIC,
                 onClick = { onSelectUnitSystem(UnitSystem.METRIC) },
                 modifier = Modifier.fillMaxWidth(),
@@ -350,8 +352,8 @@ fun SettingsScreen(
               UnitSystemOptionCard(
                 system = UnitSystem.IMPERIAL,
                 title = "Имперская (Imperial)",
-                unitBadge = "inHg · knots",
-                description = "Давление QNH/QFE в дюймах рт. ст. (inHg), скорость ветра и порывов в узлах (kt).",
+                unitBadge = "inHg · ft · knots",
+                description = "Давление QNH/QFE в дюймах (inHg), ВНГО и высоты в футах (ft), ветер в узлах (kt).",
                 selected = activeSystem == UnitSystem.IMPERIAL,
                 onClick = { onSelectUnitSystem(UnitSystem.IMPERIAL) },
                 modifier = Modifier.fillMaxWidth(),
@@ -843,7 +845,8 @@ fun SettingsScreen(
               )
               Text(
                 text = if (autoRefreshEnabled) {
-                  "Активно: загрузка METAR/TAF каждые $autoRefreshIntervalMinutes мин"
+                  val desc = AutoRefreshInterval.fromMinutes(autoRefreshIntervalMinutes).descriptionLabel
+                  "Активно: загрузка METAR/TAF каждые $desc"
                 } else {
                   "Отключено — обновляйте кнопкой «Обновить» на верхней панели"
                 },
@@ -1197,6 +1200,22 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.size(6.dp))
             Text("Декодер METAR", fontSize = 12.sp)
           }
+        }
+
+        OutlinedButton(
+          onClick = onOpenManageRunways,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("settings_manage_runways_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.FlightLand,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.size(6.dp))
+          Text("ВПП аэродрома (${station.icao} · ${station.runways.size})", fontSize = 12.sp)
         }
       }
 

@@ -253,6 +253,11 @@ fun DualRunwayWindRosePanel(
           verticalAlignment = Alignment.CenterVertically,
           modifier = Modifier.fillMaxWidth(),
         ) {
+          val bestGustXw = wind.gustKt?.takeIf { wind.speedKt > 0 }?.let { g ->
+            bestCalc.crosswindKt * (g.toDouble() / wind.speedKt.toDouble())
+          }
+          val isBestCrosswindExceeded = alertConfig.crosswindWarningEnabled &&
+            alertConfig.isCrosswindExceeded(bestCalc.crosswindKt, bestGustXw)
           DualRunwayCompassCanvas(
             station = station,
             selectedRunwayPairIndex = selectedRunwayPairIndex,
@@ -260,6 +265,7 @@ fun DualRunwayWindRosePanel(
             reciprocalCalc = reciprocalCalc,
             wind = wind,
             windUnit = windUnit,
+            isCrosswindExceeded = isBestCrosswindExceeded,
             onToggleUnit = onToggleUnit,
             metarFetchSeq = metarFetchSeq,
             modifier = Modifier.weight(0.95f),
@@ -285,6 +291,11 @@ fun DualRunwayWindRosePanel(
           }
         }
       } else {
+        val bestGustXw = wind.gustKt?.takeIf { wind.speedKt > 0 }?.let { g ->
+          bestCalc.crosswindKt * (g.toDouble() / wind.speedKt.toDouble())
+        }
+        val isBestCrosswindExceeded = alertConfig.crosswindWarningEnabled &&
+          alertConfig.isCrosswindExceeded(bestCalc.crosswindKt, bestGustXw)
         Column(
           verticalArrangement = Arrangement.spacedBy(8.dp),
           modifier = Modifier.fillMaxWidth(),
@@ -296,6 +307,7 @@ fun DualRunwayWindRosePanel(
             reciprocalCalc = reciprocalCalc,
             wind = wind,
             windUnit = windUnit,
+            isCrosswindExceeded = isBestCrosswindExceeded,
             onToggleUnit = onToggleUnit,
             metarFetchSeq = metarFetchSeq,
             modifier = Modifier.fillMaxWidth(),
@@ -342,6 +354,7 @@ private fun DualRunwayCompassCanvas(
   reciprocalCalc: RunwayCalculation,
   wind: WindData,
   windUnit: WindSpeedUnit,
+  isCrosswindExceeded: Boolean = false,
   onToggleUnit: () -> Unit,
   metarFetchSeq: Long = 0L,
   modifier: Modifier = Modifier,
@@ -614,13 +627,37 @@ private fun DualRunwayCompassCanvas(
         val projX = cx + dot * ux
         val projY = cy + dot * uy
 
+        val bestIsPrimary = primaryCalc.headwindKt >= reciprocalCalc.headwindKt
+        val bestHeadwindKt = if (bestIsPrimary) primaryCalc.headwindKt else reciprocalCalc.headwindKt
+        val headColor = if (bestHeadwindKt >= -0.05) palette.headwindPositive else palette.tailwindNegative
+        val crossColor = if (isCrosswindExceeded) palette.tailwindNegative else palette.metarAmber
+
+        // Headwind / Tailwind vector component along runway centerline
+        drawLine(
+          color = headColor.copy(alpha = 0.88f),
+          start = Offset(cx, cy),
+          end = Offset(projX, projY),
+          strokeWidth = 2.6.dp.toPx(),
+          cap = StrokeCap.Round,
+        )
+        drawCircle(
+          color = headColor,
+          radius = 3.2.dp.toPx(),
+          center = Offset(projX, projY),
+        )
+
         // Crosswind dashed projection line (wind origin tip perpendicular to runway axis)
         drawLine(
-          color = palette.metarAmber.copy(alpha = 0.72f),
+          color = crossColor.copy(alpha = 0.88f),
           start = Offset(tipX, tipY),
           end = Offset(projX, projY),
-          strokeWidth = 1.6.dp.toPx(),
+          strokeWidth = 2.0.dp.toPx(),
           pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f),
+        )
+        drawCircle(
+          color = crossColor,
+          radius = 2.8.dp.toPx(),
+          center = Offset(tipX, tipY),
         )
 
         // Wind directional inward arrow
